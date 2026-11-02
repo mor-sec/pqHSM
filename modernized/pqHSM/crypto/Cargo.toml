@@ -1,6 +1,6 @@
 [package]
 name = "pqhsm-crypto"
-description = "pqHSM crypto core (replaces src/fhsm_conf.c and src/fhsm_memory.c; Phase 3 adds the DRBG and primitives)"
+description = "pqHSM crypto core (replaces src/fhsm_conf.c, src/fhsm_memory.c, src/fhsm_drbg.c and src/fhsm_crypto.c)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,6 +13,9 @@ crate-type = ["rlib"]
 # The C ABI of include/fhsm_conf.h and the secure-heap part of include/fhsm_common.h. Off for
 # `cargo test`, on for the hybrid build.
 ffi = []
+# Honour FHSM_INTEGRITY_ALLOW_UNSIGNED and FHSM_KAT_ALLOW_FAIL (DIV-034). Off in a release build;
+# the hybrid harness turns it on, as every `make tests` recipe sets the integrity bypass.
+dev-bypass = []
 
 [dependencies]
 libc.workspace = true
@@ -30,8 +33,19 @@ name = "golden"
 harness = false
 required-features = ["ffi"]
 
+# Slice 3: the crypto core's goldens; the primitives go through the C ABI.
+[[test]]
+name = "core_golden"
+required-features = ["ffi"]
+
 # Review M1: a fork while another thread is inside first-use init. Its own harness: it forks.
 [[test]]
 name = "fork_init"
+harness = false
+required-features = ["ffi"]
+
+# The crypto core's lock across fork (review M1, DIV-035). Its own harness: it forks.
+[[test]]
+name = "core_fork"
 harness = false
 required-features = ["ffi"]

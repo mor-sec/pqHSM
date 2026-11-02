@@ -1,0 +1,9 @@
+[freehsm-c] FATAL : the OpenSSL FIPS provider would not load.
+  This module is signed, so it requires the provider ; only an
+  unsigned/dev build (FHSM_INTEGRITY_ALLOW_UNSIGNED) skips it.
+  Check, in order :
+    openssl list -providers          fips must be active
+    OPENSSL_CONF                     currently <unset, system default>
+  An OpenSSL upgrade invalidates fipsmodule.cnf : it holds the
+  MAC of the previous fips.so. See AGD_PRE 3.3.1.
+  OpenSSL says :

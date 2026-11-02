@@ -17,8 +17,11 @@ mkdir -p "$OUT/work" "$OUT/results" "$REGISTRY"
 tar -C "$REPO" --exclude=./analysis --exclude=./.obj --exclude=./modernized/pqHSM/target -cf - . \
     | tar -C "$OUT/work" -xf -
 # seccomp=unconfined: only for `setarch -R` in the TSan step (personality(ADDR_NO_RANDOMIZE)).
+# FIPS_DEBS: a directory holding the openssl, libssl3t64 and openssl-provider-fips .debs of the
+# image's OpenSSL version; with it, step 9 runs the FIPS-provider suite offline (BASELINE.md).
 podman run --rm --user root --security-opt seccomp=unconfined \
     -v "$OUT/work":/work:Z -v "$OUT/results":/out:Z -v "$C_BUILD":/c:ro,Z \
     -v "$REPO/analysis/pqHSM/baseline":/fixture:ro,Z -v "$REGISTRY":/opt/rust/cargo/registry:Z \
+    ${FIPS_DEBS:+-v "$FIPS_DEBS":/debs:ro,Z} \
     -v "$HERE/inner.sh":/inner.sh:ro,Z "$IMAGE" sh /inner.sh
 cat "$OUT/results/summary.txt"

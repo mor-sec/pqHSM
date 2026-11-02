@@ -1,20 +1,11 @@
 //! The DRBG's generator, entropy sources and clock (`src/fhsm_drbg.c:142-275`).
 
-use std::ffi::{c_int, c_void};
-use std::ptr::{null, null_mut};
+use std::ffi::c_int;
 
-use openssl_sys::{
-    EVP_DigestFinal_ex, EVP_DigestUpdate, EVP_MD, EVP_MD_CTX, EVP_MD_CTX_free, EVP_MD_CTX_new,
-    EVP_MD_fetch, EVP_MD_free, RAND_add, RAND_bytes,
-};
+use openssl_sys::{RAND_add, RAND_bytes};
 use zeroize::Zeroizing;
 
 use crate::drbg;
-
-unsafe extern "C" {
-    // OpenSSL 3; openssl-sys binds only EVP_DigestInit_ex
-    fn EVP_DigestInit_ex2(ctx: *mut EVP_MD_CTX, md: *const EVP_MD, params: *const c_void) -> c_int;
-}
 
 /// An entropy source: fills the front of the slice it is given, returns how much it wrote.
 type Fill = fn(&mut [u8]) -> usize;
@@ -138,25 +129,8 @@ fn rdrand(_dst: &mut [u8]) -> usize {
 /// SHA2-384 fetched through the providers, so a FIPS build conditions with the validated code.
 fn sha384(data: &[u8]) -> Option<Zeroizing<[u8; 48]>> {
     let mut out = Zeroizing::new([0u8; 48]);
-    let mut len = 0u32;
-    // SAFETY: every pointer is checked before use or is one OpenSSL accepts as NULL; data and out
-    // are valid for their lengths; ctx and md are freed once on every path.
-    unsafe {
-        let md = EVP_MD_fetch(null_mut(), c"SHA2-384".as_ptr(), null());
-        let ctx = if md.is_null() {
-            null_mut()
-        } else {
-            EVP_MD_CTX_new()
-        };
-        let ok = !ctx.is_null()
-            && EVP_DigestInit_ex2(ctx, md, null()) == 1
-            && EVP_DigestUpdate(ctx, data.as_ptr().cast(), data.len()) == 1
-            && EVP_DigestFinal_ex(ctx, out.as_mut_ptr(), &mut len) == 1
-            && len == 48;
-        EVP_MD_CTX_free(ctx);
-        EVP_MD_free(md);
-        ok.then_some(out)
-    }
+    // FHSM_HASH_SHA384: "SHA2-384", fetched explicitly
+    (super::prim::digest(2, data, &mut *out) == Ok(48)).then_some(out)
 }
 
 #[cfg(test)]

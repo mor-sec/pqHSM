@@ -47,3 +47,10 @@ gen_crypto: $(GEN_DIR)/gen_crypto.c $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fh
 gen_drbg: $(GEN_DIR)/gen_drbg.c $(OBJDIR)/src/fhsm_drbg.o
 	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_drbg.o $(LDFLAGS) -lpthread \
 	    -Wl,--wrap=RAND_bytes -Wl,--wrap=RAND_add -Wl,--wrap=time -Wl,--wrap=EVP_MD_fetch
+
+# Phase 3 slice 3: the legacy crypto core, its lifecycle collaborators stubbed in gen_core.c and
+# the provider and RAND calls replaced by --wrap seams. Used only by regen_crypto.sh.
+gen_core: $(GEN_DIR)/gen_core.c $(OBJDIR)/src/fhsm_crypto.o $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o
+	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_crypto.o $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o \
+	    $(LDFLAGS) -lpthread -Wl,--wrap=OSSL_PROVIDER_load -Wl,--wrap=OSSL_PROVIDER_unload \
+	    -Wl,--wrap=EVP_default_properties_enable_fips -Wl,--wrap=RAND_status -Wl,--wrap=RAND_add

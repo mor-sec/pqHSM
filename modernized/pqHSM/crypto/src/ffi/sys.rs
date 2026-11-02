@@ -25,6 +25,95 @@ pub(crate) fn heap_once(init: extern "C" fn()) {
     unsafe { pthread_once(&raw mut HEAP_ONCE, init) };
 }
 
+#[cfg(feature = "ffi")]
+static mut CORE_ONCE: libc::pthread_once_t = libc::PTHREAD_ONCE_INIT;
+
+/// Runs `init` once per process: the crypto core's fork handler registration.
+#[cfg(feature = "ffi")]
+pub(crate) fn core_once(init: extern "C" fn()) {
+    // SAFETY: as in heap_once
+    unsafe { pthread_once(&raw mut CORE_ONCE, init) };
+}
+
+/// A mutex that a fork child can take although a parent thread held it at the fork: the child
+/// handler re-initialises it, as `src/fhsm_apilock.c:94` does for the API lock. C's init ran
+/// under `pthread_once`, which glibc lets a child run again (review M1).
+///
+/// It knows its holder, so a re-entrant call aborts rather than deadlocking silently, and a
+/// child forked by the holder itself (fork+exec inside the locked section) keeps the lock its
+/// own stack still holds (slice 3 review L2).
+#[cfg(feature = "ffi")]
+pub(crate) struct ForkMutex<T> {
+    lock: std::cell::UnsafeCell<libc::pthread_mutex_t>,
+    owner: std::sync::atomic::AtomicUsize,
+    data: std::cell::UnsafeCell<T>,
+}
+
+// SAFETY: data is reached only with the lock held, or in a child with one thread
+#[cfg(feature = "ffi")]
+unsafe impl<T: Send> Sync for ForkMutex<T> {}
+
+#[cfg(feature = "ffi")]
+fn this_thread() -> usize {
+    // SAFETY: no arguments; glibc's pthread_t is an address, never 0 for a live thread
+    unsafe { libc::pthread_self() as usize }
+}
+
+#[cfg(feature = "ffi")]
+impl<T> ForkMutex<T> {
+    pub(crate) const fn new(data: T) -> Self {
+        Self {
+            lock: std::cell::UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER),
+            owner: std::sync::atomic::AtomicUsize::new(0),
+            data: std::cell::UnsafeCell::new(data),
+        }
+    }
+
+    /// Runs `f` with the lock held. Not re-entrant: a nested call aborts.
+    pub(crate) fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        use std::sync::atomic::Ordering::Relaxed;
+        struct Unlock<'a>(
+            *mut libc::pthread_mutex_t,
+            &'a std::sync::atomic::AtomicUsize,
+        );
+        impl Drop for Unlock<'_> {
+            fn drop(&mut self) {
+                self.1.store(0, Relaxed);
+                // SAFETY: locked below by this thread
+                unsafe { libc::pthread_mutex_unlock(self.0) };
+            }
+        }
+        let me = this_thread();
+        if self.owner.load(Relaxed) == me {
+            stderr("[freehsm-c] FATAL : re-entrant call into a module lock\n");
+            std::process::abort();
+        }
+        // SAFETY: an initialised mutex at a fixed address
+        unsafe { libc::pthread_mutex_lock(self.lock.get()) };
+        self.owner.store(me, Relaxed);
+        let _unlock = Unlock(self.lock.get(), &self.owner);
+        // SAFETY: the lock is held until _unlock drops, after f
+        f(unsafe { &mut *self.data.get() })
+    }
+
+    /// Frees the lock again and runs `f` on the data, unless the forking thread holds it: the
+    /// child's copy of that thread is still inside `with` and releases it itself.
+    ///
+    /// # Safety
+    /// Only from a fork child handler: one thread, so no other holder and no other reference.
+    pub(crate) unsafe fn after_fork(&self, f: impl FnOnce(&mut T)) {
+        if self.owner.load(std::sync::atomic::Ordering::Relaxed) == this_thread() {
+            return;
+        }
+        self.owner.store(0, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: the caller's contract
+        unsafe {
+            libc::pthread_mutex_init(self.lock.get(), std::ptr::null());
+            f(&mut *self.data.get());
+        }
+    }
+}
+
 /// OpenSSL's allocation-site tag, used only by its memory debugging.
 const SITE: *const c_char = c"pqhsm-crypto".as_ptr();
 

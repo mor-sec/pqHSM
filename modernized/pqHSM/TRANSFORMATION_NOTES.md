@@ -472,3 +472,141 @@ Recorded for later:
 
 - `fhsm_rng_bytes` and `fhsm_rng_reseed` (`src/fhsm_crypto.c:326-345`) move with slice 3 and call `drbg` directly.
 - The probe's equal draws (RSA-2048 = RSA-4096 = P-256) show key generation uses OpenSSL's RAND, not this DRBG (`tests/probe_keygen_drbg.c`). Slice 3 owns `EVP_PKEY_Q_keygen(NULL, ...)`; closing that gap would change the probe's numbers and needs a DIV.
+
+## Slice 3: crypto core
+
+### What was replaced
+
+`src/fhsm_crypto.c` (608 lines, 13 exports) is now:
+
+- `crypto/src/lifecycle.rs`: init and finalize as pure logic over a `Platform`.
+- `crypto/src/ffi/prim.rs`: digests, HMAC, AES-GCM and PBKDF2 over OpenSSL, with C's explicit fetches and C's argument checks in C's order.
+- The crypto core section of `crypto/src/ffi/c_abi.rs`: the 13 exports, the real `Platform`, and the module's one `Core`.
+
+`hybrid.mk` empties `fhsm_crypto.o` and builds the staticlib with `dev-bypass` (DIV-034).
+
+Still C, called over FFI:
+- Until slice 4: the integrity check (`fhsm_integrity_verify`) and the KATs (`fhsm_kat_run_all`).
+- Until Phase 4: the module state.
+
+`fhsm_rng_bytes` is `fhsm_drbg_bytes`. The DRBG's SHA2-384 conditioner now uses `prim::digest`.
+
+The token crate's seam (`token/src/ffi/cprim.rs`) still declares the `fhsm_*` primitives as externs. In the hybrid those symbols now resolve to the Rust exports in the same staticlib, so the token reaches Rust crypto without a code change. Collapsing `cprim.rs` and `libcrypto.rs` onto `pqhsm_crypto::prim` is a follow-up (see below).
+
+### How equivalence was proved
+
+Equivalence is dual-execution: the legacy C was run in the pinned image.
+
+1. **Goldens from the C.** `tests-support/golden/gen_core.c` (run by `regen_crypto.sh`) links `fhsm_crypto.o` with these seams:
+   - The integrity check, the KATs, the DRBG and the module state are stubbed.
+   - `--wrap` seams cover `OSSL_PROVIDER_load`/`unload`, `EVP_default_properties_enable_fips`, `RAND_status` and `RAND_add`. They record every call and fail on demand.
+
+   It writes 162 rows over 19 scenarios, each in its own process, with each scenario's stderr kept:
+   - Every branch of the init: the integrity, FIPS, base, property, DRBG and KAT failures; the dev mode with the default provider loaded or failing; the KAT bypass with and without the integrity bypass; finalize and re-init.
+   - The RNG wrappers.
+   - Every primitive, for each hash id 0 to 13. This includes NULL and short buffers, every GCM tamper (tag, AAD, ciphertext), the HMAC length query with a NULL `mac`, PBKDF2's iteration floor and length bounds, an 8-byte salt, and the ERROR state.
+2. **Replay.** `crypto/tests/core_golden.rs` replays the rows in two ways:
+   - The lifecycle scenarios run through `Core` on a platform scripted as the C seams are, comparing the call trace, the latch reason and stderr byte for byte.
+   - The primitives run through the C ABI on OpenSSL's default provider.
+
+   157 rows pass:
+   - 2 are Rust-only, for DIV-035: init after finalize runs again.
+   - Trace normalisation: C's `unload(NULL)` calls are dropped from its traces, because Rust holds no NULL handle to unload.
+   - 5 RNG rows are not replayed. `fhsm_rng_bytes` is `fhsm_drbg_bytes`, whose own goldens are `drbg.tsv`, and a `RAND_status` failure cannot be injected into the real libcrypto.
+3. **Unit tests.**
+   - DIV-034: a build without `dev-bypass` ignores both variables, says so once, and latches ERROR on a failed KAT.
+   - DIV-035: finalize forgets the result and the KAT records; after a fork child's `forget`, the self-tests run on the providers already loaded, with no second load.
+   - In place: digest, HMAC, GCM encrypt and decrypt with one buffer as input and output give what two buffers give, and a refused call leaves the output untouched (review H1, L1).
+4. **Fork test.** `crypto/tests/core_fork.rs` covers three cases:
+   - A child forked while a parent thread holds the init runs its own init instead of hanging (slice 2 review M1's class of bug).
+   - A child forked after the init runs the self-tests again (DIV-035).
+   - A child forked while a parent thread holds the DRBG lock seeds the DRBG instead of hanging (slice 3 review M1).
+
+   Mutation checks showed the tests detect the bugs: without the fork handler the first two cases fail; without the DRBG's reset the third does; with the output zeroed before the call, the in-place test does.
+5. **Workspace:** 856 pass. fmt and clippy are clean with and without `ffi,dev-bypass`.
+6. **Hybrid harness** (2026-11-02, after the review fixes):
+   - 106/106; `nm -D` (63 symbols) and NEEDED identical.
+   - Core swap: the C object defines only `fhsm_kat_results`, from `crypto/shim/kat_results.c`. The first run, before the shim, lost that export: it is the module's one non-PKCS#11 symbol, and `--exclude-libs,ALL` hides everything from the staticlib.
+   - Every earlier swap is unchanged. Audit corpus 64 same / 4 explained; token files: only the known DER-length size variance; DIV-009's fork log intact on the hybrid; TSan 0 races.
+   - New step 9, the FIPS provider (PHASE3_PLAN.md §4.3), installed offline from the cached `.deb`s. On both profiles the module is built and signed, `scripts/run_fips_tests.sh` passes with its 99 OK lines identical to `BASELINE.md` § FIPS (93/93 tests), and the signed KAT report (62/62), the operation probe (155 / 92 and 167 / 99) and the curve refusal are byte for byte the baseline's, timings aside. This is the first proof that the Rust provider loading gives the FIPS configuration C gave.
+
+### Mapping: legacy → Rust
+
+| Behaviour | Legacy | Rust |
+|---|---|---|
+| Init-once, cached result | `fhsm_crypto.c:53-54`, `:282-285` | `lifecycle.rs:69` `init`; lock `ffi/sys.rs:42` `ForkMutex`; `ffi/c_abi.rs:321` `CORE` |
+| Integrity first, bypass | `fhsm_crypto.c:66-78` | `lifecycle.rs:118` `run`, `:97` `honoured` (DIV-034) |
+| FIPS, base providers, FIPS default property, their failures and messages | `fhsm_crypto.c:94-185` | `lifecycle.rs:118` `run`, `:110` `fail` |
+| Dev mode: default provider, the issue-#6 NOTE | `fhsm_crypto.c:186-227` | `lifecycle.rs:118` `run` |
+| DRBG init, KATs, the KAT bypass | `fhsm_crypto.c:229-280` | `lifecycle.rs:118` `run`; `ffi/c_abi.rs:242` `OsPlatform` |
+| Finalize | `fhsm_crypto.c:287-293` | `lifecycle.rs:80` `finalize` (DIV-035) |
+| `fhsm_fips_mode`, `fhsm_kat_results` | `fhsm_crypto.c:295-306` | `ffi/c_abi.rs:394`, `:400` |
+| `fhsm_rng_bytes`, `fhsm_rng_reseed` | `fhsm_crypto.c:325-344` | `ffi/c_abi.rs:412`, `:419` |
+| Hash table, size, name | `fhsm_crypto.c:348-376` | `ffi/prim.rs:58` `HASHES`, `:82`, `:87` |
+| AES-GCM encrypt, decrypt (tag mismatch cleanses the whole buffer) | `fhsm_crypto.c:378-475` | `ffi/prim.rs:201`, `:260`; C ABI `ffi/c_abi.rs:508`, `:543` |
+| Hash, HMAC | `fhsm_crypto.c:477-548` | `ffi/prim.rs:121`, `:145`; C ABI `ffi/c_abi.rs:444`, `:473` |
+| PBKDF2 | `fhsm_crypto.c:550-608` | `ffi/prim.rs:316` `check_pbkdf2`, `:328`; C ABI `ffi/c_abi.rs:585` |
+| Return codes | `include/fhsm_common.h:150-214` | `lib.rs:14` `rv` |
+
+### Deliberate deviations
+
+- **DIV-034 (crypto core part):**
+  - `FHSM_INTEGRITY_ALLOW_UNSIGNED` and `FHSM_KAT_ALLOW_FAIL` are honoured only by a `dev-bypass` build. A release build says once that it ignored them.
+  - The hybrid builds with `dev-bypass`, so the harness shows no difference.
+  - The integrity check's own bypass, and the release-build latch test, come with slice 4.
+- **DIV-035:**
+  - Finalize forgets the result, so the next init reloads the providers and re-runs the integrity check, the DRBG init and the KATs.
+  - A fork child does the same at its first init, through the core's `pthread_atfork` child handler. The integrity check inside is still C's, cached per process until slice 4.
+- **Output buffers (not a divergence on success):** OpenSSL writes into a buffer of the core's own, copied to the caller's on success and wiped either way. Callers pass one buffer for input and output (`C_Digest`, `C_Sign` over HMAC), which a Rust view of the output would alias (review H1). A call that fails leaves the caller's buffer as it was, where C could have left part of a result; GCM's tag mismatch still cleanses the whole buffer.
+- **DIV-045 (recorded, mine):** a NULL pointer with a length, and HMAC's NULL `mac_len`, are `ARGUMENTS_BAD`. In C these crashed, failed inside OpenSSL, or, for a NULL GCM `ciphertext`, returned OK having treated the plaintext as AAD.
+- **Kept as C:**
+  - The HMAC length query with a NULL `mac`.
+  - Failed inits are cached until finalize.
+  - In dev mode, a DRBG or KAT failure leaves the default provider loaded until finalize.
+  - `fhsm_kat_results` returns a pointer into module storage that is read without the lock.
+- **Fork children (DIV-035, review M1, M2):** the DRBG's lock is reset in the child as the core's is, and a child forked by the thread holding either lock (fork+exec inside it) leaves that lock to the thread. The child's init uses the providers it inherited; it does not reload them.
+
+### Representative behaviour, side by side
+
+AES-GCM decrypt, `src/fhsm_crypto.c:425-473` against `crypto/src/ffi/c_abi.rs:560-602`:
+
+```
+delta --side-by-side <(sed -n 425,473p src/fhsm_crypto.c) <(sed -n 560,602p modernized/pqHSM/crypto/src/ffi/c_abi.rs)
+```
+
+- **Checks, same order:** ERROR state → `FUNCTION_FAILED`; key length not 16/24/32 → `KEY_SIZE_RANGE`; IV not 12 → `ARGUMENTS_BAD`; NULL `plaintext_len` or `tag` → `ARGUMENTS_BAD`; capacity under the ciphertext length → `ARGUMENTS_BAD`. Rust adds only DIV-045's NULL-with-length refusals, after these.
+- **The cipher work:** C's `EVP_aes_*_gcm` getters, AAD update, ciphertext update, `SET_TAG`, final are in `prim::gcm_decrypt`, in the same calls.
+- **Tag mismatch:** C zeroizes `*plaintext_len` bytes of the caller's buffer (§7.10.4) and returns `ENCRYPTED_DATA_INVALID`; Rust wipes its own buffer, then zeroes the same `cap` bytes of the caller's. The golden `prims` rows `gcm_dec:…:tag|aad|ct:8` (a 5-byte ciphertext, capacity 8) pin all 8 bytes zero.
+
+### Architecture review (Step 5)
+
+One HIGH, applied:
+
+- **H1:** zeroing the caller's output before the call destroyed the input whenever one buffer was both, so an in-place `C_Digest` hashed zeros and returned OK, and the aliasing views were undefined behaviour. Now OpenSSL writes into a local buffer (see Deliberate deviations); test `in_place_buffers_give_what_separate_ones_do`.
+
+Also applied:
+
+- **M1:** a fork child's init could hang on the DRBG lock, which a parent thread held at the fork. The DRBG now uses the core's `ForkMutex` and the same child handler; third `core_fork` case.
+- **M2:** a fork child's init loaded the providers again over the handles it inherited, leaking them. It now reuses them. DIV-035 says what a child does and does not re-run.
+- **L1:** a refused call leaves the output untouched (follows from H1).
+- **L2:** `ForkMutex` records its holder. A re-entrant call aborts with a message instead of deadlocking silently, and a child forked by the holder leaves the lock alone.
+- **L3:** the DRBG exports latch ERROR after releasing the DRBG lock, since a latch reaches the audit log, which can draw from the DRBG.
+- **Nit:** a NULL KAT string prints "(null)", as C's printf did.
+
+Recorded for later:
+
+- `gen_core.c` has no seam for a failing fetch, so the MECHANISM_INVALID and HOST_MEMORY paths are replayed only by the unit tests, not against C goldens, and the primitives only on the default provider (the FIPS step in the harness runs them on the FIPS provider through the module).
+- Nits not applied: `prim` repeats checks the ABI layer has made; the `(|| {...})()` closures could be named helpers.
+
+### Not migrated
+
+Nothing in `fhsm_crypto.c`. The comment block at `:307-321` describes a CRNGT that now lives in the DRBG (slice 2).
+
+### Follow-ups
+
+- **Token seam:** collapse `token/src/ffi/cprim.rs` and `token/src/ffi/libcrypto.rs` (about 120 lines, which duplicate PBKDF2 and GCM with different error mapping) onto `pqhsm_crypto::prim`. The ERROR-state check this needs in Rust arrives with the module state in Phase 4.
+- **Slice 4:**
+  - The integrity check and the KATs move to Rust behind `Platform::integrity` and `Platform::kats`.
+  - DIV-034's release-build test.
+  - Integrity re-runs after finalize, which makes DIV-035 complete.
+- **Phase 4:** key generation uses `EVP_PKEY_Q_keygen(NULL, ...)` in `fhsm_pkcs11.c:6646-6657`, so it draws from OpenSSL's RAND rather than the DRBG (slice 2's probe). This was listed as slice 3 work, but the code is in `fhsm_pkcs11.c`.

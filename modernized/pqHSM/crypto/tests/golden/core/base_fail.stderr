@@ -1,0 +1,3 @@
+[freehsm-c] FATAL : the OpenSSL base provider would not load.
+  It supplies the PEM/DER encoders ; without it no key can be
+  serialised to disk. OpenSSL says :

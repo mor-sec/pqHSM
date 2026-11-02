@@ -45,6 +45,9 @@ nm libfreehsm.so | grep -cE ' [tT] pqhsm_audit_event_v$' > /out/rust_linked.txt
 { printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_drbg.o | grep -c ' [TtDdBb] ')"
   printf 'module fhsm_drbg_bytes: %s; rust drbg code in module: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_drbg_bytes$')" "$(nm libfreehsm.so | grep -c 'pqhsm_crypto4drbg')"
 } > /out/drbg_swap.txt
+{ printf 'C object defines only: %s; ' "$(nm --defined-only .obj/src/fhsm_crypto.o | awk '$2 ~ /[TtDdBb]/ {print $3}' | tr '\n' ' ')"
+  printf 'module fhsm_crypto_init: %s; rust core code in module: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_crypto_init$')" "$(nm libfreehsm.so | grep -c 'pqhsm_crypto[0-9]*\(lifecycle\|ffi4prim\)')"
+} > /out/core_swap.txt
 # fhsm-ca end to end over the revocation DB (not in `make tests`). ocsp-delegated is left out:
 # it runs `make clean` and rebuilds the tree under another PROFILE.
 $M revocation-db > /out/revocation_db.txt 2>&1; echo "rc=$?" >> /out/revocation_db.txt
@@ -190,6 +193,45 @@ pub() {  # reader, run dir: one sorted line per token file, keyed by command num
 (cd /tmp/cwork && pub $CG hybrid) > /out/tok_c_reads_rust.txt
 (cd /work && pub $RG c) > /out/tok_rust_reads_c.txt
 
+# 9. The FIPS provider (PHASE3_PLAN.md §4.3, BASELINE.md § FIPS), from Phase 3 slice 3, which
+#    moves the provider loads to Rust: both profiles, the hybrid module signed and run under
+#    scripts/run_fips_tests.sh as CI's test-fips-provider job runs it, plus the three reports the
+#    baseline kept. The provider is installed offline from /debs (run.sh, FIPS_DEBS). Last,
+#    because it replaces the container's libcrypto configuration. A GNUmakefile makes every plain
+#    `make` in the scripts the hybrid build.
+if ls /debs/*.deb > /dev/null 2>&1; then
+  { dpkg -i /debs/*.deb && sed '/^apt-get /d' scripts/ci_install_openssl_fips.sh | bash; echo "install rc=$?"; } > /out/fips_install.log 2>&1
+  F=/fixture/fips
+  rm -rf /tmp/tsan   # one tree copy at a time
+  ok_lines() { sed 's/\x1b\[[0-9;]*m//g' "$1" | grep -aE '^ +(OK|NON) ' | sed -E 's/digest [0-9a-f]+/digest */'; }  # the run colours its marks
+  for p in nist-approved-only all-mechanisms; do
+    rm -rf /tmp/fips && cp -a /work /tmp/fips && cd /tmp/fips && cp modernized/pqHSM/hybrid.mk GNUmakefile
+    export PROFILE=$p
+    unset FHSM_INTEGRITY_ALLOW_UNSIGNED FHSM_KAT_ALLOW_FAIL OPENSSL_CONF
+    { make clean && make && make test-bins && make integrity; echo "build rc=$?"; } > /out/fips_build_$p.log 2>&1
+    bash scripts/run_fips_tests.sh > /out/fips_run_$p.txt 2>&1; echo "run_fips_tests rc=$?" >> /out/fips_run_$p.txt
+    T=$(mktemp -d); cp tests/test_smoke $T/ && bash scripts/sign_module.sh $T/test_smoke > /dev/null 2>&1
+    D=$(mktemp -d); LD_LIBRARY_PATH=. FHSM_TOKENS_DIR=$D $T/test_smoke > /out/fips_smoke_$p.txt 2>&1
+    D=$(mktemp -d); LD_LIBRARY_PATH=. FHSM_TOKENS_DIR=$D ./tests/test_advertised_operational > /out/fips_probe_$p.txt 2>&1
+    D=$(mktemp -d); LD_LIBRARY_PATH=. FHSM_TOKENS_DIR=$D ./tests/test_ec_curve_refusal > /out/fips_curve_$p.txt 2>&1
+    untimed() { sed -E 's/ +[0-9]+ us$//' "$1"; }
+    { printf '%s: %s; run_fips_tests %s, OK/NON lines %s (%s OK); ' "$p" "$(tail -1 /out/fips_build_$p.log)" \
+        "$(tail -1 /out/fips_run_$p.txt | sed 's/run_fips_tests //')" \
+        "$(ok_lines /out/fips_run_$p.txt > /tmp/a; ok_lines $F/run_fips_tests-$p.txt > /tmp/b; cmp -s /tmp/a /tmp/b && echo same || echo DIFF)" \
+        "$(grep -c ' OK ' /tmp/a)"
+      printf 'KAT report %s, probe %s, curve refusal %s\n' \
+        "$(untimed /out/fips_smoke_$p.txt > /tmp/a; untimed $F/smoke_kat_report-$p.txt > /tmp/b; cmp -s /tmp/a /tmp/b && echo same || echo DIFF)" \
+        "$(cmp -s /out/fips_probe_$p.txt $F/probe_advertised_operational-$p.txt && echo same || echo DIFF)" \
+        "$(cmp -s /out/fips_curve_$p.txt $F/ec_curve_refusal-$p.txt && echo same || echo DIFF)"
+    } >> /out/fips.txt
+    cd /work
+  done
+  rm -rf /tmp/fips
+  unset PROFILE
+else
+  echo "skipped: no FIPS_DEBS" > /out/fips.txt
+fi
+
 { echo "build: $(grep -c 'build rc=0' /out/build.log) ok"
   echo "tests: $(awk -F'\t' '$3==0' /out/results.tsv | wc -l)/$(wc -l < /out/results.tsv) pass"
   awk -F'\t' '$3!=0{print "  FAIL " $2 " (rc " $3 ", log_" $1 ".txt)"}' /out/results.tsv
@@ -201,6 +243,7 @@ pub() {  # reader, run dir: one sorted line per token file, keyed by command num
   echo "token swap: $(cat /out/token_swap.txt)"
   echo "crypto swap (heap, conf): $(cat /out/crypto_swap.txt)"
   echo "drbg swap: $(cat /out/drbg_swap.txt)"
+  echo "core swap: $(cat /out/core_swap.txt)"
   echo "secure heap: $(cat /out/heap_tests.txt)"
   echo "drbg: $(cat /out/drbg_tests.txt)"
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
@@ -214,5 +257,6 @@ pub() {  # reader, run dir: one sorted line per token file, keyed by command num
   echo "fork, parent log: $(tr '\n' ';' < /out/fork_parent_log.txt)"
   echo "corpus: $(awk -F'\t' '$3>0' /out/corpus.tsv | wc -l) commands wrote audit logs ($(awk -F'\t' '{r+=$4} END{print r}' /out/corpus.tsv) records); same $(awk -F'\t' '$5=="same" && $3>0' /out/corpus.tsv | wc -l), order-only $(grep -c 'order-only$' /out/corpus.tsv), DIFF $(grep -c 'DIFF$' /out/corpus.tsv)"
   echo "tsan: $(grep -c 'rc=0' /out/tsan_build.log) build ok; $(awk -F'\t' '{printf "%s rc=%s races=%s; ", $1, $2, $3}' /out/tsan.tsv)"
+  echo "fips: $(grep 'install rc' /out/fips_install.log 2>/dev/null)"; sed 's/^/  /' /out/fips.txt
   echo "cross_impl (C tool on Rust logs): $(grep -E 'test result|rc=' /out/x_cross_impl.txt | tr '\n' ' ')"
 } > /out/summary.txt

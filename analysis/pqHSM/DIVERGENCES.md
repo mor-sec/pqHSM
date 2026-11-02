@@ -434,7 +434,7 @@ Drafted 2026-11-02 for the Phase 3 entry gate ("a decision for every suspected-d
 
 ### DIV-034 · RULE-074 Self-test bypass variables only in non-release builds
 
-- **Status:** DECIDED, Fix (2026-11-02, Q11, user: "Brief's recommendation").
+- **Status:** PARTLY DONE (2026-11-02, Phase 3 slice 3): the crypto core's part, `crypto/src/lifecycle.rs` (`Core::new`'s `bypass`, the `dev-bypass` feature; unit test `a_release_build_ignores_the_bypass_variables_div034`). The integrity check still honours `FHSM_INTEGRITY_ALLOW_UNSIGNED` itself (`src/fhsm_integrity.c:393`) until slice 4, which also carries the release-build latch test below. DECIDED, Fix (2026-11-02, Q11, user: "Brief's recommendation").
 - **Legacy:** `FHSM_INTEGRITY_ALLOW_UNSIGNED` (`src/fhsm_integrity.c:393`, and the provider skip in `fhsm_crypto.c`) and `FHSM_KAT_ALLOW_FAIL` are honoured by every build. The comment at `:390` says production refuses them; no build-time gate exists.
 - **Fix:** both are honoured only when the crate is built with a `dev-bypass` cargo feature, off by default. The hybrid and test builds turn it on, because every `make tests` recipe sets the integrity bypass. A release build ignores both variables, and its first initialisation logs that it did.
 - **Test:** a release-feature build with the variable set latches ERROR on an unsigned module.
@@ -442,7 +442,7 @@ Drafted 2026-11-02 for the Phase 3 entry gate ("a decision for every suspected-d
 
 ### DIV-035 · RULE-076(b), RULE-077 Self-tests re-run after re-initialisation and in fork children
 
-- **Status:** DECIDED, Fix (2026-11-02, Q11, user: "Brief's recommendation").
+- **Status:** DONE (2026-11-02, Phase 3 slice 3): `Core::finalize` and `Core::forget` (`crypto/src/lifecycle.rs`); the fork child handler in `crypto/src/ffi/c_abi.rs` forgets the result, so no Phase 4 fork detection is needed for this part. What re-runs: after finalize, everything (providers reloaded); in a fork child, the DRBG init and the KATs on the providers inherited from the parent, which are not reloaded (an atfork handler may not unload them), so the FIPS provider's own power-on self-test does not run again. Tests: golden rows `fips_ok` #6 and `dev_ok` #4 (Rust-only), `init_after_finalize_runs_the_self_tests_again_div035`, `init_after_forget_runs_the_self_tests_on_the_loaded_providers`, `tests/core_fork.rs`. The integrity check inside the re-run is still C's, cached by its own `pthread_once` until slice 4. DECIDED, Fix (2026-11-02, Q11, user: "Brief's recommendation").
 - **Legacy:** `fhsm_crypto_init` runs once per process under `pthread_once` (`src/fhsm_crypto.c:282-285`). After `C_Finalize` unloads the providers (`:287-293`), `C_Initialize` returns the cached OK without reloading them or re-running integrity and the KATs. A fork child inherits the parent's result.
 - **Fix:** `C_Finalize` resets the init state, so the next `C_Initialize` reloads the providers and re-runs integrity, provider load and KATs. A fork child re-runs them at its first `C_Initialize`. The fork detection itself is Phase 4 (`fhsm_state.c`); Phase 3 provides the reset.
 - **Expected harness diff:** none in output. Tests that re-initialise get slower by one self-test run each.
@@ -510,6 +510,13 @@ Drafted 2026-11-02 for the Phase 3 entry gate ("a decision for every suspected-d
 - **Legacy:** `fhsm_drbg_bytes` before any `fhsm_drbg_init` seeds lazily; if that fails it returns `FHSM_RV_RNG_FAILURE` and latches nothing (`src/fhsm_drbg.c:379-385`), so later calls retry.
 - **Target:** as a failed periodic reseed (DIV-033): ERROR is latched ("DRBG reseed failed") and the request returns `FHSM_RV_FUNCTION_FAILED`. `fhsm_drbg_init` and `fhsm_drbg_reseed` still return `FHSM_RV_RNG_FAILURE` without latching.
 - **Expected harness diff:** none; `C_Initialize` seeds through `fhsm_drbg_init` first.
+
+### DIV-045 · RULE-001, RULE-002 A NULL pointer with a length is ARGUMENTS_BAD in the crypto core
+
+- **Status:** DONE (2026-11-02, Phase 3 slice 3, `crypto/src/ffi/c_abi.rs` `input`, `output`, `fhsm_hmac`). Recorded: mine, found while porting; not yet confirmed by the user.
+- **Legacy:** `src/fhsm_crypto.c` hands a `fhsm_slice_t` with `data == NULL` and `len > 0`, a NULL output buffer with a non-zero length, and (in `fhsm_hmac`) a NULL `mac_len` straight to OpenSSL or dereferences them. Depending on the call that crashes, fails inside OpenSSL, or (`fhsm_aes_gcm_encrypt` with `ciphertext == NULL`) returns OK with no ciphertext, because `EVP_EncryptUpdate` with a NULL output treats the plaintext as AAD.
+- **Target:** each is `FHSM_RV_ARGUMENTS_BAD`, checked after C's own checks so every code C returned is still returned first. A NULL pointer with length 0 is an empty input, as before; for an HMAC key that means an empty key, where C handed NULL to `EVP_MAC_init` (not characterised).
+- **Expected harness diff:** none; no caller passes such arguments.
 
 ### Phase 3 rules kept as C does them, or deferred (decision: as below, 2026-11-02, user: "Approve as drafted")
 

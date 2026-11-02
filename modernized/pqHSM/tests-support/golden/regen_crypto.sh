@@ -24,10 +24,11 @@ rm -rf "$OUT" && mkdir -p "$OUT"
 podman run --rm --user root --entrypoint /bin/sh \
     -v "$WORK":/work:Z -v "$HERE":/gen:Z,ro -v "$OUT":/out:Z -w /work "$IMAGE" -c '
 set -e
-make -j"$(nproc)" -f /gen/gen_token.mk GEN_DIR=/gen gen_crypto gen_drbg >/dev/null
+make -j"$(nproc)" -f /gen/gen_token.mk GEN_DIR=/gen gen_crypto gen_drbg gen_core >/dev/null
 test ! -e /etc/freehsm/freehsm.conf        # the env_empty scenario reads the default path
 OPENSSL_PREFIX=$(make -s -f Makefile -p 2>/dev/null | sed -n "s/^OPENSSL_PREFIX *[:?]*= *//p" | head -1)
 LD_LIBRARY_PATH=$OPENSSL_PREFIX/lib64:$OPENSSL_PREFIX/lib ./gen_crypto make /out
 LD_LIBRARY_PATH=$OPENSSL_PREFIX/lib64:$OPENSSL_PREFIX/lib ./gen_drbg make /out
+LD_LIBRARY_PATH=$OPENSSL_PREFIX/lib64:$OPENSSL_PREFIX/lib ./gen_core make /out
 chown -R "$(stat -c %u:%g /gen)" /out'
-echo "$(grep -vc "^#" "$OUT/cases.tsv") rows in $OUT/cases.tsv, $(grep -vc "^#" "$OUT/drbg.tsv") in $OUT/drbg.tsv"
+echo "$(grep -vc "^#" "$OUT/cases.tsv") rows in $OUT/cases.tsv, $(grep -vc "^#" "$OUT/drbg.tsv") in $OUT/drbg.tsv, $(grep -vc "^#" "$OUT/core.tsv") in $OUT/core.tsv"
