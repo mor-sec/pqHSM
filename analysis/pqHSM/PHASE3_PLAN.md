@@ -1,6 +1,6 @@
 # Phase 3 plan: crypto core, DRBG, secure heap, self-tests, PKI encoders
 
-Status: **APPROVED 2026-11-02** (user: "Approve plan"; network: "Wycheproof, once", "FIPS .debs, once"). Slice 1 (pilot) implemented 2026-11-02: goldens 127/127, harness 106/106 (`modernized/pqHSM/TRANSFORMATION_NOTES.md` § Phase 3). DIV-038 decided (Fix); review M1 fixed with `pthread_once` (user: "Fix now with pthread_once"). Slice 2 (DRBG) implemented (user: "Start slice 2"): 127/127 C goldens (15 Rust-only for DIV-032/033/037), harness clean, review applied; DIV-041 proposed, awaiting a decision. See TRANSFORMATION_NOTES.md, Phase 3, Slice 2.
+Status: **APPROVED 2026-11-02** (user: "Approve plan"; network: "Wycheproof, once", "FIPS .debs, once"). Slice 1 (pilot) implemented 2026-11-02: goldens 127/127, harness 106/106 (`modernized/pqHSM/TRANSFORMATION_NOTES.md` § Phase 3). DIV-038 decided (Fix); review M1 fixed with `pthread_once` (user: "Fix now with pthread_once"). Slice 2 (DRBG) implemented (user: "Start slice 2"): 127/127 C goldens (19 Rust-only for DIV-032/033/037/042/044), harness clean, review applied; DIV-041 to DIV-044 decided and done (user, 2026-11-02). Slice 3 next (user: "Start slice 3"). See TRANSFORMATION_NOTES.md, Phase 3, Slice 2.
 Brief: `MODERNIZATION_BRIEF.md` Phase 3. All four entry criteria are ticked (2026-11-02).
 Method: `/modernize-transform`, slice by slice, as in Phase 2 (`PHASE2_PLAN.md`). Each slice runs the same steps:
 1. Characterisation goldens from the C.

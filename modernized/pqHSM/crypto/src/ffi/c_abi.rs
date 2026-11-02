@@ -158,12 +158,18 @@ pub unsafe extern "C" fn fhsm_drbg_bytes(out: *mut u8, n: usize) -> u32 {
     if out.is_null() || n == 0 {
         return Error::Arguments.rv();
     }
+    let mut drbg = drbg();
+    // DIV-041: again under the lock, so no output follows another thread's latch
+    // SAFETY: no arguments
+    if unsafe { fhsm_state_get() } == STATE_ERROR {
+        return Error::Halted.rv();
+    }
     // SAFETY: out has n writable bytes (caller); zeroed, they are valid u8
     let out = unsafe {
         out.write_bytes(0, n);
         std::slice::from_raw_parts_mut(out, n)
     };
-    rv(drbg().bytes(out))
+    rv(drbg.bytes(out))
 }
 
 #[unsafe(no_mangle)]

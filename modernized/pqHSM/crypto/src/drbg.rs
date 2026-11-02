@@ -54,11 +54,12 @@ pub enum Error {
     Halted,
     /// No output buffer, or an empty one.
     Arguments,
-    /// Seeding failed; nothing is latched, and a later call may retry.
+    /// `init` or `reseed` could not seed; nothing is latched, and a later call may retry.
     Seed,
     /// The generator or a health test failed: the module latches ERROR with this reason.
     Latch(&'static CStr),
-    /// A periodic reseed failed (DIV-033): the module latches ERROR.
+    /// Seeding inside `bytes` failed, periodic (DIV-033) or first (DIV-044): the module latches
+    /// ERROR.
     Reseed,
 }
 
@@ -140,14 +141,14 @@ impl<S: Source> Drbg<S> {
     }
 
     /// Fills `out`, reseeding when due, in requests of at most [`MAX_REQUEST`] bytes, each
-    /// health-tested before it counts. On a failure the request's output is cleansed, except
-    /// after a generator failure, where C leaves it.
+    /// health-tested before it counts. On any failure the request's output is cleansed
+    /// (DIV-042), and any failure to seed latches ERROR (DIV-033, DIV-044).
     pub fn bytes(&mut self, out: &mut [u8]) -> Result<(), Error> {
         if out.is_empty() {
             return Err(Error::Arguments);
         }
         if !self.seeded {
-            self.seed()?;
+            self.seed().map_err(|_| Error::Reseed)?;
             self.seeded = true;
         }
         let mut done = 0;
@@ -159,6 +160,7 @@ impl<S: Source> Drbg<S> {
             }
             let chunk = &mut out[done..done + want];
             if !self.source.generate(chunk) {
+                out[..done + want].zeroize();
                 return Err(Error::Latch(c"RAND_bytes failed"));
             }
             if let Err(e) = self.health(chunk) {

@@ -484,11 +484,32 @@ Drafted 2026-11-02 for the Phase 3 entry gate ("a decision for every suspected-d
 
 ### DIV-041 · RULE-073 DRBG output after another thread latched ERROR
 
-- **Status:** PROPOSED (2026-11-02, slice 2 review M1). Not implemented: Rust does what C does.
+- **Status:** DONE (2026-11-02, Phase 3 slice 2, `crypto/src/ffi/c_abi.rs` `fhsm_drbg_bytes`). DECIDED, Fix (2026-11-02, user: "Fix: re-check under lock"). Found by the slice 2 review (M1). Untested: no test races a latch, and the Rust tests do not link `fhsm_state.c`.
 - **Legacy:** `fhsm_drbg_bytes` checks the module state before taking `g_mtx` (`src/fhsm_drbg.c:373-375`). A thread that passed the check while another thread was failing a health test waits on the mutex, then generates and returns output after the module latched ERROR.
 - **Proposed fix:** check the state again once the lock is held. One line in `crypto/src/ffi/c_abi.rs`; such a request then returns `FHSM_RV_FUNCTION_FAILED` with nothing written. FIPS 140-3 forbids data output in the error state.
 - **Alternative:** preserve. The window is one health-test failure wide, and the failing thread's own output is cleansed.
 - **Expected harness diff:** none, because no test races a latch.
+
+### DIV-042 · RULE-013 A generator failure cleanses the request's output
+
+- **Status:** DONE (2026-11-02, Phase 3 slice 2, `crypto/src/drbg.rs` `Drbg::bytes`; golden `rand_fail_mid`). DECIDED, Fix (2026-11-02, user: "(a) Wipe on generator failure").
+- **Legacy:** when `RAND_bytes` fails, C latches ERROR and returns, leaving the request's earlier chunks in the caller's buffer (`src/fhsm_drbg.c:433-437`). Every other failure cleanses them (`:445-456`).
+- **Target:** the request's output, the failed chunk included, is cleansed before the error returns.
+- **Expected harness diff:** none.
+
+### DIV-043 · RULE-010 Every entropy source contributes to the seed
+
+- **Status:** DONE (2026-11-02, Phase 3 slice 2, `crypto/src/ffi/entropy.rs` `SHARES`; unit test `every_source_contributes_div043`). DECIDED, Fix (2026-11-02, user: "(b) Give each source a share").
+- **Legacy:** getrandom is asked for the whole 512-byte pool and fills it, so RDRAND, `/dev/urandom` and the clock jitter get no room (`src/fhsm_drbg.c:241-247`); `entropy_sources_active` is 1. The header and `docs/RNG.md` describe a four-source seed.
+- **Target:** shares of 256 (getrandom), 128 (RDRAND), 120 (`/dev/urandom`) and 8 (jitter) bytes, hashed together as before. A source that gives less leaves its share short. `entropy_sources_active` becomes 15, or 13 without RDRAND. 256 bytes is also the largest getrandom read a signal cannot cut short.
+- **Expected harness diff:** none; no test prints the source mask.
+
+### DIV-044 · RULE-010 A failed first seed inside a request latches ERROR
+
+- **Status:** DONE (2026-11-02, Phase 3 slice 2, `crypto/src/drbg.rs` `Drbg::bytes`; golden `lazy_fail`). DECIDED, Fix (2026-11-02, user: "(c) Latch on lazy seed failure").
+- **Legacy:** `fhsm_drbg_bytes` before any `fhsm_drbg_init` seeds lazily; if that fails it returns `FHSM_RV_RNG_FAILURE` and latches nothing (`src/fhsm_drbg.c:379-385`), so later calls retry.
+- **Target:** as a failed periodic reseed (DIV-033): ERROR is latched ("DRBG reseed failed") and the request returns `FHSM_RV_FUNCTION_FAILED`. `fhsm_drbg_init` and `fhsm_drbg_reseed` still return `FHSM_RV_RNG_FAILURE` without latching.
+- **Expected harness diff:** none; `C_Initialize` seeds through `fhsm_drbg_init` first.
 
 ### Phase 3 rules kept as C does them, or deferred (decision: as below, 2026-11-02, user: "Approve as drafted")
 

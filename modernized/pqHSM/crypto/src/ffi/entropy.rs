@@ -16,13 +16,21 @@ unsafe extern "C" {
     fn EVP_DigestInit_ex2(ctx: *mut EVP_MD_CTX, md: *const EVP_MD, params: *const c_void) -> c_int;
 }
 
-/// An entropy source: fills the front of what is left of the pool, returns how much it wrote.
+/// An entropy source: fills the front of the slice it is given, returns how much it wrote.
 type Fill = fn(&mut [u8]) -> usize;
+
+/// Each source's share of the 512-byte pool (DIV-043): in C getrandom filled all of it. 256 is
+/// also the most getrandom returns without a signal being able to cut the read short.
+const SHARES: [(u32, usize, Fill); 4] = [
+    (1, 256, getrandom),
+    (2, 128, rdrand),
+    (4, 120, urandom),
+    (8, 8, jitter),
+];
 
 /// The DRBG's real source (`src/fhsm_drbg.c:142-275`): OpenSSL's generator, seeded from a
 /// 512-byte pool that getrandom, RDRAND, `/dev/urandom` and clock jitter fill in that order, each
-/// into what is left, conditioned with SHA2-384 through EVP. getrandom normally fills the whole
-/// pool, so the others contribute only when it fails or returns short, as in C.
+/// up to its share ([`SHARES`]), conditioned with SHA2-384 through EVP.
 pub(crate) struct OsSource;
 
 impl drbg::Source for OsSource {
@@ -37,9 +45,8 @@ impl drbg::Source for OsSource {
     fn seed(&mut self) -> (u32, bool) {
         let mut pool = Zeroizing::new([0u8; 512]);
         let (mut off, mut sources) = (0, 0);
-        let fill: [(u32, Fill); 4] = [(1, getrandom), (2, rdrand), (4, urandom), (8, jitter)];
-        for (bit, source) in fill {
-            let n = source(&mut pool[off..]);
+        for (bit, share, source) in SHARES {
+            let n = source(&mut pool[off..off + share]);
             if n > 0 {
                 sources |= bit;
                 off += n;
@@ -158,11 +165,11 @@ mod tests {
     use crate::drbg::Source;
 
     #[test]
-    fn getrandom_seeds() {
-        // C reports src=1 too (drbg.tsv): a full read leaves the other sources no room. A signal
-        // can cut a read over 256 bytes short, and then they fill the rest, so only bit 1 is pinned.
-        let (sources, seeded) = OsSource.seed();
-        assert!(seeded && sources & 1 == 1, "{sources:#x}");
+    fn every_source_contributes_div043() {
+        // C reported src=1 (drbg.tsv): getrandom left the others no room.
+        let rdrand_bit = if rdrand(&mut [0; 8]) > 0 { 2 } else { 0 };
+        assert_eq!(OsSource.seed(), (1 | rdrand_bit | 4 | 8, true));
+        assert_eq!(SHARES.iter().map(|s| s.1).sum::<usize>(), 512);
     }
 
     #[test]

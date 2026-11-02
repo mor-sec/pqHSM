@@ -109,7 +109,7 @@ impl Source for Scripted {
         if !s.cond_fail {
             s.adds += 1;
         }
-        // getrandom fills the whole pool, in C and in OsSource (its own unit test)
+        // C's value: getrandom filled the pool. OsSource reports every source (DIV-043, its own test).
         (1, !s.cond_fail)
     }
 
@@ -122,6 +122,24 @@ impl Source for Scripted {
 /// replaced by this one. Every sum here comes from the C rows (`gen=` is what C's generator
 /// produced, `sum=` what the caller got), except `gen=*`, which C never produced.
 const RUST_ONLY: &[(&str, usize, &str)] = &[
+    // DIV-044: a failed first seed inside a request latches ERROR, as a failed reseed does.
+    (
+        "lazy_fail",
+        1,
+        "rv=0x6;chunks=;adds=0;sum=dd3fc6b86d146065;latch=DRBG reseed failed",
+    ),
+    ("lazy_fail", 4, "rv=0x6;chunks=;adds=0;sum=dd3fc6b86d146065"),
+    (
+        "lazy_fail",
+        5,
+        "emitted=0,reseeds=0,rct=0,apt=0,crngt=0,src=1",
+    ),
+    // DIV-042: a generator failure cleanses the request's output, the failed chunk included.
+    (
+        "rand_fail_mid",
+        2,
+        "rv=0x80000008;chunks=65536,65536;adds=0;sum=d21499b68e817825;gen=1338e68e5654d996;latch=RAND_bytes failed",
+    ),
     // DIV-032: the 19th occurrence of the window's first byte fails (C failed at the 52nd).
     (
         "apt_19",

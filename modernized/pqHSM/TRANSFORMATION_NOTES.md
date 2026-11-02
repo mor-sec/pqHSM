@@ -420,7 +420,7 @@ Recorded for later:
 Equivalence is dual-execution: the legacy C was run in the pinned image.
 
 1. **Goldens from the C:** `tests-support/golden/gen_drbg.c` (run by `regen_crypto.sh`) links `fhsm_drbg.o` alone with `--wrap` seams. `RAND_bytes` becomes a fixed xorshift stream that can inject byte runs, APT patterns, repeated blocks and failures; `RAND_add` is counted; `time` is a scripted clock; `EVP_MD_fetch` can be made to fail the conditioner. It writes 127 rows over 25 scenarios, each in its own process: chunking, reseed by bytes and by time (inside one request too), lazy seeding and its failure, the RCT, APT and CRNGT edges, a generator failure mid-request, conditioner failures at init, at an explicit reseed and at a periodic one, and the ERROR state. Each output buffer is recorded as an FNV-1a sum (`sum=`); when a check cleansed it, what the generator produced is recorded too (`gen=`).
-2. **Replay:** `crypto/tests/drbg_golden.rs` drives `Drbg` with a scripted source that mirrors the C seams byte for byte. All 127 rows pass; 15 of them are Rust-only rows for DIV-032, DIV-033 and DIV-037. Their expected sums are taken from the C rows (`gen=` for output C cleansed and Rust keeps, the zero-buffer sums for the reverse), not from the Rust code. Only `cond_fail_periodic_mid`'s `gen` has no C counterpart, and that one field is not compared.
+2. **Replay:** `crypto/tests/drbg_golden.rs` drives `Drbg` with a scripted source that mirrors the C seams byte for byte. All 127 rows pass; 19 of them are Rust-only rows for DIV-032, DIV-033, DIV-037, DIV-042 and DIV-044. Their expected sums are taken from the C rows (`gen=` for output C cleansed and Rust keeps, the zero-buffer sums for the reverse), not from the Rust code. Only `cond_fail_periodic_mid`'s `gen` has no C counterpart, and that one field is not compared.
 3. **Unit tests:** APT 18 passes and 19 fails (DIV-032); the cutoff formula reproduces SP 800-90B Table 2 (W = 512, α = 2^-20: 13, 62, 177, 311) and 19 at α = 2^-40; CRNGT on every block and never under 16 bytes (DIV-037); `OsSource` seeds from getrandom (the C's `src=1`), each source fills only what is left, SHA2-384 against its test vector.
 4. **Hybrid harness** (2026-11-02):
    - 106/106; `nm -D` (63 symbols) and NEEDED identical.
@@ -447,7 +447,11 @@ Equivalence is dual-execution: the legacy C was run in the pinned image.
 
 - **DIV-032 (APT C = 19, B ≥ C), DIV-033 (a failed periodic reseed latches ERROR, `CKR_FUNCTION_FAILED`, the request's output cleansed), DIV-036 (`CLOCK_BOOTTIME`), DIV-037 (every 16-byte block against the one before it):** DECIDED and done. DIV-037's `docs/FIPS_140_3.md:157` update waits for cutover (Q4).
 - **DIV-040 (recorded):** `fhsm_drbg_bytes` zeroes the caller's buffer before filling it. A failed call leaves 0 where C left the old contents.
-- Kept as C, and pinned by goldens: a generator failure mid-request latches without cleansing the earlier chunks (`rand_fail_mid`); a failed lazy seed returns `RNG_FAILURE` without latching (`lazy_fail`); `fhsm_drbg_reseed` works in ERROR (`error_state`); getrandom fills the whole 512-byte pool, so RDRAND, `/dev/urandom` and the jitter contribute only after a short read (`src=1` throughout).
+- **DIV-041:** `fhsm_drbg_bytes` checks the module state again once it holds the DRBG lock, so no output follows another thread's latch (review M1).
+- **DIV-042:** a generator failure cleanses the request's output (golden `rand_fail_mid`).
+- **DIV-043:** each entropy source has a share of the pool (256/128/120/8 bytes); in C getrandom filled it all. The goldens' scripted source still reports C's `src=1`; `OsSource`'s own test pins the new mask.
+- **DIV-044:** a failed first seed inside a request latches ERROR, as a failed reseed does (golden `lazy_fail`).
+- Kept as C, and pinned by a golden: `fhsm_drbg_reseed` works in ERROR (`error_state`).
 
 ### Not migrated
 
@@ -455,11 +459,10 @@ RDRAND off x86_64 (C also took it on i386); the hybrid builds x86_64 only. A `sh
 
 ### Architecture review (Step 5)
 
-No HIGH findings. Applied: M3 (golden scenario `lazy_fail` pins the failed lazy seed), L4 (DIV-040), L7 (the `OsSource` test no longer assumes a full 512-byte read, which a signal can cut short).
+No HIGH findings. Applied: M1 (DIV-041, user: "Fix: re-check under lock"), M3 (golden scenario `lazy_fail`), L4 (DIV-040), L7 (the `OsSource` test no longer assumes a full 512-byte read, which a signal can cut short).
 
 Recorded for later:
 
-- **M1 → DIV-041 (PROPOSED):** a thread past the state check while another latches ERROR still gets output, as in C. Checking again under the lock closes it.
 - **M2:** no test catches the C ABI failing to call `fhsm_state_latch_error`; the goldens model the latch from `latch_reason`. It needs a hybrid probe that injects a failure.
 - **L5:** untested: CRNGT across a 64 KiB chunk boundary in one request (correct, since 65536 is a multiple of 16), an APT window spanning two requests, and the `CLOCK_BOOTTIME` choice itself.
 - **L6:** `libc::getrandom` needs glibc 2.25 or later; C used `syscall(SYS_getrandom)`.
