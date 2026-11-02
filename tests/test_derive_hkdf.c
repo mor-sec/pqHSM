@@ -1,0 +1,527 @@
+/* ===========================================================================
+ * Copyright 2026 Afchine Madjlessi <afchine.mad@gmail.com>
+ * SPDX-License-Identifier: Apache-2.0
+ * ===========================================================================
+ * test_derive_hkdf.c --- CKM_HKDF_DERIVE through C_DeriveKey.
+ *
+ * CKM_HKDF_DERIVE and CKM_HKDF_DATA were advertised with a handler in
+ * src/dispatch/fhsm_dispatch_kdf.c that no code path called. 660 vectors in
+ * the conformance report read "HKDF derive failed for valid vector ...
+ * CKR_MECHANISM_INVALID".
+ *
+ * What is under test is the plumbing, not RFC 5869: parsing CK_HKDF_PARAMS,
+ * choosing the mode from bExtract/bExpand, resolving prfHashMechanism through
+ * the same table C_DigestInit uses, and the three salt types. The primitive
+ * is OpenSSL's on both sides.
+ *
+ * So each case computes its own reference with EVP_KDF here and compares.
+ * That keeps the expected values out of the author's memory -- but it would
+ * also pass if the same mistake were made twice, so case 1 additionally
+ * checks the RFC 5869 test case 1 output, written out. If that one alone
+ * fails, the transcription is wrong; if both fail, the module is.
+ * ======================================================================== */
+#include <dlfcn.h>
+#include <stdio.h>
+#include <string.h>
+#include <openssl/evp.h>
+#include <openssl/kdf.h>
+#include <openssl/core_names.h>
+#include <openssl/params.h>
+
+typedef unsigned long CK_RV, CK_ULONG, CK_SLOT_ID, CK_SESSION_HANDLE,
+                      CK_OBJECT_HANDLE, CK_FLAGS;
+typedef unsigned char CK_BYTE;
+typedef struct { CK_ULONG type; void *pValue; CK_ULONG ulValueLen; } CK_ATTRIBUTE;
+typedef struct { CK_ULONG mechanism; void *pParameter; CK_ULONG ulParameterLen; } CK_MECHANISM;
+
+typedef struct {
+    CK_BYTE          bExtract;
+    CK_BYTE          bExpand;
+    CK_ULONG         prfHashMechanism;
+    CK_ULONG         ulSaltType;
+    void            *pSalt;
+    CK_ULONG         ulSaltLen;
+    CK_OBJECT_HANDLE hSaltKey;
+    void            *pInfo;
+    CK_ULONG         ulInfoLen;
+} CK_HKDF_PARAMS;
+
+#define CKR_OK                        0UL
+#define CKR_TEMPLATE_INCOMPLETE       0xD0UL
+#define CKR_MECHANISM_PARAM_INVALID   0x71UL
+#define CKR_ATTRIBUTE_VALUE_INVALID   0x13UL
+#define CKR_TEMPLATE_INCONSISTENT     0xD1UL
+#define CKF_RW                        6UL
+#define CKA_CLASS                     0UL
+#define CKA_VALUE                     0x11UL
+#define CKA_KEY_TYPE                  0x100UL
+#define CKA_DERIVE                    0x10CUL
+#define CKA_VALUE_LEN                 0x161UL
+#define CKA_EXTRACTABLE               0x162UL
+#define CKA_SENSITIVE                 0x103UL
+#define CKO_SECRET_KEY                4UL
+#define CKK_GENERIC_SECRET            0x10UL
+
+#define CKO_DATA         0UL
+#define CKM_HKDF_DERIVE  0x402AUL
+#define CKM_HKDF_DATA    0x402BUL
+#define CKM_SHA256       0x250UL
+#define CKM_SHA384       0x260UL
+#define CKM_SHA_1        0x220UL
+#define CKM_SHA512       0x270UL
+#define CKF_HKDF_SALT_NULL 1UL
+#define CKF_HKDF_SALT_DATA 2UL
+#define CKF_HKDF_SALT_KEY  4UL
+
+#define SO_PIN   "sopin1234"
+#define USER_PIN "userpin1234"
+
+static int fails = 0;
+static void ok(int cond, const char *what) {
+    printf("  %-58s %s\n", what, cond ? "OK" : "FAIL");
+    if (!cond) fails++;
+}
+
+static CK_RV (*C_Initialize)(void*);
+static CK_RV (*C_Finalize)(void*);
+static CK_RV (*C_InitToken)(CK_SLOT_ID,CK_BYTE*,CK_ULONG,CK_BYTE*);
+static CK_RV (*C_OpenSession)(CK_SLOT_ID,CK_FLAGS,void*,void*,CK_SESSION_HANDLE*);
+static CK_RV (*C_Login)(CK_SESSION_HANDLE,CK_ULONG,CK_BYTE*,CK_ULONG);
+static CK_RV (*C_InitPIN)(CK_SESSION_HANDLE,CK_BYTE*,CK_ULONG);
+static CK_RV (*C_CreateObject)(CK_SESSION_HANDLE,CK_ATTRIBUTE*,CK_ULONG,CK_OBJECT_HANDLE*);
+static CK_RV (*C_DeriveKey)(CK_SESSION_HANDLE,CK_MECHANISM*,CK_OBJECT_HANDLE,CK_ATTRIBUTE*,CK_ULONG,CK_OBJECT_HANDLE*);
+/* For the other half of the SHA-1 split: the bare digest must stay refused. */
+static CK_RV (*C_DigestInit)(CK_SESSION_HANDLE,CK_MECHANISM*);
+/* Which profile: all-mechanisms advertises the SHA-1 digest, and runs it. */
+static CK_RV (*C_GetMechanismInfo)(CK_SLOT_ID,CK_ULONG,CK_ULONG*);
+static CK_RV (*C_Digest)(CK_SESSION_HANDLE,CK_BYTE*,CK_ULONG,CK_BYTE*,CK_ULONG*);
+static CK_RV (*C_GetAttributeValue)(CK_SESSION_HANDLE,CK_OBJECT_HANDLE,CK_ATTRIBUTE*,CK_ULONG);
+
+/* The reference. Same primitive, driven directly. */
+static int hkdf_ref(int mode, const char *digest,
+                     const unsigned char *ikm, size_t ikm_len,
+                     const unsigned char *salt, size_t salt_len,
+                     const unsigned char *info, size_t info_len,
+                     unsigned char *out, size_t out_len) {
+    EVP_KDF *k = EVP_KDF_fetch(NULL, "HKDF", NULL);
+    if (!k) return 0;
+    EVP_KDF_CTX *c = EVP_KDF_CTX_new(k);
+    EVP_KDF_free(k);
+    if (!c) return 0;
+    OSSL_PARAM p[6]; int n = 0;
+    p[n++] = OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &mode);
+    p[n++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, (char*)digest, 0);
+    p[n++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void*)ikm, ikm_len);
+    if (salt_len) p[n++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, (void*)salt, salt_len);
+    if (info_len) p[n++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, (void*)info, info_len);
+    p[n] = OSSL_PARAM_construct_end();
+    int r = EVP_KDF_derive(c, out, out_len, p);
+    EVP_KDF_CTX_free(c);
+    return r == 1;
+}
+
+static CK_OBJECT_HANDLE make_secret(CK_SESSION_HANDLE s, const CK_BYTE *v, CK_ULONG n) {
+    CK_BYTE t = 1;
+    CK_ATTRIBUTE tmpl[] = {
+        { CKA_CLASS,       &(CK_ULONG){CKO_SECRET_KEY},     sizeof(CK_ULONG) },
+        { CKA_KEY_TYPE,    &(CK_ULONG){CKK_GENERIC_SECRET}, sizeof(CK_ULONG) },
+        { CKA_VALUE,       (void*)v, n },
+        { CKA_DERIVE,      &t, 1 },
+        { CKA_EXTRACTABLE, &t, 1 },
+    };
+    CK_OBJECT_HANDLE h = 0;
+    if (C_CreateObject(s, tmpl, 5, &h) != CKR_OK) return 0;
+    return h;
+}
+
+static int read_value(CK_SESSION_HANDLE s, CK_OBJECT_HANDLE h,
+                       CK_BYTE *out, CK_ULONG *outlen) {
+    CK_ATTRIBUTE q[] = { { CKA_VALUE, out, *outlen } };
+    if (C_GetAttributeValue(s, h, q, 1) != CKR_OK) return 0;
+    *outlen = q[0].ulValueLen;
+    return 1;
+}
+
+int main(void)
+{
+    void *lib = dlopen("./libfreehsm.so", RTLD_NOW);
+    if (!lib) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 2; }
+    #define SYM(n) *(void**)&n = dlsym(lib,#n)
+    SYM(C_Initialize); SYM(C_Finalize); SYM(C_InitToken); SYM(C_OpenSession);
+    SYM(C_Login); SYM(C_InitPIN); SYM(C_CreateObject); SYM(C_DeriveKey); SYM(C_DigestInit);
+    SYM(C_GetAttributeValue); SYM(C_GetMechanismInfo); SYM(C_Digest);
+    if (!C_DeriveKey || !C_CreateObject) { fprintf(stderr,"missing symbols\n"); return 2; }
+
+    printf("HKDF (RFC 5869) through C_DeriveKey\n\n");
+
+    CK_BYTE label[32]; memset(label,' ',32); memcpy(label,"hkdf",4);
+    if (C_Initialize(NULL) != CKR_OK) { fprintf(stderr,"C_Initialize\n"); return 2; }
+    if (C_InitToken(0,(CK_BYTE*)SO_PIN,strlen(SO_PIN),label)) { fprintf(stderr,"C_InitToken\n"); return 2; }
+    CK_SESSION_HANDLE s = 0;
+    if (C_OpenSession(0,CKF_RW,NULL,NULL,&s)) { fprintf(stderr,"C_OpenSession\n"); return 2; }
+    if (C_Login(s,0,(CK_BYTE*)SO_PIN,strlen(SO_PIN))) { fprintf(stderr,"C_Login SO\n"); return 2; }
+    if (C_InitPIN(s,(CK_BYTE*)USER_PIN,strlen(USER_PIN))) { fprintf(stderr,"C_InitPIN\n"); return 2; }
+    /* SO and USER cannot hold the token at once (CKR_USER_ANOTHER_ALREADY_LOGGED_IN) */
+    { CK_RV (*lo)(CK_SESSION_HANDLE); *(void**)&lo = dlsym(lib, "C_Logout"); if (lo) (void)lo(s); }
+    if (C_Login(s,1,(CK_BYTE*)USER_PIN,strlen(USER_PIN))) { fprintf(stderr,"C_Login USER\n"); return 2; }
+
+    /* RFC 5869 test case 1 inputs. */
+    CK_BYTE ikm[22];  memset(ikm, 0x0b, sizeof ikm);
+    CK_BYTE salt[13]; for (int i = 0; i < 13; ++i) salt[i] = (CK_BYTE)i;
+    CK_BYTE info[10]; for (int i = 0; i < 10; ++i) info[i] = (CK_BYTE)(0xf0 + i);
+
+    CK_OBJECT_HANDLE hikm = make_secret(s, ikm, sizeof ikm);
+    CK_OBJECT_HANDLE hsalt = make_secret(s, salt, sizeof salt);
+    if (!hikm || !hsalt) { fprintf(stderr,"C_CreateObject\n"); return 2; }
+
+    CK_BYTE t_true = 1, t_false = 0;
+    CK_ULONG len42 = 42;
+    CK_ATTRIBUTE out42[] = {
+        { CKA_CLASS,       &(CK_ULONG){CKO_SECRET_KEY},     sizeof(CK_ULONG) },
+        { CKA_KEY_TYPE,    &(CK_ULONG){CKK_GENERIC_SECRET}, sizeof(CK_ULONG) },
+        { CKA_VALUE_LEN,   &len42, sizeof(CK_ULONG) },
+        { CKA_EXTRACTABLE, &t_true,  1 },
+        { CKA_SENSITIVE,   &t_false, 1 },
+    };
+    CK_ATTRIBUTE out_novlen[] = {
+        { CKA_CLASS,       &(CK_ULONG){CKO_SECRET_KEY},     sizeof(CK_ULONG) },
+        { CKA_KEY_TYPE,    &(CK_ULONG){CKK_GENERIC_SECRET}, sizeof(CK_ULONG) },
+        { CKA_EXTRACTABLE, &t_true,  1 },
+        { CKA_SENSITIVE,   &t_false, 1 },
+    };
+    CK_OBJECT_HANDLE out = 0;
+    CK_BYTE got[128], want[128];
+    CK_ULONG gotlen;
+    CK_RV rv;
+
+    /* (1) extract+expand, SHA-256, data salt -- RFC 5869 test case 1. */
+    {
+        CK_HKDF_PARAMS p = { 1, 1, CKM_SHA256, CKF_HKDF_SALT_DATA,
+                             salt, sizeof salt, 0, info, sizeof info };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_OK, "extract+expand SHA-256 accepted");
+        if (rv == CKR_OK) {
+            gotlen = sizeof got;
+            ok(read_value(s, out, got, &gotlen) && gotlen == 42, "42 bytes derived");
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND, "SHA2-256",
+                     ikm, sizeof ikm, salt, sizeof salt, info, sizeof info, want, 42);
+            ok(memcmp(got, want, 42) == 0, "matches the OpenSSL reference");
+            /* RFC 5869 A.1 OKM, written out. */
+            static const CK_BYTE rfc[42] = {
+                0x3c,0xb2,0x5f,0x25,0xfa,0xac,0xd5,0x7a,0x90,0x43,0x4f,0x64,
+                0xd0,0x36,0x2f,0x2a,0x2d,0x2d,0x0a,0x90,0xcf,0x1a,0x5a,0x4c,
+                0x5d,0xb0,0x2d,0x56,0xec,0xc4,0xc5,0xbf,0x34,0x00,0x72,0x08,
+                0xd5,0xb8,0x87,0x18,0x58,0x65 };
+            ok(memcmp(got, rfc, 42) == 0, "matches RFC 5869 A.1 OKM");
+        }
+    }
+    /* (2) extract-only : the PRK, hash-length, CKA_VALUE_LEN not consulted. */
+    {
+        CK_HKDF_PARAMS p = { 1, 0, CKM_SHA256, CKF_HKDF_SALT_DATA,
+                             salt, sizeof salt, 0, NULL, 0 };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+        rv = C_DeriveKey(s, &m, hikm, out_novlen, 4, &out);
+        ok(rv == CKR_OK, "extract-only accepted without CKA_VALUE_LEN");
+        if (rv == CKR_OK) {
+            gotlen = sizeof got;
+            ok(read_value(s, out, got, &gotlen) && gotlen == 32, "PRK is 32 bytes");
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_ONLY, "SHA2-256",
+                     ikm, sizeof ikm, salt, sizeof salt, NULL, 0, want, 32);
+            ok(memcmp(got, want, 32) == 0, "PRK matches the reference");
+        }
+    }
+    /* (3) expand-only. */
+    {
+        CK_HKDF_PARAMS p = { 0, 1, CKM_SHA256, CKF_HKDF_SALT_NULL,
+                             NULL, 0, 0, info, sizeof info };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_OK, "expand-only accepted");
+        if (rv == CKR_OK) {
+            gotlen = sizeof got;
+            read_value(s, out, got, &gotlen);
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXPAND_ONLY, "SHA2-256",
+                     ikm, sizeof ikm, NULL, 0, info, sizeof info, want, 42);
+            ok(gotlen == 42 && memcmp(got, want, 42) == 0, "expand-only matches");
+        }
+    }
+    /* (4) salt from a key object, not from bytes. */
+    {
+        CK_HKDF_PARAMS p = { 1, 1, CKM_SHA256, CKF_HKDF_SALT_KEY,
+                             NULL, 0, hsalt, info, sizeof info };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_OK, "CKF_HKDF_SALT_KEY accepted");
+        if (rv == CKR_OK) {
+            gotlen = sizeof got;
+            read_value(s, out, got, &gotlen);
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND, "SHA2-256",
+                     ikm, sizeof ikm, salt, sizeof salt, info, sizeof info, want, 42);
+            ok(gotlen == 42 && memcmp(got, want, 42) == 0,
+               "salt-from-key equals the same salt as bytes");
+        }
+    }
+    /* (5) a different PRF hash, so a hard-coded SHA-256 would show. */
+    {
+        CK_HKDF_PARAMS p = { 1, 1, CKM_SHA384, CKF_HKDF_SALT_DATA,
+                             salt, sizeof salt, 0, info, sizeof info };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_OK, "prfHashMechanism = CKM_SHA384 accepted");
+        if (rv == CKR_OK) {
+            gotlen = sizeof got;
+            read_value(s, out, got, &gotlen);
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND, "SHA2-384",
+                     ikm, sizeof ikm, salt, sizeof salt, info, sizeof info, want, 42);
+            ok(gotlen == 42 && memcmp(got, want, 42) == 0, "SHA-384 output differs and matches");
+        }
+    }
+    /* (5b) SHA-1 as the PRF hash, under the nist-approved-only profile this build
+     *      uses. Accepted since 2026-09-19, and the two halves of that change
+     *      are asserted together because the whole point was that they had
+     *      been one flag.
+     *
+     *      HKDF's PRF is HMAC (SP 800-56C rev. 2 §4), and CKM_SHA_1_HMAC is
+     *      approved in this module's own profile, cited to FIPS 198-1. The
+     *      SHA-1 prohibition in SP 800-131A rev. 2 is scoped to signature
+     *      generation. So HMAC-SHA-1 was approved through C_SignInit and
+     *      refused through prfHashMechanism -- one primitive, two paths, two
+     *      answers -- which cost the 84 valid vectors of hkdf_sha1_test.json.
+     *
+     *      A standalone SHA-1 digest is still refused, and that is the half
+     *      that makes this a split rather than a relaxation. If a later edit
+     *      merges the two flags again, one of these two cases goes red. */
+    {
+        CK_HKDF_PARAMS p = { 1, 1, CKM_SHA_1, CKF_HKDF_SALT_DATA,
+                             salt, sizeof salt, 0, info, sizeof info };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_OK, "prfHashMechanism = CKM_SHA_1 accepted (HMAC, not a digest)");
+        if (rv == CKR_OK) {
+            gotlen = sizeof got;
+            read_value(s, out, got, &gotlen);
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND, "SHA1",
+                     ikm, sizeof ikm, salt, sizeof salt, info, sizeof info, want, 42);
+            ok(gotlen == 42 && memcmp(got, want, 42) == 0,
+               "and its output matches the reference");
+        }
+        /* The other half: the bare digest stays refused -- in this profile.
+         * all-mechanisms advertises CKM_SHA_1 and runs it, which is that
+         * profile's purpose; there the half to assert is that the module
+         * says so. Asserting refusal there failed a `make PROFILE=all-mechanisms
+         * tests` on 2026-10-02. */
+        CK_ULONG minfo[3];
+        int sha1_offered = C_GetMechanismInfo
+                        && C_GetMechanismInfo(0, CKM_SHA_1, minfo) == CKR_OK;
+        CK_MECHANISM dm = { CKM_SHA_1, NULL, 0 };
+        CK_RV drv = C_DigestInit(s, &dm);
+        if (sha1_offered) {
+            /* Run it to the end, so no digest stays active on the session the
+             * later cases use. */
+            CK_BYTE abc[3] = { 'a', 'b', 'c' }, md[20];
+            CK_ULONG mdlen = sizeof md;
+            ok(drv == CKR_OK && C_Digest && C_Digest(s, abc, 3, md, &mdlen) == CKR_OK
+               && mdlen == 20,
+               "all-mechanisms: a standalone SHA-1 digest is offered and runs");
+        }
+        else
+            ok(drv != CKR_OK, "while a standalone SHA-1 digest is still refused");
+    }
+
+    /* (6) CKM_HKDF_DATA derives a data object, not a key. Same bytes, other
+     *     class -- and no CKR_ would have shown the difference, which is why
+     *     it is asserted rather than assumed. */
+    {
+        CK_HKDF_PARAMS p = { 1, 1, CKM_SHA256, CKF_HKDF_SALT_DATA,
+                             salt, sizeof salt, 0, info, sizeof info };
+        CK_MECHANISM m = { CKM_HKDF_DATA, &p, sizeof p };
+        CK_ATTRIBUTE data_tmpl[] = {
+            { CKA_VALUE_LEN,   &len42, sizeof(CK_ULONG) },
+            { CKA_EXTRACTABLE, &t_true,  1 },
+            { CKA_SENSITIVE,   &t_false, 1 },
+        };
+        rv = C_DeriveKey(s, &m, hikm, data_tmpl, 3, &out);
+        ok(rv == CKR_OK, "CKM_HKDF_DATA accepted");
+        if (rv == CKR_OK) {
+            CK_ULONG cls = 0xFFFF;
+            CK_ATTRIBUTE q[] = { { CKA_CLASS, &cls, sizeof cls } };
+            ok(C_GetAttributeValue(s, out, q, 1) == CKR_OK && cls == CKO_DATA,
+               "CKM_HKDF_DATA yields CKO_DATA, not a secret key");
+            gotlen = sizeof got;
+            read_value(s, out, got, &gotlen);
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND, "SHA2-256",
+                     ikm, sizeof ikm, salt, sizeof salt, info, sizeof info, want, 42);
+            ok(gotlen == 42 && memcmp(got, want, 42) == 0,
+               "CKM_HKDF_DATA bytes equal CKM_HKDF_DERIVE's");
+        }
+    }
+    /* (7) the refusals. */
+    {
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, NULL, 0 };
+        CK_HKDF_PARAMS p;
+
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_MECHANISM_PARAM_INVALID, "missing parameter block refused");
+
+        p = (CK_HKDF_PARAMS){ 0, 0, CKM_SHA256, CKF_HKDF_SALT_NULL, NULL,0,0, NULL,0 };
+        m.pParameter = &p; m.ulParameterLen = sizeof p;
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_MECHANISM_PARAM_INVALID, "neither extract nor expand refused");
+
+        p = (CK_HKDF_PARAMS){ 1, 1, CKM_SHA256, 99UL, NULL,0,0, NULL,0 };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_MECHANISM_PARAM_INVALID, "unknown ulSaltType refused, not ignored");
+
+        p = (CK_HKDF_PARAMS){ 1, 1, CKM_SHA256, CKF_HKDF_SALT_DATA, NULL, 8, 0, NULL, 0 };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_MECHANISM_PARAM_INVALID, "NULL pSalt with ulSaltLen>0 refused");
+
+        p = (CK_HKDF_PARAMS){ 1, 1, CKM_SHA256, CKF_HKDF_SALT_DATA,
+                              salt, 0x7FFFFFFFFFFFFFFFUL, 0, NULL, 0 };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_MECHANISM_PARAM_INVALID, "un-honorable 2^63 ulSaltLen refused");
+
+        p = (CK_HKDF_PARAMS){ 1, 1, 0x9999UL, CKF_HKDF_SALT_NULL, NULL,0,0, NULL,0 };
+        rv = C_DeriveKey(s, &m, hikm, out42, 5, &out);
+        ok(rv == CKR_MECHANISM_PARAM_INVALID, "unknown prfHashMechanism refused");
+
+    }
+    /* (8) expand with no CKA_VALUE_LEN : the hash length, not a refusal.
+     *
+     * This case asserted CKR_TEMPLATE_INCOMPLETE until 2026-09-17 -- it was
+     * written the same day as the code, from the same reading of the spec,
+     * and so it confirmed the reading rather than testing it. What §6.62.3
+     * actually says is "CKA_VALUE_LEN *should* be set", where §6.62.5 writes
+     * "must" for CKM_HKDF_KEY_GEN two sections later. The module was stricter
+     * than the standard, and the one test that covered the case agreed with
+     * the module because both came from one pair of eyes on one afternoon.
+     *
+     * The corpus reported it as "advertised but rejected a canonical op:
+     * CKM_HKDF_DATA" -- naming one of the two mechanisms, since HKDF_DERIVE
+     * was accepted by some other test and fell out of the set algebra. Both
+     * behaved identically; tests/probe_hkdf_data.c established that before
+     * anything was changed. */
+    {
+        CK_HKDF_PARAMS p = { 1, 1, CKM_SHA256, CKF_HKDF_SALT_NULL,
+                             NULL, 0, 0, NULL, 0 };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+        rv = C_DeriveKey(s, &m, hikm, out_novlen, 4, &out);
+        ok(rv == CKR_OK, "expand without CKA_VALUE_LEN accepted (§6.62.3 'should')");
+        if (rv == CKR_OK) {
+            gotlen = sizeof got;
+            ok(read_value(s, out, got, &gotlen) && gotlen == 32,
+               "and yields the hash length, as extract-only already did");
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND, "SHA2-256",
+                     ikm, sizeof ikm, NULL, 0, NULL, 0, want, 32);
+            ok(memcmp(got, want, 32) == 0, "those 32 bytes match the reference");
+        }
+
+        /* The harness's own shape, verbatim from test_hkdf_extended.py:
+         * CKA_CLASS=CKO_SECRET_KEY, CKK_GENERIC_SECRET, extract and expand,
+         * salt and info present, no CKA_VALUE_LEN. Its _hkdf_derive and
+         * _hkdf_data_derive helpers carry identical templates, so both
+         * mechanisms are checked here rather than only the one the report
+         * happened to name. */
+        CK_ULONG mechs[2] = { CKM_HKDF_DERIVE, CKM_HKDF_DATA };
+        for (int mi = 0; mi < 2; ++mi) {
+            CK_HKDF_PARAMS hp = { 1, 1, CKM_SHA256, CKF_HKDF_SALT_DATA,
+                                  salt, sizeof salt, 0, info, sizeof info };
+            CK_MECHANISM hm = { mechs[mi], &hp, sizeof hp };
+            rv = C_DeriveKey(s, &hm, hikm, out_novlen, 4, &out);
+            ok(rv == CKR_OK, mi == 0 ? "harness shape: CKM_HKDF_DERIVE accepted"
+                                      : "harness shape: CKM_HKDF_DATA accepted");
+            if (rv == CKR_OK) {
+                gotlen = sizeof got;
+                read_value(s, out, got, &gotlen);
+                hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND, "SHA2-256",
+                         ikm, sizeof ikm, salt, sizeof salt, info, sizeof info,
+                         want, 32);
+                ok(gotlen == 32 && memcmp(got, want, 32) == 0,
+                   mi == 0 ? "  32 bytes, matching the reference"
+                           : "  32 bytes, identical to CKM_HKDF_DERIVE's");
+            }
+        }
+    }
+
+    /* (9) The ceiling is RFC 5869's, not the concatenation family's.
+     *
+     * §2.3 caps HKDF-Expand at 255 * HashLen: 8160 bytes under SHA-256. The
+     * module applied FHSM_DERIVE_MAX (4096) here until 2026-09-17, because
+     * HKDF had been wired onto the bound the §6.20 combiners already used.
+     * Nine Wycheproof vectors sit between the two numbers and were refused.
+     *
+     * Both edges are checked, since a ceiling asserted only from below is a
+     * ceiling nobody has found. */
+    {
+        static CK_BYTE big_got[16384], big_want[16384];
+        CK_ULONG cap = 255UL * 32UL;         /* SHA-256 */
+        CK_ATTRIBUTE big_t[] = {
+            { CKA_CLASS,       &(CK_ULONG){CKO_SECRET_KEY},     sizeof(CK_ULONG) },
+            { CKA_KEY_TYPE,    &(CK_ULONG){CKK_GENERIC_SECRET}, sizeof(CK_ULONG) },
+            { CKA_VALUE_LEN,   &cap, sizeof(CK_ULONG) },
+            { CKA_EXTRACTABLE, &t_true,  1 },
+            { CKA_SENSITIVE,   &t_false, 1 },
+        };
+        CK_HKDF_PARAMS p = { 1, 1, CKM_SHA256, CKF_HKDF_SALT_DATA,
+                             salt, sizeof salt, 0, info, sizeof info };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+
+        rv = C_DeriveKey(s, &m, hikm, big_t, 5, &out);
+        ok(rv == CKR_OK, "255*HashLen (8160 bytes) accepted under SHA-256");
+        if (rv == CKR_OK) {
+            CK_ULONG n = sizeof big_got;
+            CK_ATTRIBUTE q[] = { { CKA_VALUE, big_got, n } };
+            ok(C_GetAttributeValue(s, out, q, 1) == CKR_OK
+               && q[0].ulValueLen == 8160, "8160 bytes returned");
+            hkdf_ref(EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND, "SHA2-256",
+                     ikm, sizeof ikm, salt, sizeof salt, info, sizeof info,
+                     big_want, 8160);
+            ok(memcmp(big_got, big_want, 8160) == 0,
+               "and they match the reference to the last byte");
+        }
+
+        cap = 255UL * 32UL + 1UL;
+        rv = C_DeriveKey(s, &m, hikm, big_t, 5, &out);
+        ok(rv == CKR_ATTRIBUTE_VALUE_INVALID,
+           "one byte past 255*HashLen refused (RFC 5869 §2.3)");
+
+        /* SHA-512 moves the ceiling with the hash, so a constant would show. */
+        cap = 255UL * 64UL;
+        p.prfHashMechanism = CKM_SHA512;
+        rv = C_DeriveKey(s, &m, hikm, big_t, 5, &out);
+        ok(rv == CKR_OK, "the ceiling follows the hash: 16320 under SHA-512");
+    }
+    /* (10) CKA_VALUE in a derive template.
+     *
+     * The derived value comes from the KDF. A template that states one is
+     * asking to choose the bytes of a key that is supposed to be derived, and
+     * the module answered CKR_OK while ignoring it -- which tells the caller
+     * it complied.
+     *
+     * pkcs11-check found this on the KEM side, in
+     * test_decapsulate_with_invalid_attributes_in_template, once the v3.2
+     * interface made C_DecapsulateKey reachable at all. It was never probed
+     * here, and it was the same rule and the same helper: derive_store_secret
+     * is where every §6.20 combiner and both HKDF mechanisms land. */
+    {
+        CK_BYTE injected[] = "injected";
+        CK_ULONG vl32 = 32;
+        CK_ATTRIBUTE inject_t[] = {
+            { CKA_CLASS,       &(CK_ULONG){CKO_SECRET_KEY},     sizeof(CK_ULONG) },
+            { CKA_KEY_TYPE,    &(CK_ULONG){CKK_GENERIC_SECRET}, sizeof(CK_ULONG) },
+            { CKA_VALUE_LEN,   &vl32, sizeof(CK_ULONG) },
+            { CKA_VALUE,       injected, sizeof injected - 1 },
+        };
+        CK_HKDF_PARAMS p = { 1, 1, CKM_SHA256, CKF_HKDF_SALT_DATA,
+                             salt, sizeof salt, 0, info, sizeof info };
+        CK_MECHANISM m = { CKM_HKDF_DERIVE, &p, sizeof p };
+        rv = C_DeriveKey(s, &m, hikm, inject_t, 4, &out);
+        ok(rv == CKR_TEMPLATE_INCONSISTENT,
+           "CKA_VALUE in a derive template is refused, not ignored");
+    }
+
+    if (C_Finalize) C_Finalize(NULL);
+    printf("\n%s\n", fails ? "FAILURES" : "all good");
+    return fails ? 1 : 0;
+}

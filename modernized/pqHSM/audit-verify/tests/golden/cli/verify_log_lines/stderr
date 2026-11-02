@@ -1,0 +1,3 @@
+line 87 : malformed hmac hex
+line 88 : prev_hmac does not follow line 87 (record deleted, inserted or reordered)
+verify: 2/98 records FAILED

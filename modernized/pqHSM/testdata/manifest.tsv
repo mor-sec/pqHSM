@@ -1,0 +1,17 @@
+token	fresh.tok	load=0x0	label=golden-fresh	serial=FHSM-589bba3c43a6321e	user_initialized=0	so_locked=0	user_locked=0	login_so=0x0	objects=0
+token	user_initialized.tok	load=0x0	label=golden-user	serial=FHSM-efcdaa805142ce90	user_initialized=1	so_locked=0	user_locked=0	login_user=0x0	objects=0
+token	locked.tok	load=0x0	label=golden-locked	serial=FHSM-b31700c02820109c	user_initialized=1	so_locked=0	user_locked=1	login_user=0xa4
+token	multi_object.tok	load=0x0	label=golden-multi	serial=FHSM-7b97b7788f794717	user_initialized=1	so_locked=0	user_locked=0	login_user=0x0	objects=5
+object	multi_object.tok	handle=1	class=4	key_type=31	flags=0x01	value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f	label=aes-sensitive	id=1d10
+object	multi_object.tok	handle=2	class=4	key_type=31	flags=0x02	value=404142434445464748494a4b4c4d4e4f	label=aes-extractable	id=1d40
+object	multi_object.tok	handle=3	class=2	key_type=3	flags=0x00	value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344	label=ec-public	id=1d04
+object	multi_object.tok	handle=4	class=1	key_type=0	flags=0x00	value=303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283848586878889	label=certificate	id=1d30
+object	multi_object.tok	handle=5	class=0	key_type=0	flags=0x00	value=6162636465666768	label=data	id=1d61
+token	reinit.tok	load=0x0	label=golden-reinit	serial=FHSM-fc01955c1947fcb1	user_initialized=0	so_locked=0	user_locked=0	login_so=0x0	objects=0
+token	zero_dek_2_5_0.tok	load=0x0	label=golden-multi	serial=FHSM-7b97b7788f794717	user_initialized=1	so_locked=0	user_locked=0	login_user=0x0	objects=5
+object	zero_dek_2_5_0.tok	handle=1	class=4	key_type=31	flags=0x01	value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f	label=aes-sensitive	id=1d10
+object	zero_dek_2_5_0.tok	handle=2	class=4	key_type=31	flags=0x02	value=404142434445464748494a4b4c4d4e4f	label=aes-extractable	id=1d40
+object	zero_dek_2_5_0.tok	handle=3	class=2	key_type=3	flags=0x00	value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344	label=ec-public	id=1d04
+object	zero_dek_2_5_0.tok	handle=4	class=1	key_type=0	flags=0x00	value=303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283848586878889	label=certificate	id=1d30
+object	zero_dek_2_5_0.tok	handle=5	class=0	key_type=0	flags=0x00	value=6162636465666768	label=data	id=1d61
+token	tpm_sealed.tok	load=0x0	label=golden-tpm	serial=FHSM-3bca53c60622fb41	user_initialized=1	so_locked=0	user_locked=0	login_user=0x0	objects=0

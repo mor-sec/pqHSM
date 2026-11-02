@@ -1,0 +1,4 @@
+freehsm-audit
+verify
+tests/golden/dirs/contiguous
+zz

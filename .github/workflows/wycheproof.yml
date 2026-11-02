@@ -1,0 +1,188 @@
+# ===========================================================================
+# .github/workflows/wycheproof.yml
+#
+# Nightly run of the Wycheproof crypto test vector suite against the
+# libfreehsm.so built from the current main branch. Publishes the
+# JSON report as a build artefact and fails the run if any "valid"
+# vector is rejected or any "invalid" vector is accepted.
+#
+# See tests/wycheproof/README.md for details.
+# ===========================================================================
+
+name: Wycheproof
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # nightly 02:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write        # the failure notice below opens one
+
+jobs:
+  wycheproof:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Mark workspace as safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install Python deps
+        run: |
+          pip3 install --break-system-packages python-pkcs11
+
+      - name: Build libfreehsm.so
+        run: |
+          make clean
+          make
+
+      - name: Fetch Wycheproof vectors
+        run: |
+          chmod +x tests/wycheproof/fetch_vectors.sh
+          tests/wycheproof/fetch_vectors.sh
+
+      - name: Run Wycheproof full suite
+        env:
+          # Dev-only bypass --- forbidden in any FIPS deployment, see
+          # AGD_PRE §7.5 / §7.5bis. We need it because the .fhsm_digest
+          # is not patched in the test artefact and the FIPS provider
+          # is not configured in the build container.
+          FHSM_INTEGRITY_ALLOW_UNSIGNED: '1'
+          FHSM_KAT_ALLOW_FAIL: '1'
+          # Override the global /usr/local/ssl/openssl.cnf which forces
+          # FIPS-only mode --- under the integrity bypass we want the default provider
+          # to serve EVP fetches with no FIPS property bias.
+          OPENSSL_CONF: /dev/null
+        run: |
+          chmod +x tests/wycheproof/run_wycheproof.py
+          tests/wycheproof/run_wycheproof.py \
+              --module "$PWD/libfreehsm.so"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wycheproof-report-${{ github.run_number }}
+          path: tests/wycheproof/results/full.json
+          retention-days: 30
+
+      # A red nightly that nobody sees is a harness talking to itself.
+      #
+      # Runs #140 to #145 failed on six consecutive nights, reporting three
+      # valid ML-KEM decapsulation vectors as rejected. Nothing said so. The
+      # README carries badges for CI and Mirror and for no other workflow,
+      # so a failure here appears on no page anyone opens; scheduled-run
+      # notifications go to one mailbox and are easy to file away.
+      #
+      # This opens an issue on the first failing night and comments on it on
+      # the following ones, so the signal arrives where the other reports
+      # arrive and does not multiply. It closes nothing -- a green night
+      # leaves the issue open, because the person who reads it is the person
+      # who should decide it is finished.
+  # The failure notice is its own job, on the runner, deliberately.
+  #
+  # The first version of it was a step inside the job above, which runs in
+  # freehsm-c-build:debian13-20261006. `gh` is on GitHub's hosted runners,
+  # not in an arbitrary container, so it failed with
+  #
+  #     gh: not found
+  #     Error: Process completed with exit code 127
+  #
+  # on the first red night it was meant to report -- the notice about a
+  # failure became a second failure. Written without checking what existed
+  # where the step would run.
+  #
+  # Installing gh into the build image would make the crypto build container
+  # carry a tool it has no other use for. This runs where gh already is, and
+  # takes the report through the artefact the job above uploads, which is the
+  # only thing it needs from it.
+  # workflow_dispatch as well as schedule, so the notice can be exercised on
+  # purpose instead of first running on the night it is needed. That is not a
+  # hypothetical: the first version of this ran exactly once, on the first red
+  # night it was written for, and failed on `gh: not found`. A channel nobody
+  # can test is a channel nobody has tested.
+  #
+  # A manual run that fails will therefore open an issue too. That is the
+  # intended behaviour, not a side effect -- a red run is a red run, and the
+  # workflow has no business deciding that some of them do not count.
+  notify:
+    needs: wycheproof
+    if: failure() && (github.event_name == 'schedule'
+                      || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      # `continue-on-error` because the suite can fail before writing a
+      # report -- a build failure, a container that would not start. The
+      # notice is still wanted then, and violations_md.py says so when the
+      # file is absent.
+      - name: Fetch the report, if there is one
+        continue-on-error: true
+        uses: actions/download-artifact@v7
+        with:
+          name: wycheproof-report-${{ github.run_number }}
+          path: tests/wycheproof/results
+
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -o pipefail
+          TITLE="Wycheproof nightly is failing"
+
+          # The violating adapters, from the report rather than from the log:
+          # the log is 26 lines of counters and the JSON is the thing that
+          # says which vector, in which file, with which comment.
+          BODY=$(mktemp)
+          {
+            echo "The nightly Wycheproof run is red. This issue was opened by"
+            echo "the workflow itself; see \`.github/workflows/wycheproof.yml\`."
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            python3 tests/wycheproof/violations_md.py \
+                    tests/wycheproof/results/full.json
+          } > "$BODY"
+
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" \
+                       --json number --jq '.[0].number' || true)
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "null" ]; then
+            gh issue comment "$EXISTING" --body-file "$BODY"
+            echo "commented on #$EXISTING"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY" \
+              && echo "issue opened"
+          fi
+
+  wycheproof-smoke:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    if: github.event_name == 'push'
+    env:
+      FHSM_INTEGRITY_ALLOW_UNSIGNED: '1'
+      FHSM_KAT_ALLOW_FAIL: '1'
+      OPENSSL_CONF: /dev/null
+    steps:
+      - uses: actions/checkout@v7
+      - name: Smoke
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          pip3 install --break-system-packages python-pkcs11
+          make
+          chmod +x tests/wycheproof/fetch_vectors.sh tests/wycheproof/run_wycheproof.py
+          tests/wycheproof/fetch_vectors.sh
+          tests/wycheproof/run_wycheproof.py \
+              --module "$PWD/libfreehsm.so" --smoke

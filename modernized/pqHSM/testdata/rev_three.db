@@ -1,0 +1,6 @@
+# fhsm-ca revocation database v1
+# SERIAL(hex)  DATE(YYYYMMDDHHMMSSZ)  REASON  ('-' for none)
+crlNumber 7
+01A2 20260101000000Z keyCompromise
+00FF10 20260215123000Z -
+7B 20251231235959Z superseded

@@ -1,0 +1,21 @@
+[package]
+name = "pqhsm-pki"
+description = "pqHSM PKI: the revocation database and the OCSP responder body (replaces src/fhsm_revocation.c)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# The C ABI of include/fhsm_revocation.h, linked into C only through pqhsm-module
+# (PHASE2_PLAN.md §3, review H5). Imports fhsm_pki_ocsp and fhsm_pki_algid from the C
+# encoder (src/fhsm_composite.c, Phase 3).
+ffi = []
+
+[dependencies]
+libc.workspace = true
+openssl-sys.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+tempfile.workspace = true

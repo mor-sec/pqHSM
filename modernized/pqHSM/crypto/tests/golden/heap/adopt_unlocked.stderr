@@ -1,0 +1,5 @@
+[freehsm-c] FATAL : the secure heap could not be created.
+  This process already has one -- another library, or another copy
+  of this module, created it first -- and it is NOT locked in
+  memory, or that could not be checked in /proc/self/smaps. An
+  unlocked arena is refused: key material there could reach swap.

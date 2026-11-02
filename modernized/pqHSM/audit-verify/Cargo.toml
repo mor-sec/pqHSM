@@ -1,0 +1,17 @@
+[package]
+name = "pqhsm-audit-verify"
+description = "Standalone offline audit verifier (replaces tools/freehsm_audit.c). Deliberately shares no code with pqhsm-audit."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pqhsm-audit"
+path = "src/main.rs"
+
+[dependencies]
+openssl.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

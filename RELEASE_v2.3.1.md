@@ -1,0 +1,171 @@
+<!--
+SPDX-FileCopyrightText: 2026 Afchine Madjlessi <afchine.mad@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# FreeHSM v2.3.1
+
+A maintenance release for two defects: multipart digest worked for three of
+the eleven digests the module accepts, and a key's value was given in clear
+when the key was not extractable.
+
+**Upgrade if an application hashes in parts** — `C_DigestInit`, then
+`C_DigestUpdate` more than once — with SHA-224, SHA-512/224, SHA-512/256 or
+any SHA-3 digest, or in `all-mechanisms` builds with SHA-1 or MD5. One-shot
+`C_Digest` was never affected, and neither was multipart SHA-256, SHA-384 or
+SHA-512.
+
+**Check your templates if an application reads back a key it imported or
+derived as non-sensitive.** Such a key now needs `CKA_EXTRACTABLE=TRUE` as
+well for its value to be given; without it, the read answers
+`CKR_ATTRIBUTE_SENSITIVE`. Keys generated on the token are sensitive by
+default and are not affected.
+
+It also builds on arm64, ppc64el, riscv64 and s390x, where it did not
+(PR #18, from seb128). x86 builds are unchanged.
+
+There is no security advisory in this release.
+
+---
+
+## Multipart digest
+
+### What was wrong
+
+`C_DigestInit` accepts eleven digests. `C_DigestUpdate` and `C_DigestKey`
+looked the OpenSSL digest up in a table of their own that held three. For
+the other eight, the first Update answered `CKR_MECHANISM_INVALID`: an
+application got a refusal, never a wrong digest.
+
+The refusal then left the operation active, although PKCS#11 says an error in
+`C_DigestUpdate` ends it, so the application's next `C_DigestInit` on that
+session answered `CKR_OPERATION_ACTIVE` as well.
+
+Behind that sat a third defect, which could give a wrong digest. When an
+Update failed after an earlier Update had succeeded — a NULL buffer with a
+non-zero length, or a length past 2 GiB — the operation ended but kept its
+OpenSSL context. The next digest on the same session hashed into it: the
+earlier data, under the earlier algorithm, returned with `CKR_OK`. It needed
+a malformed call from the application first, and it stayed within that
+application's own session.
+
+### What changed
+
+`C_DigestUpdate` and `C_DigestKey` use the table `C_DigestInit` checks
+availability against, so the three can no longer disagree. Any error in
+`C_DigestUpdate` ends the operation and releases its context, and
+`C_DigestInit` releases a context left by an earlier operation.
+
+### How it was found
+
+pkcs11-check's `TestMultipartDigest` reported the `CKR_OPERATION_ACTIVE`
+cases under both 0.2.1 and 0.2.3. They alternated with refused digests and
+were first read as one test's session state reaching the next — the
+harness question settled in mingulov/pkcs11-check#38. Confirming #38 against
+the reports, before saying so upstream, meant reading each remaining case;
+the skip reasons side by side showed the module refusing eight digests.
+
+## A key's value
+
+### What was wrong
+
+PKCS#11 v3.2 does not reveal a private or secret key's `CKA_VALUE` when the
+key is sensitive or when it is not extractable — the attribute tables'
+footnote 7 — and `C_GetAttributeValue` then returns
+`CKR_ATTRIBUTE_SENSITIVE`. The module checked `CKA_SENSITIVE` alone.
+
+So a key derived or imported with `CKA_SENSITIVE=FALSE`, and nothing said
+about `CKA_EXTRACTABLE`, whose default here is FALSE, gave its value to
+`C_GetAttributeValue`, though `C_WrapKey` refused to let it out wrapped. Only
+a session that could already see the key could ask, and only for a key whose
+creator had declared it non-sensitive.
+
+Where it did withhold a value, it returned `CKR_OK` with
+`CK_UNAVAILABLE_INFORMATION` in the length: nothing was disclosed, but a
+caller checking only the return code took the marker for a length.
+
+Correcting that exposed a third defect, in `C_CreateObject`, which read
+neither attribute from the template. A secret key was imported neither
+sensitive nor extractable, whatever was asked: one imported with
+`CKA_SENSITIVE=TRUE` kept a readable value, and one imported with
+`CKA_EXTRACTABLE=TRUE` could not be wrapped. A private key was imported
+sensitive and never extractable.
+
+### What changed
+
+A private or secret key's value is withheld when the key is sensitive or not
+extractable, and the call returns `CKR_ATTRIBUTE_SENSITIVE`; other attributes
+asked in the same call are still given. Public keys and certificates are
+unchanged.
+
+`C_CreateObject` keeps `CKA_SENSITIVE` and `CKA_EXTRACTABLE` as the template
+states them. A private key stays sensitive whatever is asked, as before, and
+both still default to FALSE.
+
+### How it was found
+
+On the `fhsm-crypt` branch, the first test in this tree to ask for a secret
+key's value and check the return code.
+
+## Building on 64-bit non-x86 targets
+
+`-fcf-protection=full` is Intel CET and exists only on x86; elsewhere GCC
+refused it and the build stopped. The Makefile now adds it when the compiler
+accepts it. The integrity check's ELF reader cast the file buffer to header
+structures, which `-Wcast-align` with `-Werror` refuses on strict-alignment
+targets; it now copies them out. Both changes are seb128's (PR #18), from
+Debian #1144631 and #1149536, and were built in the Ubuntu archive on amd64,
+arm64, ppc64el, riscv64 and s390x. The test suite has not been run on
+non-x86 hardware here either.
+
+Reviewing that reader found three older weaknesses, fixed with it: size sums
+that could overflow, a section name compared without a bound, and a section
+range zeroed without being checked against the file. The file read is the
+module itself, so this is hardening rather than a fix for anything an
+outsider could reach.
+
+32-bit builds remain unsupported.
+
+## Measured
+
+pkcs11-check 0.2.3, full corpus, signed module, 2026-10-10: 55 396 passed
+in `nist-approved-only` and 55 851 in `all-mechanisms`, with 4 and 5
+failures, all of them the known ones listed in
+`tests/pkcs11_check_known_failures.txt`. Against the 2026-10-06 runs, 25
+tests moved in each profile, all attributed in `docs/PKCS11_CHECK_FINDINGS.md`;
+the two that went from passed to xfailed are the new rules applying to the
+harness's own keys.
+
+Those runs predate PR #18 and the hardening beside it, which change the
+integrity check every `C_Initialize` of a signed module runs. The release
+commits sit on d909d4a, which CI measured: the signed module in both
+profiles through pkcs11-check 0.2.3 with the known-failures gate, the
+Wycheproof and fuzz jobs, and the build — all green on 2026-10-12 and
+2026-10-13.
+
+`tests/test_digest_multipart.c`, new: for every digest the build accepts,
+multipart equals one-shot; an Update error ends the operation; and the next
+operation carries nothing of the failed one. pkcs11-check 0.2.3, every
+`TestMultipartDigest` and `TestMultiPartDigest` test against the signed
+default-profile module: 30 passed, 0 xfail, where 0.2.3 had recorded sixteen
+xfails on v2.3.0 — eight refusals and eight `CKR_OPERATION_ACTIVE` that
+followed them.
+
+`tests/test_sensitive_value.c`, new: a generated key's value is refused for
+the size query and the read, with nothing written; an imported non-sensitive
+key gives its value only when extractable; a value asked beside `CKA_LABEL`
+leaves the label given; a public key's value is still given; an imported
+key's `CKA_SENSITIVE` and `CKA_EXTRACTABLE` read back as the template set
+them, and sensitive wins over extractable.
+
+The static-analysis CI job is green again. `make lint` had flagged two
+redundant assignments in the certificate builder since 2026-10-05; they are
+removed, with no change in behaviour.
+
+## Credits
+
+The harness is Denis Mingulov's `pkcs11-check`.
+
+## Verifying this release
+
+    scripts/release.sh 2.3.1

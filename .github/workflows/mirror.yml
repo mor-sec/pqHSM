@@ -1,0 +1,76 @@
+# ===========================================================================
+# .github/workflows/mirror.yml
+#
+# Replicate the GitHub repository to GitLab and Codeberg on every push.
+# This is the workaround for GitLab.com Free not supporting Pull mirrors
+# (Pull mirroring is a Premium feature on GitLab.com).
+#
+# Setup :
+#   1. Generate a deploy key (SSH) for each destination :
+#        ssh-keygen -t ed25519 -f /tmp/gitlab_deploy -N "" -C "github-actions"
+#        ssh-keygen -t ed25519 -f /tmp/codeberg_deploy -N "" -C "github-actions"
+#   2. Add the PUBLIC keys (.pub) as deploy keys with WRITE access :
+#        - GitLab  : Settings -> Repository -> Deploy Keys
+#        - Codeberg: Settings -> Deploy Keys
+#   3. Add the PRIVATE keys as GitHub secrets :
+#        GitHub repo -> Settings -> Secrets and variables -> Actions :
+#          GITLAB_SSH_KEY   = contents of /tmp/gitlab_deploy
+#          CODEBERG_SSH_KEY = contents of /tmp/codeberg_deploy
+# ===========================================================================
+
+name: Mirror to GitLab and Codeberg
+
+on:
+  push:
+    branches: ['**']
+    tags: ['*']
+  workflow_dispatch: {}
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    env:
+      # Opt-in to Node.js 24 ahead of the June 2026 forced switch (avoids
+      # the deprecation warning printed by Node.js 20 actions).
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # full history + tags
+
+      # -------- GitLab --------
+      # We deliberately do NOT use `git push --mirror` because it pushes
+      # remote-tracking refs (refs/remotes/origin/*) and pull-request
+      # synthetic refs (refs/pull/*) which GitLab rejects with
+      # "deny updating a hidden ref". We push the local branches and
+      # tags explicitly.
+      - name: Push to GitLab
+        env:
+          SSH_KEY: ${{ secrets.GITLAB_SSH_KEY }}
+        if: env.SSH_KEY != ''
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/gitlab_key
+          chmod 600 ~/.ssh/gitlab_key
+          ssh-keyscan gitlab.com >> ~/.ssh/known_hosts
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/gitlab_key -o StrictHostKeyChecking=yes" \
+            git push --force --prune \
+              git@gitlab.com:afchine.mad/freehsm.git \
+              "refs/remotes/origin/*:refs/heads/*" \
+              "refs/tags/*:refs/tags/*"
+
+      # -------- Codeberg --------
+      - name: Push to Codeberg
+        env:
+          SSH_KEY: ${{ secrets.CODEBERG_SSH_KEY }}
+        if: env.SSH_KEY != ''
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/codeberg_key
+          chmod 600 ~/.ssh/codeberg_key
+          ssh-keyscan codeberg.org >> ~/.ssh/known_hosts
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/codeberg_key -o StrictHostKeyChecking=yes" \
+            git push --force --prune \
+              git@codeberg.org:afchine1337/freehsm.git \
+              "refs/remotes/origin/*:refs/heads/*" \
+              "refs/tags/*:refs/tags/*"

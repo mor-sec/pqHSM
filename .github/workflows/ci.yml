@@ -1,0 +1,566 @@
+# ===========================================================================
+# .github/workflows/ci.yml
+#
+# Continuous integration for FreeHSM C.
+#
+#   - lint       : SPDX header presence on every .c/.h
+#   - build      : Debian 13 image with OpenSSL 3.5 FIPS provider
+#   - sanitizers : the whole suite under AddressSanitizer + UBSan
+#   - test-smoke : the built-in static smoke test
+#   - test-cov   : full PKCS#11 coverage matrix (27 PASS / 5 SKIP target)
+#   - repro      : two-build reproducibility check
+#
+# Triggered on every push to main, every PR targeting main, and weekly
+# (security-scan freshness).
+# ===========================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, 'release/**']
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'   # Monday 06:00 UTC
+
+jobs:
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check SPDX headers
+        run: bash scripts/add_copyright_header.sh --check
+
+      # The bilingual CC documents say the same thing. GATING as of 2026-09-26.
+      #
+      # CONTRIBUTING.md has required both twins to be updated together since
+      # the beginning. That is a review rule, and a review rule is enforced by
+      # remembering. It was not remembered: FIPS_140_3.fr.md listed KMAC128 and
+      # KMAC256 as approved for three months after the mechanisms were removed,
+      # and the English policy never had the row.
+      #
+      # Making it gate only became honest once the tree was clean. Closing the
+      # ten pairs turned up, among other things, a French AGD_PRE §5 checklist
+      # that told the operator to set `fips_strict=true` -- a key no code has
+      # ever read -- as a condition of the secure operational state.
+      #
+      # What this catches is the twins DISAGREEING. It cannot see them agreeing
+      # and both being wrong, and that class is real: the entropy conditioner
+      # was documented as SHA-256 in both languages for twelve days after the
+      # code moved to SHA-384, and the digest length as 32 bytes after it
+      # became 48. Those need a check against the code, which this is not.
+      - name: Bilingual CC documents agree
+        run: python3 scripts/check_doc_twins.py
+      # Every test binary `make tests` builds is one it runs, and the reverse.
+      # Two had been built and run by nothing (scripts/check_test_lists.py).
+      - name: Test lists agree
+        run: python3 scripts/check_test_lists.py
+      - name: Verify LICENSE + NOTICE present
+        run: |
+          test -f LICENSE
+          test -f NOTICE
+          grep -q "Afchine Madjlessi" NOTICE
+
+      # PKCS#11 constant audit (#125). GATING, unlike the pkcs11-check harness
+      # run: a behavioural finding is a judgement call, but a constant whose
+      # value belongs to a different name is unambiguously a bug -- callers get
+      # a different algorithm or error than they asked for. Three such bugs
+      # shipped undetected (CKA_PARAMETER_SET on CKA_MODIFIABLE's code point,
+      # AES-CMAC advertised as CKM_AES_XCBC_MAC, and a wrap CKR family that each
+      # decoded to another error); each surfaced only when a test happened to
+      # trip over it. This closes the class.
+      - name: PKCS#11 constant audit
+        run: |
+          python3 -m venv /tmp/p11spec
+          # Pinned, and this one gates. types_std.py is the reference the audit
+          # compares our constants against; an unpinned install means the
+          # reference can change under a tree nobody touched, and a GATING step
+          # whose oracle moves on its own turns green or red for reasons that
+          # are not in this repository.
+          #
+          # 0.1.9 -> 0.2.0 on 2026-09-19. Moving a gating step's oracle is not
+          # a version bump, it is a change of reference, so it was run against
+          # the new one before being written here:
+          #
+          #   audit_constants.py --spec <0.2.0 types_std.py>
+          #   322 conform, 32 not in the reference, 0 divergent
+          #
+          # The workstation had been on 0.2.0 since this morning while CI
+          # compared against 0.1.9 -- two references for one question, which is
+          # the arrangement that made the 0.1.8 decoy expensive on 09-07.
+          #
+          # 0.2.0 -> 0.2.1 on 2026-09-27, measured the same way:
+          #
+          #   --spec <0.2.1 types_std.py>   322 conform, 30 not in ref, 0 divergent
+          #   --spec <0.2.0 types_std.py>   322 conform, 30 not in ref, 0 divergent
+          #
+          # Both against today's tree, and that second line is the one that
+          # made this a bump rather than a change of reference. The count fell
+          # 32 -> 30 and the tempting reading was that 0.2.1's extraction had
+          # absorbed two of our names. It had not: two names left OUR side when
+          # #17 de-advertised the PQ/T hybrids on 09-24, five days after the
+          # 322/32 baseline was taken. Running the OLD reference against the
+          # NEW tree separated the two explanations; comparing only the new
+          # numbers to a five-day-old baseline could not have.
+          #
+          # 0.2.1 -> 0.2.3 on 2026-10-06, with the corpus workflow, both
+          # references against the same tree:
+          #
+          #   --spec <0.2.3 types_std.py>   322 conform, 30 not in ref, 0 divergent
+          #   --spec <0.2.1 types_std.py>   322 conform, 30 not in ref, 0 divergent
+          #
+          # Identical, so a bump and not a change of reference.
+          /tmp/p11spec/bin/pip install --quiet 'pkcs11-check==0.2.3'
+          # Locate types_std.py without importing it: the module uses
+          # `from typing import Self` (3.11+) and importing it would tie this
+          # step to the runner's Python version. We only need to read the file.
+          SPEC=$(/tmp/p11spec/bin/python -c \
+            'import os, pkcs11_check as p; print(os.path.join(os.path.dirname(p.__file__), "raw", "types_std.py"))')
+          test -f "$SPEC" || { echo "spec table not found at $SPEC"; exit 1; }
+          python3 scripts/audit_constants.py --spec "$SPEC"
+
+      # Mechanism code points, against the OASIS header rather than the
+      # harness's extraction of it. GATING.
+      #
+      # The audit above cannot do this job and was never able to. Its
+      # reference, types_std.py, is a partial extraction, so a name it does
+      # not know is ambiguous -- it may be ours or it may be one the
+      # extraction missed. It therefore counts an unknown name as
+      # "module-local" and passes it.
+      #
+      # On 2026-09-14 that let three through: CKM_KMAC128 and CKM_KMAC256 on
+      # unassigned values, and CKM_X25519_DERIVE / CKM_X448_DERIVE on
+      # CKM_ECMQV_DERIVE's and CKM_RSA_AES_KEY_WRAP's. Each was silently
+      # filed under "module-local", a label that makes an invented code point
+      # look deliberate. The comment above this step said it closed the
+      # class. It closed half of it: a name the reference knows, checked; a
+      # name it does not, skipped.
+      #
+      # The OASIS header carries all 542 names, so "not in the header" means
+      # something here.
+      - name: PKCS#11 mechanism code points
+        run: |
+          # No pin is possible for a URL. If the oracle cannot be fetched the
+          # step fails: a gate that cannot reach its reference must go red,
+          # not green, which is the whole lesson of the step it follows.
+          curl -sSfL --retry 3 -o /tmp/pkcs11t.h \
+            https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/csd01/include/pkcs11-v3.2/pkcs11t.h
+          grep -q 'CKM_VENDOR_DEFINED' /tmp/pkcs11t.h \
+            || { echo "fetched file is not a pkcs11t.h"; exit 1; }
+          python3 scripts/check_mech_codepoints.py /tmp/pkcs11t.h
+
+  # Build under a distribution's own flags, not ours.
+  #
+  # Issue #7: a Debian maintainer could not compile FreeHSM, with an error this
+  # project's CI has never produced. Chasing it by guessing failed --- neither
+  # -D_FORTIFY_SOURCE=3 nor -Wformat-truncation=2 reproduced what he saw. The
+  # answer is to stop guessing: PR #9 made LOCAL_CFLAGS injectable, so this job
+  # asks dpkg-buildflags what Debian actually passes and builds with it.
+  #
+  # NON-GATING. Debian's flag set moves without reference to this repository,
+  # and a red X on main for a change nobody here made is how a signal stops
+  # being read --- ten consecutive red CI runs went unnoticed on 2026-09-02 for
+  # exactly that reason. It is a tripwire for the maintainers, not a gate on
+  # contributors.
+  distro-flags:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container:
+      image: debian:trixie
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install a Debian toolchain
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq build-essential dpkg-dev libssl-dev python3
+      - name: What Debian passes
+        id: flags
+        run: |
+          set -o pipefail
+          C=$(dpkg-buildflags --get CFLAGS)
+          L=$(dpkg-buildflags --get LDFLAGS)
+          gcc --version | head -1
+          echo "CFLAGS  : $C"
+          echo "LDFLAGS : $L"
+          echo "c=$C" >> "$GITHUB_OUTPUT"
+          echo "l=$L" >> "$GITHUB_OUTPUT"
+      - name: Build with them
+        run: |
+          make LOCAL_CFLAGS="${{ steps.flags.outputs.c }}" \
+               LOCAL_LDFLAGS="${{ steps.flags.outputs.l }}"
+
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    needs: lint
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build (default profile = legacy)
+        run: |
+          make clean
+          make 2>&1 | tee build.log
+          test -f libfreehsm.so
+
+      - name: Sign module digest
+        run: |
+          # pipefail is NOT set by the default `bash -e {0}` shell, so
+          # `make integrity | tee` exited with tee's status -- always 0. A
+          # failed signing passed here for as long as the tee has been in
+          # place, and the artefact uploaded below would have been an
+          # unsigned module that cannot initialise at all.
+          set -o pipefail
+          make integrity 2>&1 | tee integrity.log
+          ls -la libfreehsm.so
+
+      # The integrity self-check is the one mechanism that must be exercised
+      # WITHOUT FHSM_INTEGRITY_ALLOW_UNSIGNED -- every other job sets it, which
+      # is why the check shipped inert twice (#125). Gating.
+      - name: Integrity self-check (no bypass)
+        run: make test-integrity
+
+      - name: Smoke test (smoke + KAT report)
+        run: |
+          install -m 755 tests/test_smoke /tmp/smoke
+          /tmp/smoke 2>&1 | head -30
+
+      # FHSM_AUDIT_MANDATORY has two sides and `make tests` only ever exercises
+      # the default one: it refuses FHSM_AUDIT=off, so the branch that HONOURS
+      # it is never reached. That is the same shape as the integrity check
+      # above, which shipped inert twice because every job set the bypass.
+      # `make audit-switch` builds both ways and runs the script against each.
+      - name: Audit switch, both sides of FHSM_AUDIT_MANDATORY
+        run: make audit-switch
+
+      # `make audit-switch` ends with a clean tree built the permissive way,
+      # so this rebuilds before driving the tools. The checks it runs are the
+      # ones that decide whether a response is acceptable to a verifier --
+      # a failure here means the responder produces answers nobody takes.
+      - name: Delegated OCSP responder, end to end
+        run: make ocsp-delegated
+
+      # Both steps above end with a tree built some other way -- audit-switch
+      # with FHSM_AUDIT_MANDATORY=0, ocsp-delegated with PROFILE=all-mechanisms. The
+      # upload below took whatever was on disk, so from the moment the audit
+      # switch step was added this job has been shipping a libfreehsm.so
+      # that was neither the configuration `make integrity` signed nor the one
+      # the artefact name claims. Rebuild, re-sign, and prove the result is
+      # the mandatory build before anything leaves this job.
+      - name: Rebuild and re-sign the shipping configuration
+        run: |
+          # See the note on the "Sign module digest" step: without pipefail,
+          # `| tee` returns tee's status and a failed build or signing walks
+          # straight into the upload.
+          set -o pipefail
+          make clean
+          make 2>&1 | tee build.log
+          make integrity 2>&1 | tee integrity.log
+          make test-integrity
+          LD_LIBRARY_PATH=. sh tests/audit_switch.sh mandatory
+          # And the property, not just the commands: this is the artefact the
+          # upload step publishes and the reproducibility job compares.
+          readelf -SW libfreehsm.so | grep -q '\.fhsm_digest' \
+            || { echo "::error::no .fhsm_digest section"; exit 1; }
+          d=$(objcopy --dump-section .fhsm_digest=/dev/stdout \
+                      libfreehsm.so /dev/null 2>/dev/null \
+              | od -An -tx1 -v | tr -d ' \n')
+          case "$d" in
+            *[!0]*) echo "signed: $d" ;;
+            *)      echo "::error::uploading an unsigned module"; exit 1 ;;
+          esac
+
+      - name: Upload artifacts
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: libfreehsm-so
+          path: |
+            libfreehsm.so
+            build.log
+            integrity.log
+          retention-days: 14
+
+  # cppcheck over src/ and kat/, gating. The Makefile has had a `lint` target
+  # whose comment said the build refused to ship on a finding; nothing ran
+  # it. Found 2026-10-01 answering OpenSSF's static_analysis criterion, which
+  # docs/OPENSSF_BEST_PRACTICES.md had marked Met on the strength of that
+  # comment. The build image carries cppcheck already.
+  static-analysis:
+    runs-on: ubuntu-latest
+    needs: lint
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+      - name: cppcheck (make lint)
+        run: |
+          cppcheck --version
+          make lint
+
+  # AddressSanitizer + UBSan over the whole test suite.
+  #
+  # `make SANITIZE=1` had been in the Makefile for months and the suite had
+  # never been taken through it end to end, because the flags reach LDFLAGS
+  # only on the invocation that sets the variable and the documented two-step
+  # usage is easy to half-remember. The first complete run found four defects,
+  # one of them in the module: a KAT vector identifier pointing into a dead
+  # stack frame, read by the code that reports a failed self-test.
+  #
+  # Nothing about that was hard to find. It only needed someone to run the
+  # tool, which is the argument for the job rather than for the discipline.
+  #
+  # Gating. It is green on the workstation as of this commit; the first CI run
+  # is the first measurement on the runner's OpenSSL, which is not the same
+  # build. If it reports a leak inside libcrypto rather than in our code, the
+  # answer is a named suppression file saying which allocation and why -- not
+  # continue-on-error, which would put this job back where SANITIZE=1 already
+  # was: present, and never read.
+  sanitizers:
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 45
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and run the suite under ASan + UBSan
+        run: |
+          set -o pipefail
+          make asan 2>&1 | tee asan.log
+
+      # The log, not just the exit status: a sanitizer report that a later
+      # step overwrites is a finding nobody reads.
+      - name: Upload the sanitizer log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: asan-log
+          path: asan.log
+          retention-days: 14
+
+  # The concurrency tests under ThreadSanitizer (#111-prep). They also run in
+  # the plain suite, where they check results; only here do they see a race
+  # that happens to give the right answer. Not the whole suite under TSan --
+  # see the comment above `tsan-concurrency` in the Makefile.
+  tsan-concurrency:
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 30
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Concurrency tests under ThreadSanitizer
+        run: |
+          set -o pipefail
+          make tsan-concurrency 2>&1 | tee tsan.log
+
+      - name: Upload the sanitizer log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsan-log
+          path: tsan.log
+          retention-days: 14
+
+  test-coverage-matrix:
+    runs-on: ubuntu-latest
+    needs: build
+    # The freehsm-c-test image is now published on ghcr.io (since
+    # commit "ci: publish freehsm-c-test Docker image for matrix jobs").
+    # If the image ever becomes unavailable, gate this job off again
+    # with `if: false` while keeping the rest of the CI green.
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-test:debian13-pkcs11-tools
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: libfreehsm-so
+      - name: Install module
+        run: |
+          mkdir -p /opt/freehsm/lib
+          install -m 755 libfreehsm.so /opt/freehsm/lib/
+          useradd -r -d /var/lib/freehsm -m freehsm || true
+          chown -R freehsm: /var/lib/freehsm
+      - name: Run coverage matrix
+        run: |
+          bash tests/coverage_matrix.sh 2>&1 | tee matrix.log
+          tail -1 matrix.log | grep -q "ALL ASSERTIONS PASS"
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-matrix-report
+          path: |
+            matrix.log
+            /tmp/freehsm-coverage.tsv
+          retention-days: 14
+
+  # The coverage matrix under the STRICT runtime mode: non-approved mechanisms
+  # refused at call time. Integrity bypassed and OPENSSL_CONF=/dev/null, as
+  # tests/coverage_matrix.sh sets by default -- so no FIPS provider.
+  #
+  # This job was called test-fips-mode and set FHSM_MODE=fips, and was cited
+  # as a "FIPS-strict" run in docs/FIPS_140_3_SECURITY_TARGET.md 13.2. It never
+  # loaded the provider. It tests the runtime policy, which is worth testing,
+  # under the name that says so. The provider itself is test-fips-provider.
+  test-strict-mode:
+    runs-on: ubuntu-latest
+    needs: build
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-test:debian13-pkcs11-tools
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: libfreehsm-so
+      - name: Coverage matrix, strict runtime mode (no FIPS provider)
+        env:
+          FHSM_MODE: strict
+        run: |
+          install -m 755 libfreehsm.so /opt/freehsm/lib/
+          bash tests/coverage_matrix.sh 2>&1 | tee matrix-strict.log
+          tail -1 matrix-strict.log | grep -q "ALL ASSERTIONS PASS"
+
+  # The suite with the OpenSSL FIPS provider loaded: the signed module, no
+  # integrity bypass, KATs enforced. scripts/run_fips_tests.sh has done this
+  # since v2.0.2 and refuses to count anything until tests/probe_fips_loaded
+  # has shown the provider is in the process -- but no workflow ran it, and no
+  # CI image had a provider to load (scripts/ci_install_openssl_fips.sh).
+  #
+  # Built here rather than taken from the build job's artefact: the tests are
+  # binaries of this tree, and run_fips_tests.sh signs copies of the ones that
+  # embed the module. Only built, with `make test-bins`: running
+  # that target would also run the ordinary suite under the bypass, which is
+  # not this job's question.
+  #
+  # Both profiles. Until 2026-10-04 only the default one ran here, and the
+  # first run of all-mechanisms, by hand, found the module offering MD5 and
+  # brainpool, which the FIPS provider does not serve -- X25519 again, a week
+  # after it was fixed. PROFILE is set for the whole job: every make in it,
+  # the script's own included, must build the same profile, or make
+  # regenerates the dispatch table and relinks the signed module.
+  test-fips-provider:
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [nist-approved-only, all-mechanisms]
+    env:
+      PROFILE: ${{ matrix.profile }}
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Debian OpenSSL FIPS provider, installed and activated
+        run: bash scripts/ci_install_openssl_fips.sh
+
+      - name: Build, sign, build the tests
+        run: |
+          set -o pipefail
+          make clean
+          make
+          make test-bins
+          # Last: anything that relinked libfreehsm.so would drop the digest.
+          make integrity
+
+      - name: The suite against the FIPS provider
+        run: |
+          set -o pipefail
+          bash scripts/run_fips_tests.sh 2>&1 | tee fips-tests.log
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fips-tests-${{ matrix.profile }}
+          path: fips-tests.log
+          retention-days: 30
+
+  # The desktop interface, opened and closed with no display (tests/gui_smoke.sh):
+  # a virtual X server, a private session bus, app.quit sent over it, and any
+  # GTK or GLib CRITICAL or WARNING a failure. Its logic is tested through
+  # tools/pkiops in the suite; what only this sees is the window's own
+  # lifecycle, where the close-time criticals of 2026-10-02 were.
+  #
+  # GTK is installed here rather than baked into the build image: the image
+  # changes deliberately and rarely, and the module needs none of it.
+  gui-smoke:
+    runs-on: ubuntu-latest
+    needs: lint
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+      - name: GTK 4, a virtual display, a session bus
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+              libgtk-4-dev xvfb xauth dbus libglib2.0-bin
+      - name: Build the interface
+        run: make gui
+      - name: Start and close it
+        run: make gui-smoke
+
+  reproducibility:
+    runs-on: ubuntu-latest
+    needs: build
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build 2
+        env:
+          SOURCE_DATE_EPOCH: '1717977600'
+        run: |
+          make clean
+          make
+          # build1 (uploaded by the `build` job) is the SIGNED module:
+          # `make integrity` embeds the SHA-256 self-digest into the
+          # .fhsm_digest section. Sign build2 identically so the check is
+          # signed-vs-signed. Without this, the two builds differ by
+          # exactly the 32-byte digest section and reproducibility always
+          # fails -- not a determinism defect but an apples-to-oranges
+          # comparison. Signing is itself deterministic (the digest is a
+          # function of the reproducible pre-image), so signed builds are
+          # bit-identical across independent runs.
+          make integrity
+          sha256sum libfreehsm.so > /tmp/build2.sha256
+      - uses: actions/download-artifact@v8
+        with:
+          name: libfreehsm-so
+          path: /tmp/build1/
+      - name: Compare
+        # Explicit bash because the default container shell (dash on
+        # Debian 13) does not understand process substitution (<(...)).
+        shell: bash
+        run: |
+          sha256sum /tmp/build1/libfreehsm.so > /tmp/build1.sha256
+          cat /tmp/build1.sha256 /tmp/build2.sha256
+          h1=$(awk '{print $1}' /tmp/build1.sha256)
+          h2=$(awk '{print $1}' /tmp/build2.sha256)
+          if [ "$h1" != "$h2" ]; then
+              echo "ERROR: reproducibility check FAILED" >&2
+              echo "  build1 : $h1" >&2
+              echo "  build2 : $h2" >&2
+              exit 1
+          fi
+          echo "OK : libfreehsm.so is bit-identical across builds ($h1)"

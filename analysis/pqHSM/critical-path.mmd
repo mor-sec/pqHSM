@@ -1,0 +1,14 @@
+%% Critical path: A business application gets a document signed (Relying application (calls the signing service)).
+%% No production telemetry is available, so steps carry no p50/p99 annotations.
+flowchart TD
+  S1["1. Service starts, reads its PIN from an encrypted systemd credential and logs in to the token<br/><small>systemd fhsm-service.service, fhsm_service.c, service PIN credential, fhsm_token.c, fhsm_token_tpm.c, fhsm_tpm.c, TPM via tpm2 CLI, slotN.tok token file</small>"]
+  S2["2. Application posts the data to be signed<br/><small>/sign (private listener), fhsm_service.c</small>"]
+  S1 --> S2
+  S3["3. Service checks the signing policy and request budget<br/><small>fhsm_service.c, service signing policy, service refusal budget</small>"]
+  S2 --> S3
+  S4["4. HSM signs with the token's private key<br/><small>fhsm_pkcs11.c, fhsm_crypto.c, fhsm_token.c</small>"]
+  S3 --> S4
+  S5["5. The signing event is written to the tamper-evident audit log<br/><small>fhsm_audit.c, audit log (HMAC-chained JSON lines)</small>"]
+  S4 --> S5
+  S6["6. Signature is returned to the application<br/><small>fhsm_service.c</small>"]
+  S5 --> S6

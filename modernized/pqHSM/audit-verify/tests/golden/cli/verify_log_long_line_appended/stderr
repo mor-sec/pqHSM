@@ -1,0 +1,3 @@
+line 7 : missing hmac, prev_hmac or seq field
+line 8 : missing hmac, prev_hmac or seq field
+verify: 2/8 records FAILED

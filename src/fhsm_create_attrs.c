@@ -1,0 +1,432 @@
+/* ===========================================================================
+ * src/fhsm_create_attrs.c
+ *
+ * Pure parser for the CK_ATTRIBUTE[] template passed to C_CreateObject.
+ * See include/fhsm_create_attrs.h for the contract.
+ *
+ * License : Apache-2.0
+ * SPDX-License-Identifier: Apache-2.0
+ * ----------------------------------------------------------------------- */
+#include "fhsm_create_attrs.h"
+#include "fhsm_attr_utils.h"   /* fhsm_find_attr + fhsm_strip_octet_string_inline */
+
+#include <string.h>
+
+/* ---------------------------------------------------------------------------
+ * PKCS#11 v3.2 numeric constants used by the parser. Defined locally to keep
+ * this TU free of any PKCS#11 header dependency ; the values are byte-stable
+ * across spec revisions for the constants used here.
+ * ----------------------------------------------------------------------- */
+#define FHSM_CKA_CLASS              0x00000000UL
+#define FHSM_CKA_KEY_TYPE           0x00000100UL
+#define FHSM_CKA_LABEL              0x00000003UL
+#define FHSM_CKA_ID                 0x00000102UL
+#define FHSM_CKA_VALUE              0x00000011UL
+#define FHSM_CKA_EC_PARAMS          0x00000180UL
+#define FHSM_CKA_EC_POINT           0x00000181UL
+#define FHSM_CKA_MODULUS            0x00000120UL
+#define FHSM_CKA_PUBLIC_EXPONENT    0x00000122UL
+#define FHSM_CKA_PRIVATE_EXPONENT   0x00000123UL
+#define FHSM_CKA_PRIME_1            0x00000124UL
+#define FHSM_CKA_PRIME_2            0x00000125UL
+#define FHSM_CKA_EXPONENT_1         0x00000126UL
+#define FHSM_CKA_EXPONENT_2         0x00000127UL
+#define FHSM_CKA_COEFFICIENT        0x00000128UL
+
+#define FHSM_CKO_DATA               0x00000000UL
+#define FHSM_CKO_CERTIFICATE        0x00000001UL
+#define FHSM_CKO_PUBLIC_KEY         0x00000002UL
+#define FHSM_CKO_PRIVATE_KEY        0x00000003UL
+#define FHSM_CKO_SECRET_KEY         0x00000004UL
+
+#define FHSM_CKA_CERTIFICATE_TYPE   0x00000080UL
+#define FHSM_CKC_X_509              0x00000000UL
+
+#define FHSM_CKK_RSA                0x00000000UL
+#define FHSM_CKK_EC                 0x00000003UL
+#define FHSM_CKK_EC_EDWARDS         0x00000040UL
+#define FHSM_CKK_ML_KEM             0x00000049UL
+#define FHSM_CKK_ML_DSA             0x0000004AUL
+#define FHSM_CKK_SLH_DSA            0x0000004BUL
+
+/* ---------------------------------------------------------------------------
+ * Curve OID -> group-name lookup. Three NIST curves only, hardcoded for
+ * predictability ; same logic as fhsm_ec_oid_to_group() in fhsm_pkcs11.c.
+ * Public for the harness ; small enough to duplicate without harm.
+ * ----------------------------------------------------------------------- */
+static const struct { const uint8_t oid[10]; size_t oid_len; const char *group; } k_ec_oids[] = {
+    /* P-256 : 1.2.840.10045.3.1.7   -> DER 06 08 2A 86 48 CE 3D 03 01 07 */
+    { { 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07 }, 10, "P-256" },
+    /* P-384 : 1.3.132.0.34          -> DER 06 05 2B 81 04 00 22 */
+    { { 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22 },                    7, "P-384" },
+    /* P-521 : 1.3.132.0.35          -> DER 06 05 2B 81 04 00 23 */
+    { { 0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23 },                    7, "P-521" },
+};
+
+static const char *ec_oid_to_group(const uint8_t *oid, size_t oid_len) {
+    for (size_t i = 0; i < sizeof(k_ec_oids) / sizeof(k_ec_oids[0]); ++i) {
+        if (k_ec_oids[i].oid_len == oid_len
+            && memcmp(k_ec_oids[i].oid, oid, oid_len) == 0)
+            return k_ec_oids[i].group;
+    }
+    return NULL;
+}
+
+/* Ed25519/Ed448 OID DER blobs. */
+static const uint8_t k_ed25519_oid[] = { 0x06, 0x03, 0x2b, 0x65, 0x70 };
+static const uint8_t k_ed448_oid[]   = { 0x06, 0x03, 0x2b, 0x65, 0x71 };
+
+/* RFC 8032 public key lengths. Used to tell a bare CKA_EC_POINT from a
+ * DER-wrapped one: the wrapper adds at least two bytes, so an exact match
+ * on these can only be the bare form. */
+#define FHSM_ED25519_PUBKEY_LEN 32u
+#define FHSM_ED448_PUBKEY_LEN   57u
+
+/* ---------------------------------------------------------------------------
+ * Read a CK_ULONG from an attribute's pValue, assuming the value is at
+ * least sizeof(unsigned long) bytes. Returns 0 on failure.
+ * ----------------------------------------------------------------------- */
+static int read_attr_ulong(const fhsm_attr_t *t, unsigned long n,
+                            unsigned long attr_type, unsigned long *out) {
+    long idx = fhsm_find_attr(t, n, attr_type);
+    if (idx < 0) return 0;
+    if (t[idx].ulValueLen < sizeof(unsigned long)) return 0;
+    memcpy(out, t[idx].pValue, sizeof(unsigned long));
+    return 1;
+}
+
+/* Copy CKA_LABEL into a fixed-size buffer (max sizeof(out)-1 chars, NUL-
+ * terminated). No-op if CKA_LABEL is absent ; the buffer is pre-zeroed
+ * by the caller. */
+static void copy_label(const fhsm_attr_t *t, unsigned long n,
+                        char *out, size_t out_cap) {
+    long idx = fhsm_find_attr(t, n, FHSM_CKA_LABEL);
+    if (idx < 0) return;
+    size_t copy = t[idx].ulValueLen;
+    if (copy >= out_cap) copy = out_cap - 1;
+    if (copy > 0) memcpy(out, t[idx].pValue, copy);
+    out[copy] = '\0';
+}
+
+/* ---------------------------------------------------------------------------
+ * Sub-parsers for each create path. Each one assumes the (cko, ckk) gate
+ * has already been validated by the dispatch logic in
+ * fhsm_parse_create_attrs() below.
+ * ----------------------------------------------------------------------- */
+
+static fhsm_parse_rv_t parse_verbatim(
+    const fhsm_attr_t *t, unsigned long n,
+    fhsm_create_attrs_t *attrs) {
+    long iv = fhsm_find_attr(t, n, FHSM_CKA_VALUE);
+    if (iv < 0) return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+    attrs->value_data = (const uint8_t *)t[iv].pValue;
+    attrs->value_len  = (size_t)t[iv].ulValueLen;
+    attrs->path = FHSM_CREATE_PATH_VERBATIM;
+    return FHSM_PARSE_OK;
+}
+
+/* Raw public-key lengths, one per parameter set.
+ *
+ * Measured with tests/probe_pqc_pub_lengths against the provider this module
+ * loads, on 2026-09-18, rather than recalled from FIPS 203 §8 / FIPS 204 §4.
+ * The six are distinct, which is what allows CKA_PARAMETER_SET to be optional
+ * here: the length identifies the set on its own. If a future set collides
+ * with one of these, that stops being true and this table stops being enough.
+ *
+ * Pure C, like the rest of this file. The conversion to an EVP_PKEY happens
+ * in the builder; this side only names the algorithm. */
+static const struct { size_t len; const char *alg; } FHSM_PQC_PUB_LENS[] = {
+    {  800, "ML-KEM-512"  },
+    { 1184, "ML-KEM-768"  },
+    { 1568, "ML-KEM-1024" },
+    { 1312, "ML-DSA-44"   },
+    { 1952, "ML-DSA-65"   },
+    { 2592, "ML-DSA-87"   },
+};
+
+/* The parameter set whose raw public key is `len` bytes, restricted to the
+ * family the key type names -- so a 1312-byte value declared CKK_ML_KEM is not
+ * silently accepted as ML-DSA-44. Returns NULL if nothing matches, which the
+ * caller reads as "not raw, try DER". */
+static const char *fhsm_pqc_alg_for(size_t len, unsigned long ckk) {
+    /* SLH-DSA has no entry: its raw public keys are 32, 48 or 64 bytes and
+     * each length is four sets (SHA2 or SHAKE, s or f). The builder names the
+     * set from CKA_PARAMETER_SET, which import requires. */
+    if (ckk == FHSM_CKK_SLH_DSA) return NULL;
+    const char *want = (ckk == FHSM_CKK_ML_KEM) ? "ML-KEM" : "ML-DSA";
+    for (size_t i = 0; i < sizeof(FHSM_PQC_PUB_LENS)/sizeof(FHSM_PQC_PUB_LENS[0]); ++i) {
+        if (FHSM_PQC_PUB_LENS[i].len != len) continue;
+        const char *a = FHSM_PQC_PUB_LENS[i].alg;
+        if (strncmp(a, want, 6) == 0) return a;
+    }
+    return NULL;
+}
+
+static fhsm_parse_rv_t parse_pqc_pub(
+    const fhsm_attr_t *t, unsigned long n,
+    fhsm_create_attrs_t *attrs) {
+    long iv = fhsm_find_attr(t, n, FHSM_CKA_VALUE);
+    if (iv < 0) return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+    if (t[iv].pValue == NULL || t[iv].ulValueLen == 0)
+        return FHSM_PARSE_ATTRIBUTE_VALUE_INVALID;
+
+    attrs->value_data = (const uint8_t *)t[iv].pValue;
+    attrs->value_len  = (size_t)t[iv].ulValueLen;
+    attrs->pqc_alg    = fhsm_pqc_alg_for(attrs->value_len, attrs->ckk);
+    attrs->path       = FHSM_CREATE_PATH_PQC_PUB;
+    /* pqc_alg NULL is not an error here: the value may be a DER
+     * SubjectPublicKeyInfo, which only the builder can tell. A length that is
+     * neither a raw key nor parsable DER is refused there. */
+    return FHSM_PARSE_OK;
+}
+
+static fhsm_parse_rv_t parse_ec_pub(
+    const fhsm_attr_t *t, unsigned long n,
+    fhsm_create_attrs_t *attrs) {
+    long ip  = fhsm_find_attr(t, n, FHSM_CKA_EC_PARAMS);
+    long ipt = fhsm_find_attr(t, n, FHSM_CKA_EC_POINT);
+    if (ip < 0 || ipt < 0) return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+
+    const char *group = ec_oid_to_group(
+        (const uint8_t *)t[ip].pValue, (size_t)t[ip].ulValueLen);
+    if (!group) return FHSM_PARSE_CURVE_NOT_IN_TABLE;
+    attrs->ec_group = group;
+
+    /* CKA_EC_POINT is a DER OCTET STRING wrapper around 0x04 || X || Y. */
+    const uint8_t *point = NULL;
+    size_t point_len = 0;
+    if (!fhsm_strip_octet_string_inline(
+            (const uint8_t *)t[ipt].pValue, (size_t)t[ipt].ulValueLen,
+            &point, &point_len))
+        return FHSM_PARSE_ATTRIBUTE_VALUE_INVALID;
+    attrs->ec_point     = point;
+    attrs->ec_point_len = point_len;
+
+    attrs->path = FHSM_CREATE_PATH_EC_PUB;
+    return FHSM_PARSE_OK;
+}
+
+static fhsm_parse_rv_t parse_ed_pub(
+    const fhsm_attr_t *t, unsigned long n,
+    fhsm_create_attrs_t *attrs) {
+    long ip  = fhsm_find_attr(t, n, FHSM_CKA_EC_PARAMS);
+    long ipt = fhsm_find_attr(t, n, FHSM_CKA_EC_POINT);
+    if (ip < 0 || ipt < 0) return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+
+    const uint8_t *oid = (const uint8_t *)t[ip].pValue;
+    size_t oid_len = (size_t)t[ip].ulValueLen;
+    fhsm_create_path_t ed_path = FHSM_CREATE_PATH_INVALID;
+    if (oid_len == sizeof(k_ed25519_oid)
+        && memcmp(oid, k_ed25519_oid, oid_len) == 0)
+        ed_path = FHSM_CREATE_PATH_ED25519_PUB;
+    else if (oid_len == sizeof(k_ed448_oid)
+             && memcmp(oid, k_ed448_oid, oid_len) == 0)
+        ed_path = FHSM_CREATE_PATH_ED448_PUB;
+    else
+        return FHSM_PARSE_ATTRIBUTE_VALUE_INVALID;
+
+    /* CKA_EC_POINT for an Edwards key arrives in two shapes in the field: the
+     * DER OCTET STRING the specification describes, and the bare RFC 8032
+     * public key. Both are in use -- pkcs11-check's CCTV suite sends the bare
+     * form, OpenSC sends the wrapper -- and accepting only one is
+     * indistinguishable, from outside, from not supporting Ed25519 import at
+     * all: 397 vectors reported "CCTV Ed25519 public-key import not
+     * operational: CKR_ATTRIBUTE_VALUE_INVALID".
+     *
+     * C_DeriveKey's ECDH path already accepts a SPKI, a wrapped point and a
+     * bare point, with a comment explaining why. That tolerance was never
+     * carried across to this parser.
+     *
+     * The bare form is admitted only at exactly the curve's key length, which
+     * is unambiguous: a DER OCTET STRING carrying 32 bytes is 34 bytes long,
+     * so no wrapped value can be mistaken for a bare one. A wrapper that is
+     * malformed rather than absent still fails, since it will not have the
+     * exact length either. */
+    const uint8_t *raw = (const uint8_t *)t[ipt].pValue;
+    size_t raw_len = (size_t)t[ipt].ulValueLen;
+    const size_t bare_len = (ed_path == FHSM_CREATE_PATH_ED25519_PUB)
+                            ? FHSM_ED25519_PUBKEY_LEN : FHSM_ED448_PUBKEY_LEN;
+
+    const uint8_t *point = NULL;
+    size_t point_len = 0;
+    if (fhsm_strip_octet_string_inline(raw, raw_len, &point, &point_len)) {
+        /* Wrapped: the payload must still be the curve's key length. */
+        if (point_len != bare_len) return FHSM_PARSE_ATTRIBUTE_VALUE_INVALID;
+    } else if (raw_len == bare_len) {
+        point = raw;
+        point_len = raw_len;
+    } else {
+        return FHSM_PARSE_ATTRIBUTE_VALUE_INVALID;
+    }
+    attrs->ec_point     = point;
+    attrs->ec_point_len = point_len;
+    attrs->ec_group     = NULL;     /* curve identity carried by the path */
+    attrs->path         = ed_path;
+    return FHSM_PARSE_OK;
+}
+
+static fhsm_parse_rv_t parse_rsa_pub(
+    const fhsm_attr_t *t, unsigned long n,
+    fhsm_create_attrs_t *attrs) {
+    long im = fhsm_find_attr(t, n, FHSM_CKA_MODULUS);
+    long ie = fhsm_find_attr(t, n, FHSM_CKA_PUBLIC_EXPONENT);
+    if (im < 0 || ie < 0) return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+    attrs->rsa_modulus      = (const uint8_t *)t[im].pValue;
+    attrs->rsa_modulus_len  = (size_t)t[im].ulValueLen;
+    attrs->rsa_exponent     = (const uint8_t *)t[ie].pValue;
+    attrs->rsa_exponent_len = (size_t)t[ie].ulValueLen;
+    attrs->path = FHSM_CREATE_PATH_RSA_PUB;
+    return FHSM_PARSE_OK;
+}
+
+/* CKO_PRIVATE_KEY + CKK_RSA given as components (§C.6.3).
+ *
+ * n, e and d are required: without any one of them there is no private key,
+ * only a description of one. The CRT five are optional -- OpenSSL derives what
+ * is missing, and a caller that has only the bare triple is entitled to import
+ * it.
+ *
+ * Nothing is validated here beyond presence. Whether the components are a
+ * consistent key is a question for the arithmetic, not for a template parser,
+ * and the answer comes from EVP_PKEY_fromdata at the boundary. Guessing here
+ * would put half a validation in one file and half in another.
+ */
+static fhsm_parse_rv_t parse_rsa_priv(
+    const fhsm_attr_t *t, unsigned long n,
+    fhsm_create_attrs_t *attrs) {
+    struct { unsigned long cka; const uint8_t **p; size_t *len; int required; } m[] = {
+        { FHSM_CKA_MODULUS,          &attrs->rsa_modulus,  &attrs->rsa_modulus_len,  1 },
+        { FHSM_CKA_PUBLIC_EXPONENT,  &attrs->rsa_exponent, &attrs->rsa_exponent_len, 1 },
+        { FHSM_CKA_PRIVATE_EXPONENT, &attrs->rsa_d,        &attrs->rsa_d_len,        1 },
+        { FHSM_CKA_PRIME_1,          &attrs->rsa_p,        &attrs->rsa_p_len,        0 },
+        { FHSM_CKA_PRIME_2,          &attrs->rsa_q,        &attrs->rsa_q_len,        0 },
+        { FHSM_CKA_EXPONENT_1,       &attrs->rsa_dmp1,     &attrs->rsa_dmp1_len,     0 },
+        { FHSM_CKA_EXPONENT_2,       &attrs->rsa_dmq1,     &attrs->rsa_dmq1_len,     0 },
+        { FHSM_CKA_COEFFICIENT,      &attrs->rsa_iqmp,     &attrs->rsa_iqmp_len,     0 },
+    };
+    for (size_t i = 0; i < sizeof m / sizeof m[0]; ++i) {
+        long ix = fhsm_find_attr(t, n, m[i].cka);
+        if (ix < 0 || t[ix].pValue == NULL || t[ix].ulValueLen == 0) {
+            if (m[i].required) return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+            continue;
+        }
+        *m[i].p   = (const uint8_t *)t[ix].pValue;
+        *m[i].len = (size_t)t[ix].ulValueLen;
+    }
+    attrs->path = FHSM_CREATE_PATH_RSA_PRIV;
+    return FHSM_PARSE_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Public entry point. Reads CKA_CLASS / CKA_KEY_TYPE / CKA_LABEL / CKA_ID
+ * then dispatches to the right sub-parser based on (cko, ckk).
+ * ----------------------------------------------------------------------- */
+fhsm_parse_rv_t fhsm_parse_create_attrs(
+    const fhsm_attr_t *pTemplate, unsigned long ulCount,
+    fhsm_create_attrs_t *attrs) {
+
+    /* Pre-zero the output so caller code that switches on attrs->path can
+     * see consistent defaults even on failure. */
+    memset(attrs, 0, sizeof(*attrs));
+
+    if (!pTemplate || ulCount == 0) return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+
+    if (!read_attr_ulong(pTemplate, ulCount, FHSM_CKA_CLASS, &attrs->cko))
+        return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+
+    /* Validate class is one of the supported ones. */
+    if (attrs->cko != FHSM_CKO_DATA
+        && attrs->cko != FHSM_CKO_PUBLIC_KEY
+        && attrs->cko != FHSM_CKO_PRIVATE_KEY
+        && attrs->cko != FHSM_CKO_SECRET_KEY
+        && attrs->cko != FHSM_CKO_CERTIFICATE)
+        return FHSM_PARSE_TEMPLATE_INCONSISTENT;
+
+    /* Optional attributes : label + id. */
+    copy_label(pTemplate, ulCount, attrs->label, sizeof(attrs->label));
+    long idx_id = fhsm_find_attr(pTemplate, ulCount, FHSM_CKA_ID);
+    if (idx_id >= 0) {
+        attrs->id_data = (const uint8_t *)pTemplate[idx_id].pValue;
+        attrs->id_len  = (size_t)pTemplate[idx_id].ulValueLen;
+    }
+
+    /* Data objects (CKO_DATA, PKCS#11 v3.2 par. 4.4) : an application-defined
+     * blob. No key type ; CKA_VALUE is optional (defaults to empty). Stored
+     * verbatim like a secret key value (#125 TestDataObject*). */
+    if (attrs->cko == FHSM_CKO_DATA) {
+        long iv = fhsm_find_attr(pTemplate, ulCount, FHSM_CKA_VALUE);
+        attrs->ckk        = 0;
+        attrs->value_data = (iv >= 0) ? (const uint8_t *)pTemplate[iv].pValue : NULL;
+        attrs->value_len  = (iv >= 0) ? (size_t)pTemplate[iv].ulValueLen : 0;
+        attrs->path       = FHSM_CREATE_PATH_VERBATIM;
+        return FHSM_PARSE_OK;
+    }
+
+    /* Certificates (#110) : CKA_KEY_TYPE is NOT part of the class
+     * (PKCS#11 v3.2 par. 4.6.3) ; CKA_CERTIFICATE_TYPE gates instead.
+     * Only CKC_X_509 is supported ; the DER certificate travels in
+     * CKA_VALUE, stored verbatim (the module never parses X.509 ---
+     * that is the PKI layer's job). */
+    if (attrs->cko == FHSM_CKO_CERTIFICATE) {
+        if (!read_attr_ulong(pTemplate, ulCount, FHSM_CKA_CERTIFICATE_TYPE,
+                              &attrs->cert_type))
+            return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+        if (attrs->cert_type != FHSM_CKC_X_509)
+            return FHSM_PARSE_TEMPLATE_INCONSISTENT;
+        long iv = fhsm_find_attr(pTemplate, ulCount, FHSM_CKA_VALUE);
+        if (iv < 0 || pTemplate[iv].ulValueLen == 0)
+            return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+        attrs->value_data = (const uint8_t *)pTemplate[iv].pValue;
+        attrs->value_len  = (size_t)pTemplate[iv].ulValueLen;
+        attrs->path = FHSM_CREATE_PATH_CERT_X509;
+        return FHSM_PARSE_OK;
+    }
+
+    if (!read_attr_ulong(pTemplate, ulCount, FHSM_CKA_KEY_TYPE, &attrs->ckk))
+        return FHSM_PARSE_TEMPLATE_INCOMPLETE;
+
+    /* Dispatch on (cko, ckk). */
+    /* An EC private key with no CKA_EC_PARAMS is under-specified : the
+     * curve is unknown, so subsequent sign/derive would be undefined.
+     * Reject rather than store a curveless key (#125 TestEcMissingParams). */
+    if (attrs->cko == FHSM_CKO_PRIVATE_KEY && attrs->ckk == FHSM_CKK_EC
+        && fhsm_find_attr(pTemplate, ulCount, FHSM_CKA_EC_PARAMS) < 0)
+        return FHSM_PARSE_TEMPLATE_INCONSISTENT;
+
+    /* An RSA private key given as components rather than as a blob. Chosen
+     * only when CKA_VALUE is absent, so every import that worked before --
+     * including the PQC private keys, which are verbatim -- is untouched. */
+    if (attrs->cko == FHSM_CKO_PRIVATE_KEY && attrs->ckk == FHSM_CKK_RSA
+        && fhsm_find_attr(pTemplate, ulCount, FHSM_CKA_VALUE) < 0)
+        return parse_rsa_priv(pTemplate, ulCount, attrs);
+
+    if (attrs->cko == FHSM_CKO_SECRET_KEY
+        || attrs->cko == FHSM_CKO_PRIVATE_KEY)
+        return parse_verbatim(pTemplate, ulCount, attrs);
+
+    /* ML-DSA public used to fall into parse_verbatim just above, and ML-KEM
+     * public matched nothing at all and left as CKR_TEMPLATE_INCONSISTENT.
+     * Two ways of getting a PQC public key wrong: one accepted and stored
+     * something it could not read back, the other refused honestly. Both now
+     * go through the same parser.
+     *
+     * SLH-DSA public was the second kind, unnoticed until NIST's vectors
+     * were run through C_CreateObject (tests/test_slh_dsa_kat.c): no
+     * branch matched, so every SLH-DSA public key was refused. */
+    if (attrs->cko == FHSM_CKO_PUBLIC_KEY
+        && (attrs->ckk == FHSM_CKK_ML_KEM || attrs->ckk == FHSM_CKK_ML_DSA
+            || attrs->ckk == FHSM_CKK_SLH_DSA))
+        return parse_pqc_pub(pTemplate, ulCount, attrs);
+
+    if (attrs->cko == FHSM_CKO_PUBLIC_KEY && attrs->ckk == FHSM_CKK_EC)
+        return parse_ec_pub(pTemplate, ulCount, attrs);
+
+    if (attrs->cko == FHSM_CKO_PUBLIC_KEY
+        && attrs->ckk == FHSM_CKK_EC_EDWARDS)
+        return parse_ed_pub(pTemplate, ulCount, attrs);
+
+    if (attrs->cko == FHSM_CKO_PUBLIC_KEY && attrs->ckk == FHSM_CKK_RSA)
+        return parse_rsa_pub(pTemplate, ulCount, attrs);
+
+    return FHSM_PARSE_TEMPLATE_INCONSISTENT;
+}

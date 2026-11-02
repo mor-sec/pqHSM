@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["audit", "audit-verify", "token", "module", "pki", "crypto"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+openssl = "0.10"
+openssl-sys = "0.9"
+zeroize = "1"
+proptest = "1"
+tempfile = "3"
+libc = "0.2"
+
+[profile.release]
+# A panic in the module must not unwind into C (brief Phase 1, risk 1).
+panic = "abort"

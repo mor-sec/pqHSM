@@ -1,0 +1,73 @@
+[freehsm-c] NOTE : integrity bypass active --- FHSM_INTEGRITY_ALLOW_UNSIGNED is set, so this
+  process skipped the integrity check and did not load the OpenSSL FIPS provider ;
+  EVP fetches are served by the default provider. This RUN is not FIPS-conformant.
+  The binary is unchanged : the same file, run without the variable, loads the
+  provider. Unset it to run inside the evaluated configuration --- or set
+  FHSM_EVIDENCE=1 if you are running the Wycheproof harness, which sets the
+  bypass itself.
+C_Initialize returned 0x0
+[smoke] 62 KAT vectors:
+        [+] AES-GCM-256              SP800-38D-TC14             41 us
+        [+] AES-GCM-256-decrypt      SP800-38D-TC14+tamper       7 us
+        [+] SHA-256                  FIPS180-4-B.1               5 us
+        [+] HMAC-SHA-256             RFC4231-TC1                31 us
+        [+] PBKDF2-HMAC-SHA-256      smoke-200k               31384 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len0           17 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len8            1 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len24           0 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len112          0 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len448          0 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len8            0 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len16           0 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len24           0 us
+        [+] SHA-256-CAVP             CAVP-SHA256-Len896          0 us
+        [+] CTR_DRBG-AES-256         stuck-check                49 us
+        [+] AES-GCM-256              SP800-38D-TC14             14 us
+        [+] AES-GCM-256              SP800-38D-TC15              1 us
+        [+] HMAC-SHA-256             RFC4231-TC1                10 us
+        [+] HMAC-SHA-256             RFC4231-TC2                 2 us
+        [+] HMAC-SHA-256             RFC4231-TC3                 1 us
+        [+] HMAC-SHA-256             RFC4231-TC6                 2 us
+        [+] SHA-256                  FIPS180-4-empty             0 us
+        [+] SHA-256                  FIPS180-4-abc               0 us
+        [+] SHA-384                  FIPS180-4-empty             6 us
+        [+] SHA-384                  FIPS180-4-abc               1 us
+        [+] SHA-512                  FIPS180-4-empty             7 us
+        [+] SHA-512                  FIPS180-4-abc               0 us
+        [+] SHA3-256                 FIPS202-A1-empty           12 us
+        [+] SHA3-256                 FIPS202-A1-abc              1 us
+        [+] SHA3-384                 FIPS202-A2-empty            2 us
+        [+] SHA3-384                 FIPS202-A2-abc              0 us
+        [+] SHA3-512                 FIPS202-A3-empty            2 us
+        [+] SHA3-512                 FIPS202-A3-abc              0 us
+        [+] AES-256-CBC              SP800-38A-F.2.5             5 us
+        [+] AES-256-CTR              SP800-38A-F.5.5             2 us
+        [+] AES-256-CMAC             SP800-38B-D.3-Ex7           7 us
+        [+] AES-256-CMAC             SP800-38B-D.3-Ex8           8 us
+        [+] AES-256-CMAC             SP800-38B-D.3-Ex9           2 us
+        [+] AES-256-GMAC             SP800-38D-self-consistency    9 us
+        [+] ECDSA-P256-SHA256        RFC6979-A.2.5             644 us
+        [+] ECDSA-P384-SHA384        RFC6979-A.2.6            1610 us
+        [+] ECDSA-P521-SHA512        RFC6979-A.2.7             685 us
+        [+] ECDSA-P256-export-roundtrip v1.2.2-self-consistency  1344 us
+        [+] ECDSA-P384-export-roundtrip v1.2.2-self-consistency  2998 us
+        [+] ECDSA-P521-export-roundtrip v1.2.2-self-consistency  1296 us
+        [+] RSA-2048-PSS-SHA256-export-roundtrip v1.3.0-self-consistency  212122 us
+        [+] RSA-2048-OAEP-SHA256-export-roundtrip v1.3.0-self-consistency  27174 us
+        [+] Ed25519-export-roundtrip v1.3.0-self-consistency   488 us
+        [+] ML-DSA-65-export-roundtrip v1.3.0-self-consistency  1785 us
+        [+] ML-KEM-768-export-roundtrip v1.3.0-self-consistency   372 us
+        [+] ECDH-P256-export-roundtrip v1.3.0-self-consistency   373 us
+        [+] ECDH-P384-export-roundtrip v1.3.0-self-consistency  3912 us
+        [+] ECDH-P521-export-roundtrip v1.3.0-self-consistency  1349 us
+        [+] HKDF-SHA-256             RFC5869-A.1                26 us
+        [+] HKDF-SHA-256             RFC5869-A.2                 5 us
+        [+] PBKDF2-HMAC-SHA-1        RFC6070-TC1                 9 us
+        [+] PBKDF2-HMAC-SHA-1        RFC6070-TC2                 3 us
+        [+] RSA-2048-PSS-SHA256      selftest-sign+verify     1970 us
+        [+] RSA-2048-OAEP-SHA256     selftest-encrypt+decrypt 1405 us
+        [+] ML-KEM-768               selftest-encaps+decaps    100 us
+        [+] ML-DSA-65                selftest-sign+verify      699 us
+        [+] SLH-DSA-SHA2-128f        selftest-sign+verify     13867 us
+[smoke] OK
+smoke rc=0

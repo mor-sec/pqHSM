@@ -1,0 +1,15 @@
+# Phase 1 build/test image: the pinned legacy image plus a pinned Rust toolchain,
+# so the Rust crates link the same Debian OpenSSL 3.5.7 the C module does.
+FROM localhost/freehsm-build:1.2.0
+USER root
+ENV RUSTUP_HOME=/opt/rust/rustup \
+    CARGO_HOME=/opt/rust/cargo \
+    PATH=/opt/rust/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu \
+    OPENSSL_INCLUDE_DIR=/usr/include
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal \
+           --default-toolchain 1.99.1 --component clippy,rustfmt \
+ && rustc --version && cargo --version
+ENTRYPOINT []
+CMD ["/bin/sh"]

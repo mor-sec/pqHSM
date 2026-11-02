@@ -1,0 +1,90 @@
+# case	rv	[k=v]  C ABI of include/fhsm_token.h with NULL/out-of-range arguments. Made by gen_store.c.
+load_null_path	0x7
+load_null_out	0x7
+load_missing	0xe0
+init_null_path	0x7
+init_null_pin	0x7
+init_null_label	0x7
+init_null_out	0x7
+init_ok	0x0
+login_null_token	0x7
+login_null_pin	0x7
+verify_null_token	0x7
+verify_null_pin	0x7
+verify_role_3	0x7
+set_pin_null_token	0x7
+set_pin_null_old	0x7
+set_pin_null_new	0x7
+init_user_pin_null_token	0x7
+init_user_pin_null_pin	0x7
+reinit_null_token	0x7
+reinit_null_pin	0x7
+reinit_null_label	0x7
+accessors_null_token	0x0	role=0 label_null=1 serial_null=1 failed=0 uinit=0 locked=0 thr=0
+login_so	0x0
+init_user_pin	0x0
+login_user	0x0
+add_null_token	0x7
+add_null_out	0x7
+add_value_over_max	0x62
+add_id_33	0x7
+add_value_over_max_and_id_33	0x62
+add_ok	0x0
+add_null_label_null_value	0x0
+get_null_token	0x7
+get_null_outputs	0x0
+get_empty_value	0x0	value_null=1 len=0
+find_null_token	0x7
+find_null_count	0x7
+find_null_handles	0x0	n=2
+get_label_null_out	0x7
+get_label_null_len	0x7
+get_id_null_out	0x7
+get_meta_null_out	0x7
+get_meta_which_3	0x7
+get_meta_which_3_unknown_handle	0x60
+set_meta_null_token	0x7
+set_meta_start_9	0x13
+set_meta_null_start_len_9	0x13
+get_flags_null_out	0x7
+get_flags2_null_out	0x7
+get_flags3_null_out	0x7
+get_usage_null_out	0x7
+is_token_null_out	0x7
+get_flags_null_token	0x7
+is_token_null_token	0x7
+set_flags_null_token	0x7
+set_flags2_null_token	0x7
+set_flags3_null_token	0x7
+set_usage_null_token	0x7
+set_label_null_label	0x7
+set_id_33	0x13
+set_id_null_with_len	0x7
+set_id_null_len_0	0x0
+destroy_null_token	0x7
+mark_session_owner_0	0x7
+destroy_session_owner_0	0x7
+mech_allowed_null_token	0x7
+policy_counts_null_token	0x7
+policy_counts_null_outputs	0x0
+set_mechs_null_with_count	0x7
+set_mechs_count_9	0x13
+set_mechs_null_count_0	0x0
+set_mechs_3	0x0
+get_mechs_null_io	0x7
+get_mechs_size_query	0x0	io=3
+get_mechs_cap_2	0x150	io=3
+get_mechs_cap_3	0x0	io=3 v=0x1081,0x1082,0x3
+get_mechs_unknown_handle	0x60	io=5
+set_tmpl_null_with_count	0x7
+set_tmpl_count_5	0x13
+set_tmpl_which_3	0x7
+set_tmpl_which_3_count_5	0x13
+set_tmpl_kind_0_which_3	0x7
+set_tmpl_2	0x0
+get_tmpl_null_io	0x7
+get_tmpl_which_3	0x7
+get_tmpl_size_query	0x0	io=2
+get_tmpl_cap_1	0x150	io=2
+policy_attr_layout	0x0	size=56 align=4 kind=4 len=5 value=6
+close_and_logout_null	0x0

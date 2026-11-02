@@ -1,0 +1,267 @@
+/* ===========================================================================
+ * Copyright 2026 Afchine Madjlessi <afchine.mad@gmail.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * ========================================================================= */
+/* ===========================================================================
+ * fhsm_session.c --- Session table.
+ *
+ * Pure book-keeping : sessions hold a slot id, the open flags, the
+ * authenticated role, and a pointer to the slot's token. The token
+ * lives in fhsm_token.c; multiple sessions share the same token but
+ * each is independent at the PKCS#11 level (operations, find-results).
+ *
+ * Allocated count is bounded by FHSM_MAX_SESSIONS (compile-time, default
+ * 128). Beyond that, C_OpenSession returns FHSM_RV_HOST_MEMORY.
+ * ========================================================================= */
+
+#include "fhsm_common.h"
+#include "fhsm_session.h"
+#include "fhsm_token.h"
+
+#include <pthread.h>
+#include <string.h>
+
+typedef struct fhsm_session_s {
+    int            in_use;
+    unsigned long  slot;
+    unsigned long  flags;
+    fhsm_role_t    role;
+    fhsm_token_t  *token;
+} fhsm_session_entry_t;
+
+static pthread_mutex_t      g_sess_mu = PTHREAD_MUTEX_INITIALIZER;
+static fhsm_session_entry_t g_sessions[FHSM_MAX_SESSIONS];
+
+fhsm_rv_t fhsm_session_open(unsigned long slot, unsigned long flags,
+                              unsigned long *out_handle) {
+    pthread_mutex_lock(&g_sess_mu);
+    for (size_t i = 1; i < FHSM_MAX_SESSIONS; ++i) {  /* skip index 0 */
+        if (!g_sessions[i].in_use) {
+            g_sessions[i].in_use = 1;
+            g_sessions[i].slot   = slot;
+            g_sessions[i].flags  = flags;
+            g_sessions[i].role   = FHSM_ROLE_NONE;
+            g_sessions[i].token  = NULL;   /* attached at login */
+            pthread_mutex_unlock(&g_sess_mu);
+            *out_handle = i;
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&g_sess_mu);
+    return FHSM_RV_HOST_MEMORY;
+}
+
+fhsm_rv_t fhsm_session_close(unsigned long h) {
+    if (h == 0 || h >= FHSM_MAX_SESSIONS) return FHSM_RV_SESSION_HANDLE_INVALID;
+    pthread_mutex_lock(&g_sess_mu);
+    if (!g_sessions[h].in_use) {
+        pthread_mutex_unlock(&g_sess_mu);
+        return FHSM_RV_SESSION_HANDLE_INVALID;
+    }
+    fhsm_token_t *t = g_sessions[h].token;
+    /* zeroize the entry so a stale handle cannot inherit residual state */
+    fhsm_zeroize(&g_sessions[h], sizeof(g_sessions[h]));
+    /* Closing the application's last session on a token returns it to the
+     * public state (C_CloseSession, §5.6.2). Nothing did: a token stayed
+     * logged in with no session left, and the next C_OpenSession found it
+     * still authenticated -- invisible until C_Login refused a second role
+     * (CKR_USER_ANOTHER_ALREADY_LOGGED_IN), when tests that closed an SO
+     * session and logged in as USER on a new one began to fail. Both
+     * C_CloseSession and C_CloseAllSessions come through here. Lock order is
+     * session table then token, as in fhsm_session_logout. */
+    if (t) {
+        int others = 0;
+        for (size_t i = 1; i < FHSM_MAX_SESSIONS && !others; ++i)
+            others = g_sessions[i].in_use && g_sessions[i].token == t;
+        if (!others) fhsm_token_logout(t);
+    }
+    pthread_mutex_unlock(&g_sess_mu);
+    return FHSM_RV_OK;
+}
+
+/* 1 if any session is open on `slot`, whether or not a token is attached to
+ * it yet. C_InitToken is refused while one is (CKR_SESSION_EXISTS). */
+int fhsm_session_exists_on_slot(unsigned long slot) {
+    int found = 0;
+    pthread_mutex_lock(&g_sess_mu);
+    for (size_t i = 1; i < FHSM_MAX_SESSIONS && !found; ++i)
+        found = g_sessions[i].in_use && g_sessions[i].slot == slot;
+    pthread_mutex_unlock(&g_sess_mu);
+    return found;
+}
+
+/* 1 if a read-only session is open on token t. CKF_RW_SESSION is 0x2. */
+int fhsm_session_ro_exists(const fhsm_token_t *t) {
+    int found = 0;
+    pthread_mutex_lock(&g_sess_mu);
+    for (size_t i = 1; i < FHSM_MAX_SESSIONS && !found; ++i)
+        found = g_sessions[i].in_use && g_sessions[i].token == t
+                && !(g_sessions[i].flags & 0x2UL);
+    pthread_mutex_unlock(&g_sess_mu);
+    return found;
+}
+
+fhsm_rv_t fhsm_session_login(unsigned long h, fhsm_role_t role,
+                               const char *pin, size_t pin_len) {
+    if (h == 0 || h >= FHSM_MAX_SESSIONS) return FHSM_RV_SESSION_HANDLE_INVALID;
+    pthread_mutex_lock(&g_sess_mu);
+    fhsm_session_entry_t *s = &g_sessions[h];
+    if (!s->in_use) {
+        pthread_mutex_unlock(&g_sess_mu);
+        return FHSM_RV_SESSION_HANDLE_INVALID;
+    }
+    pthread_mutex_unlock(&g_sess_mu);
+
+    /* The token attach + login lives in fhsm_token_login; this function
+     * is the boundary that the PKCS#11 façade calls. */
+    if (!s->token) return FHSM_RV_TOKEN_NOT_PRESENT;
+    /* An SO login needs every session on the token to be read-write :
+     * CKR_SESSION_READ_ONLY_EXISTS (C_Login). C_GetSessionInfo's comment
+     * said this function refused it ; nothing did. The session table is
+     * read here and not held across fhsm_token_login, which runs PBKDF2 --
+     * a read-only session opened in that window is not seen. C_OpenSession's
+     * CKR_SESSION_READ_WRITE_SO_EXISTS covers the other order. */
+    if (role == FHSM_ROLE_SO && fhsm_session_ro_exists(s->token))
+        return FHSM_RV_SESSION_READ_ONLY_EXISTS;
+    fhsm_rv_t rv = fhsm_token_login(s->token, role, pin, pin_len);
+    /* Set this session's role when the token is (already) logged in as
+     * that role : CKR_USER_ALREADY_LOGGED_IN means the application is
+     * authenticated, so this session must reflect it too (#125). */
+    if (rv == FHSM_RV_OK || rv == FHSM_RV_USER_ALREADY_LOGGED_IN) {
+        /* Under the table mutex: fhsm_session_info and fhsm_session_logout
+         * read and write it under that lock from other threads (#111-prep). */
+        pthread_mutex_lock(&g_sess_mu);
+        if (s->in_use) s->role = role;
+        pthread_mutex_unlock(&g_sess_mu);
+    }
+    return rv;
+}
+
+/* PKCS#11 v3.2 §5.6.8 lists CKR_USER_NOT_LOGGED_IN among C_Logout's returns,
+ * and this returned CKR_OK unconditionally: a logout on a token nobody had
+ * logged into reported success. Found on 2026-09-27 by diffing an archived
+ * 0.1.9 run against a 0.2.1 one, where pkcs11-check had reclassified it from
+ * pass to xfail ("C_Logout without login returned CKR_OK (tolerated
+ * deviation)"). Tolerated is not the same as correct.
+ *
+ * The check is on the TOKEN's login state, not this session's role. PKCS#11
+ * login state belongs to the token: when one session logs in, every session on
+ * that token is logged in (§5.6.6). Checking `s->role` would have refused a
+ * logout issued from a second session that never called C_Login itself, which
+ * is a legitimate call and the more common one in a multi-session
+ * application. */
+fhsm_rv_t fhsm_session_logout(unsigned long h) {
+    if (h == 0 || h >= FHSM_MAX_SESSIONS) return FHSM_RV_SESSION_HANDLE_INVALID;
+    pthread_mutex_lock(&g_sess_mu);
+    fhsm_session_entry_t *s = &g_sessions[h];
+    if (!s->in_use) {
+        pthread_mutex_unlock(&g_sess_mu);
+        return FHSM_RV_SESSION_HANDLE_INVALID;
+    }
+    if (!s->token || fhsm_token_current_role(s->token) == FHSM_ROLE_NONE) {
+        /* s->role is cleared anyway: a session may hold a stale cached role
+         * after another session logged the token out, and leaving it set
+         * would make the refusal depend on which session asked. */
+        s->role = FHSM_ROLE_NONE;
+        pthread_mutex_unlock(&g_sess_mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    fhsm_token_logout(s->token);
+    s->role = FHSM_ROLE_NONE;
+    pthread_mutex_unlock(&g_sess_mu);
+    return FHSM_RV_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Token attachment / accessors. The session table owns the per-session
+ * state but the token itself lives in the slot registry (fhsm_pkcs11.c).
+ * These helpers let the PKCS#11 façade wire the two together without
+ * exposing the internal session struct.
+ * ----------------------------------------------------------------------- */
+fhsm_rv_t fhsm_session_attach_token(unsigned long h, fhsm_token_t *t) {
+    if (h == 0 || h >= FHSM_MAX_SESSIONS) return FHSM_RV_SESSION_HANDLE_INVALID;
+    pthread_mutex_lock(&g_sess_mu);
+    if (!g_sessions[h].in_use) {
+        pthread_mutex_unlock(&g_sess_mu);
+        return FHSM_RV_SESSION_HANDLE_INVALID;
+    }
+    g_sessions[h].token = t;
+    pthread_mutex_unlock(&g_sess_mu);
+    return FHSM_RV_OK;
+}
+
+fhsm_token_t *fhsm_session_token(unsigned long h) {
+    if (h == 0 || h >= FHSM_MAX_SESSIONS) return NULL;
+    pthread_mutex_lock(&g_sess_mu);
+    fhsm_token_t *t = g_sessions[h].in_use ? g_sessions[h].token : NULL;
+    pthread_mutex_unlock(&g_sess_mu);
+    return t;
+}
+
+/* Post-fork reset. A child inherits the parent's session table verbatim, so
+ * every handle the parent held would keep working -- including its logged-in
+ * role and its token pointer -- in a process that never authenticated. Wiping
+ * the table is enough here: the tokens themselves are reset separately, and
+ * this must not free them (other slots may still reference them). #125. */
+void fhsm_session_reset_all(void) {
+    pthread_mutex_lock(&g_sess_mu);
+    fhsm_zeroize(g_sessions, sizeof(g_sessions));
+    pthread_mutex_unlock(&g_sess_mu);
+}
+
+fhsm_role_t fhsm_session_role(unsigned long h) {
+    if (h == 0 || h >= FHSM_MAX_SESSIONS) return FHSM_ROLE_NONE;
+    pthread_mutex_lock(&g_sess_mu);
+    fhsm_role_t r = FHSM_ROLE_NONE;
+    if (g_sessions[h].in_use) {
+        /* PKCS#11 v3.2 §5.6: login state is per-application (per-token),
+         * shared across every session the application holds with the token.
+         * When one session performs C_Login, all sibling sessions of the
+         * same token become authenticated. Query the token's authenticated
+         * role rather than this session's local copy, so a key op issued in
+         * a sibling session isn't spuriously rejected USER_NOT_LOGGED_IN.
+         * Fall back to the local role only if no token is attached yet. */
+        const fhsm_token_t *tok = g_sessions[h].token;
+        r = tok ? fhsm_token_current_role(tok) : g_sessions[h].role;
+    }
+    pthread_mutex_unlock(&g_sess_mu);
+    return r;
+}
+
+fhsm_rv_t fhsm_session_info(unsigned long h,
+                              unsigned long *out_slot,
+                              unsigned long *out_flags,
+                              fhsm_role_t   *out_role) {
+    if (h == 0 || h >= FHSM_MAX_SESSIONS) {
+        return FHSM_RV_SESSION_HANDLE_INVALID;
+    }
+    pthread_mutex_lock(&g_sess_mu);
+    if (!g_sessions[h].in_use) {
+        pthread_mutex_unlock(&g_sess_mu);
+        return FHSM_RV_SESSION_HANDLE_INVALID;
+    }
+    if (out_slot)  *out_slot  = g_sessions[h].slot;
+    if (out_flags) *out_flags = g_sessions[h].flags;
+    /* The token's role, as in fhsm_session_role: login state is per token
+     * (§5.6). This read the session's own copy, so C_GetSessionInfo showed a
+     * public state on a sibling of the session that logged in, and a logged-in
+     * state on a session whose token another session had logged out. */
+    if (out_role)  *out_role  = g_sessions[h].token
+                                ? fhsm_token_current_role(g_sessions[h].token)
+                                : g_sessions[h].role;
+    pthread_mutex_unlock(&g_sess_mu);
+    return FHSM_RV_OK;
+}

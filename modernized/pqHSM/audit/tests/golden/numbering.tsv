@@ -1,0 +1,14 @@
+# scenario	existing files ('/'-separated)	file each C opening created ('/'-separated)
+empty_dir		audit.log.000001/audit.log.000002
+after_000006	audit.log.000006	audit.log.000007
+after_000001_and_000003	audit.log.000001/audit.log.000003	audit.log.000004
+five_digits_ignored	audit.log.00009	audit.log.000001
+seven_digits_ignored	audit.log.0000009	audit.log.000001
+other_prefixes_ignored	other.log.000009/audit.logx000009/xaudit.log.000009/audit.log2.000009/audit.log.000009.bak	audit.log.000001
+non_numeric_ignored	audit.log.00009a/audit.log.0x0009/audit.log.abcdef	audit.log.000001
+strtoul_plus_sign_counts	audit.log.+00009	audit.log.000010
+strtoul_leading_space_counts	audit.log. 00009	audit.log.000010
+strtoul_minus_wraps_to_000000	audit.log.-00001	audit.log.000000
+wrap_then_steps_past_existing	audit.log.-00001/audit.log.000000/audit.log.000001	audit.log.000002
+after_999999_seven_digits	audit.log.999999	audit.log.1000000/audit.log.1000001
+missing_directory		rv=0x6

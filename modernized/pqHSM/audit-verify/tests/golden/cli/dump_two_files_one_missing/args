@@ -1,0 +1,4 @@
+freehsm-audit
+dump
+tests/golden/logs/missing.log
+tests/golden/logs/key16.log

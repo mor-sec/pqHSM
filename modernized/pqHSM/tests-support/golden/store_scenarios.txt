@@ -1,0 +1,1054 @@
+# Phase 2 slice 3 (token store) scenarios. ONE script, run by two interpreters:
+#   - tests-support/golden/gen_store.c runs it against the LEGACY C fhsm_token.c and records
+#     every step's output in golden/store/steps.tsv (regen_store.sh copies this file there too);
+#   - token/tests/store_common/scenario.rs runs the same lines against the Rust API and compares.
+#
+# Grammar (whitespace-separated; key=value arguments; numbers decimal or 0x):
+#   scenario NAME [from=tok:SCENARIO|corpus:FILE]   start; from= copies a C-written start file
+#   PIN    SO | USER | WRONG | NEW | lit:TEXT        (all invented; none from the legacy tree)
+#   BYTES  - (none / NULL) | hex:.. | pat:BASE:N (BASE, BASE+1, ...) | zero:N | rep:C:N | txt:T
+#   LABEL  a bare word, or any BYTES form
+#   t=B    on a token op: use the second handle (default A)
+# Ops are implemented twice, in store_common/scenario.rs (`Run::op`, `Run::token_op`) and gen_store.c (`run_op`).
+# Every op line's output also carries one `audit=event/ROLE/rv/params` per audit record.
+
+# ---------------------------------------------------------------- creation (RULE-079, 036)
+scenario init_fresh
+init so=SO label=golden-fresh
+info
+role
+files
+snap role=so pin=SO
+
+scenario init_so_pin_7_bytes
+init so=lit:a7bytes label=x
+files
+init so=lit:8-bytes! label=x
+info
+
+scenario init_label_70_bytes
+init so=SO label=rep:L:70
+info
+snap role=so pin=SO
+
+scenario init_then_add_div014
+init so=SO label=golden-div014
+role
+add class=0 kt=0 label=early value=pat:1:4 id=- flags=0
+find
+
+scenario init_user_pin_needs_so_login
+init so=SO label=x
+init_user_pin pin=USER
+login role=user pin=USER
+close
+load
+init_user_pin pin=USER
+info
+
+scenario user_base
+init so=SO label=golden-user
+login role=so pin=SO
+init_user_pin pin=lit:abc
+init_user_pin pin=USER
+info
+logout
+login role=user pin=USER
+role
+info
+snap role=user pin=USER
+
+scenario multi_base from=tok:user_base
+load
+login role=user pin=USER
+add class=4 kt=31 label=aes-sensitive value=pat:16:32 id=hex:1d10 flags=0x01
+add class=4 kt=31 label=aes-extractable value=pat:64:16 id=hex:1d40 flags=0x02
+add class=2 kt=3 label=ec-public value=pat:4:65 id=hex:1d04 flags=0
+add class=1 kt=0 label=certificate value=pat:48:90 id=hex:1d30 flags=0
+add class=0 kt=0 label=data value=pat:97:8 id=hex:1d61 flags=0
+dump
+snap role=user pin=USER
+
+# ---------------------------------------------------------------- login (RULE-083, 084, 085)
+scenario login_conflicts from=tok:user_base
+load
+login role=so pin=SO
+login role=so pin=WRONG
+login role=user pin=USER
+info
+logout
+logout
+role
+login role=user pin=USER
+login role=so pin=SO
+role
+
+scenario login_user_pin_not_initialized_rule083 from=tok:init_fresh
+load
+login role=user pin=USER
+verify role=user pin=USER
+info
+
+scenario wrong_pin_counts_and_resets from=tok:user_base
+load
+login role=user pin=WRONG
+info
+snap role=user pin=USER
+login role=user pin=USER
+info
+snap role=user pin=USER
+
+scenario wrong_pin_keeps_blob_rule088 from=tok:multi_base
+load
+login role=user pin=WRONG
+snap role=user pin=USER
+login role=so pin=WRONG
+info
+snap role=user pin=USER
+
+scenario empty_pin_is_a_wrong_pin from=tok:user_base
+load
+login role=user pin=txt:
+info
+
+scenario fifth_failure_locks from=tok:user_base
+poke off=297 u32=4
+load
+info
+login role=user pin=WRONG
+info
+login role=user pin=USER
+verify role=user pin=USER
+snap role=user pin=USER
+
+scenario locked_before_uninitialized_rule083 from=tok:init_fresh
+poke off=297 u32=5
+load
+login role=user pin=USER
+login role=so pin=SO
+init_user_pin pin=USER
+info
+
+scenario throttle_derived_on_load_rule026 from=tok:user_base
+poke off=293 u32=1
+poke off=297 u32=2
+load
+info
+close
+poke off=293 u32=3
+poke off=297 u32=7
+load
+info
+close
+poke off=293 u32=8
+poke off=297 u32=4294967295
+load
+info
+
+scenario verify_pin from=tok:user_base
+load
+verify role=user pin=USER
+role
+verify role=user pin=WRONG
+info
+login role=user pin=USER
+verify role=so pin=SO
+verify role=none pin=SO
+role
+snap role=user pin=USER
+
+scenario logout_keeps_objects_rule086 from=tok:multi_base
+load
+login role=user pin=USER
+logout
+role
+get h=1
+find
+get_label h=1
+add class=0 kt=0 label=late value=pat:1:4 id=- flags=0
+destroy h=1
+set_label h=1 label=x
+set_usage h=1 v=0x81
+mark_session h=1 owner=5
+destroy_session owner=5
+mech_allowed h=1 mech=1
+
+# ---------------------------------------------------------------- PIN admin (RULE-005, 081, 082)
+scenario set_pin_logged_out_rule082 from=tok:user_base
+load
+set_pin role=user old=USER new=NEW
+role
+logout
+login role=user pin=USER
+login role=user pin=NEW
+snap role=user pin=NEW
+
+scenario set_pin_while_logged_in_rule082 from=tok:user_base
+load
+login role=user pin=USER
+set_pin role=user old=USER new=NEW
+logout
+login role=user pin=NEW
+info
+
+scenario set_pin_so_does_not_rotate_dek_rule005 from=tok:multi_base
+load
+set_pin role=so old=SO new=NEW
+logout
+login role=user pin=USER
+find
+snap role=user pin=USER
+
+scenario set_pin_short_new_pin from=tok:user_base
+load
+set_pin role=user old=WRONG new=lit:abc
+info
+set_pin role=user old=WRONG new=lit:abcd
+info
+
+scenario init_user_pin_unlocks_user_rule081 from=tok:user_base
+poke off=297 u32=5
+load
+login role=user pin=USER
+login role=so pin=SO
+init_user_pin pin=NEW
+info
+logout
+login role=user pin=NEW
+snap role=user pin=NEW
+
+# ---------------------------------------------------------------- re-init (RULE-080)
+scenario reinit_wipes_rule080 from=tok:multi_base
+poke off=293 u32=3
+poke off=297 u32=2
+load
+reinit so=SO label=golden-reinit
+info
+role
+find
+snap role=so pin=SO
+login role=so pin=SO
+logout
+login role=user pin=USER
+
+scenario reinit_short_pin_rule036 from=tok:user_base
+load
+reinit so=lit:abc label=x
+reinit so=lit:abcd label=x
+login role=so pin=lit:abcd
+
+scenario reinit_then_add_div014 from=tok:user_base
+load
+reinit so=SO label=golden-r
+add class=0 kt=0 label=early value=pat:1:4 id=- flags=0
+
+# ---------------------------------------------------------------- objects (RULE-057, 058, 091, 092)
+scenario objects_crud from=tok:user_base
+load
+login role=user pin=USER
+add class=3 kt=0x40 label=- value=pat:1:20 id=- flags=0x01
+add class=2 kt=0x40 label=pub value=pat:2:20 id=hex:01 flags=0
+add class=1 kt=0 label=cert value=pat:3:30 id=hex:0102 flags=0
+add class=0 kt=0 label=data value=- id=- flags=0
+add class=2 kt=3 label=sens-pub value=pat:5:10 id=- flags=0x01
+find
+find class=2
+find label=pub
+find class=2 label=cert
+find cap=2
+find cap=0
+get h=1
+get h=4
+get h=99
+get_label h=1
+get_label h=2
+get_id h=3
+get_flags h=1
+is_token h=1
+set_label h=2 label=rep:Q:70
+get_label h=2
+set_id h=2 id=zero:33
+set_id h=2 id=-
+get_id h=2
+set_id h=3 id=pat:9:32
+get_id h=3
+set_flags h=2 v=0x02
+get_flags h=2
+set_flags h=2 v=0x01
+set_flags2 h=1 v=0x87
+get_flags2 h=1
+set_flags3 h=1 v=0x01
+get_flags3 h=1
+set_usage h=1 v=0x8f
+get_usage h=1
+set_meta h=1 start=txt:20260101 end=- app=-
+set_meta h=1 start=- end=pat:48:8 app=rep:A:64
+set_meta h=1 start=zero:9 end=- app=-
+set_meta h=1 start=- end=- app=zero:65
+get_meta h=1 which=0
+get_meta h=1 which=1
+get_meta h=1 which=2
+get_meta h=2 which=0
+set_meta h=2 start=- end=- app=-
+set_meta h=2 start=txt: end=- app=-
+get_meta h=2 which=0
+dump
+snap role=user pin=USER
+destroy h=2
+find
+destroy h=2
+get_label h=2
+get_flags h=99
+get_flags2 h=99
+get_flags3 h=99
+get_usage h=99
+get_id h=99
+get_meta h=99 which=0
+is_token h=99
+policy h=99
+set_label h=99 label=x
+set_id h=99 id=-
+set_flags h=99 v=0
+set_flags2 h=99 v=0
+set_flags3 h=99 v=0
+set_usage h=99 v=0
+set_meta h=99 start=- end=- app=-
+set_mechs h=99 list=1
+get_mechs h=99
+set_tmpl h=99 which=0 e=empty
+get_tmpl h=99 which=0
+dump
+snap role=user pin=USER
+
+scenario add_limits_rule091 from=tok:user_base
+load
+login role=user pin=USER
+add class=0 kt=0 label=x value=- id=zero:33 flags=0
+add class=0 kt=0 label=x value=zero:2097153 id=- flags=0
+add class=0 kt=0 label=x value=- id=zero:32 flags=0
+add class=0 kt=0 label=rep:B:70 value=- id=- flags=0
+get_label h=2
+find label=rep:B:63
+find label=rep:B:64
+
+scenario policy_attrs_rule061 from=tok:user_base
+load
+login role=user pin=USER
+add class=4 kt=31 label=k1 value=pat:1:16 id=- flags=0
+add class=4 kt=31 label=k2 value=pat:2:16 id=- flags=0
+mech_allowed h=1 mech=0x1081
+policy h=1
+set_mechs h=1 list=0x1081,0x1082
+get_mechs h=1
+mech_allowed h=1 mech=0x1082
+mech_allowed h=1 mech=0x1
+mech_allowed h=99 mech=0x1
+set_mechs h=2 list=empty
+mech_allowed h=2 mech=0x1081
+get_mechs h=2
+get_flags2 h=2
+set_mechs h=1 list=1,2,3,4,5,6,7,8,9
+set_mechs h=1 list=1,2,3,4,5,6,7,8
+get_mechs h=1
+set_mechs h=1 list=7
+get_mechs h=1
+set_tmpl h=1 which=0 e=0x3:3:5:6c6162656c,0x100:2:8:1f00000000000000
+set_tmpl h=1 which=1 e=empty
+set_tmpl h=1 which=2 e=0x162:1:1:01aabbcc
+set_tmpl h=1 which=0 e=1:1:1:01,2:1:1:01,3:1:1:01,4:1:1:01,5:1:1:01
+set_tmpl h=1 which=0 e=1:1:49:01
+set_tmpl h=1 which=0 e=1:0:1:01
+set_tmpl h=1 which=0 e=1:4:1:01
+get_tmpl h=1 which=0
+get_tmpl h=1 which=1
+get_tmpl h=1 which=2
+get_flags2 h=1
+policy h=1
+set_flags2 h=1 v=0
+mech_allowed h=1 mech=0x1
+dump
+snap role=user pin=USER
+close
+load
+login role=user pin=USER
+get_tmpl h=1 which=2
+get_mechs h=1
+
+scenario session_objects_rule090 from=tok:user_base
+load
+login role=user pin=USER
+add class=4 kt=31 label=tok value=pat:1:16 id=- flags=0
+add class=4 kt=31 label=ses value=pat:2:16 id=- flags=0
+mark_session h=2 owner=7
+is_token h=2
+mark_session h=1 owner=0
+mark_session h=9 owner=7
+find
+snap role=user pin=USER
+destroy_session owner=0
+destroy_session owner=9
+destroy_session owner=7
+find
+add class=2 kt=3 label=ses2 value=pat:3:8 id=- flags=0
+mark_session h=4 owner=8
+logout
+destroy_session owner=8
+find
+snap role=user pin=USER
+
+scenario handle_wraps_rule091 from=tok:user_base
+reblob pt=v4_next_handle_max role=user pin=USER pub=none
+load
+login role=user pin=USER
+add class=0 kt=0 label=a value=- id=- flags=0
+add class=0 kt=0 label=b value=- id=- flags=0
+find
+get_label h=1
+dump
+
+scenario capacity_1024_rule091 from=tok:user_base
+reblob pt=v4_1023_objects role=user pin=USER pub=none
+load
+login role=user pin=USER
+add class=0 kt=0 label=last value=- id=- flags=0
+add class=0 kt=0 label=over value=- id=- flags=0
+find cap=0
+nosave
+
+scenario destroy_compacts_rule092 from=tok:multi_base
+load
+login role=user pin=USER
+destroy h=1
+find
+destroy h=4
+find
+dump
+snap role=user pin=USER
+
+# ---------------------------------------------------------------- public view (RULE-044)
+scenario public_view_before_login from=tok:multi_base
+load
+find
+get h=3
+get h=1
+get_label h=3
+get_flags h=3
+policy h=3
+get_mechs h=3
+get_tmpl h=3 which=0
+mech_allowed h=3 mech=1
+add class=0 kt=0 label=x value=- id=- flags=0
+set_label h=3 label=x
+destroy h=3
+login role=user pin=USER
+find
+
+scenario public_view_absent from=tok:multi_base
+pubsec drop
+load
+find
+get h=3
+get_label h=3
+policy h=3
+mech_allowed h=3 mech=1
+login role=user pin=USER
+find
+snap role=user pin=USER
+
+scenario public_view_bad_magic from=tok:multi_base
+pubsec magic=0xF5B5B002
+load
+find
+
+scenario public_view_length_short_of_file from=tok:multi_base
+pubsec byte=0
+load
+find
+
+scenario public_view_secret_object from=tok:multi_base
+pubsec set=v4_secret_key
+load
+find
+
+scenario public_view_sensitive_public_key from=tok:multi_base
+pubsec set=v4_sensitive_public_key
+load
+find
+
+scenario public_view_v3_section from=tok:multi_base
+pubsec set=v3_ok
+load
+find
+
+scenario public_view_unparsable from=tok:multi_base
+pubsec set=v4_wrap_kind_4
+load
+find
+
+scenario public_view_empty_section from=tok:multi_base
+pubsec set=v4_empty
+load
+find
+
+scenario public_view_planted_trusted_key_rule044 from=tok:multi_base
+pubsec set=v4_planted_trusted
+load
+find
+get_flags h=77
+get h=77
+login role=user pin=USER
+find
+get h=77
+
+scenario empty_store_view from=tok:user_base
+load
+find
+get h=1
+get_label h=1
+
+# ---------------------------------------------------------------- blob frame (RULE-003, 066)
+scenario header_plus_10_bytes from=tok:user_base
+append b=zero:10
+load
+find
+login role=user pin=USER
+find
+snap role=user pin=USER
+
+scenario blob_ct_len_zero from=tok:multi_base
+poke off=317 u32=0
+load
+find
+login role=user pin=USER
+find
+get_label h=1
+snap role=user pin=USER
+
+scenario blob_ct_len_over_max_rule003 from=tok:multi_base
+poke off=317 u32=2148421645
+load
+login role=user pin=USER
+find
+snap role=user pin=USER
+
+scenario blob_ct_len_at_max_rule003 from=tok:multi_base
+poke off=317 u32=2148421644
+load
+login role=user pin=USER
+find
+
+scenario blob_truncated from=tok:multi_base
+truncate len=343
+load
+login role=user pin=USER
+find
+
+scenario blob_bad_tag_div010 from=tok:multi_base
+reblob pt=v4_ok role=user pin=USER pub=none tag=bad
+load
+login role=user pin=USER
+find
+snap role=user pin=USER
+
+scenario zero_dek_store_div010 from=corpus:zero_dek_2_5_0.tok
+load
+login role=user pin=USER
+find
+snap role=user pin=USER
+
+# ---------------------------------------------------------------- blob plaintexts (RULE-003)
+scenario parse_v1_ok from=tok:user_base
+reblob pt=v1_ok role=user pin=USER pub=none
+load
+login role=user pin=USER
+dump
+set_usage h=1 v=0x81
+snap role=user pin=USER
+
+scenario parse_v1_empty from=tok:user_base
+reblob pt=v1_empty role=user pin=USER pub=none
+load
+login role=user pin=USER
+dump
+
+scenario parse_v1_count_1025 from=tok:user_base
+reblob pt=v1_count_1025 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v1_short from=tok:user_base
+reblob pt=v1_short role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v1_value_len_5501 from=tok:user_base
+reblob pt=v1_value_len_5501 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v1_id_len_33 from=tok:user_base
+reblob pt=v1_id_len_33 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v2_ok from=tok:user_base
+reblob pt=v2_ok role=user pin=USER pub=none
+load
+login role=user pin=USER
+dump
+set_usage h=1 v=0x81
+snap role=user pin=USER
+
+scenario parse_v2_count_1025 from=tok:user_base
+reblob pt=v2_count_1025 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v2_missing_record from=tok:user_base
+reblob pt=v2_missing_record role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v2_rec_len_119 from=tok:user_base
+reblob pt=v2_rec_len_119 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v2_rec_len_over_max from=tok:user_base
+reblob pt=v2_rec_len_over_max role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v2_rec_overrun from=tok:user_base
+reblob pt=v2_rec_overrun role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v2_value_len_mismatch from=tok:user_base
+reblob pt=v2_value_len_mismatch role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v2_id_len_33 from=tok:user_base
+reblob pt=v2_id_len_33 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v3_ok from=tok:user_base
+reblob pt=v3_ok role=user pin=USER pub=none
+load
+login role=user pin=USER
+dump
+set_usage h=1 v=0x81
+snap role=user pin=USER
+
+scenario parse_v3_start_len_9 from=tok:user_base
+reblob pt=v3_start_len_9 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v3_end_len_9 from=tok:user_base
+reblob pt=v3_end_len_9 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v3_app_len_65 from=tok:user_base
+reblob pt=v3_app_len_65 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v4_ok from=tok:user_base
+reblob pt=v4_ok role=user pin=USER pub=none
+load
+login role=user pin=USER
+dump
+set_usage h=1 v=0x81
+dump
+snap role=user pin=USER
+
+scenario parse_v4_allowed_9 from=tok:user_base
+reblob pt=v4_allowed_9 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v4_wrap_count_5 from=tok:user_base
+reblob pt=v4_wrap_count_5 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v4_unwrap_entry_len_49 from=tok:user_base
+reblob pt=v4_unwrap_entry_len_49 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v4_derive_kind_0 from=tok:user_base
+reblob pt=v4_derive_kind_0 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v4_wrap_kind_4 from=tok:user_base
+reblob pt=v4_wrap_kind_4 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v4_rec_len_911 from=tok:user_base
+reblob pt=v4_rec_len_911 role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v4_trailing_bytes from=tok:user_base
+reblob pt=v4_trailing_bytes role=user pin=USER pub=none
+load
+login role=user pin=USER
+dump
+
+scenario parse_blob_7_bytes from=tok:user_base
+reblob pt=blob_7_bytes role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_v4_magic_10_bytes from=tok:user_base
+reblob pt=v4_magic_10_bytes role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+scenario parse_unknown_magic from=tok:user_base
+reblob pt=unknown_magic role=user pin=USER pub=none
+load
+login role=user pin=USER
+find
+
+# ---------------------------------------------------------------- header (RULE-004, 044, DIV-011)
+scenario header_missing
+load
+files
+
+scenario header_316_bytes from=tok:init_fresh
+truncate len=316
+load
+
+scenario header_bad_magic from=tok:init_fresh
+poke off=0 hex=4648534e
+load
+
+scenario header_version_2 from=tok:init_fresh
+poke off=4 u32=2
+load
+
+scenario header_version_0 from=tok:init_fresh
+poke off=4 u32=0
+load
+
+scenario header_user_initialized_byte_2 from=tok:user_base
+poke off=292 u8=2
+load
+info
+login role=user pin=WRONG
+snap
+
+scenario header_throttle_bytes_ignored from=tok:user_base
+poke off=301 hex=ffffffffffffffffffffffffffffffff
+load
+info
+login role=so pin=WRONG
+snap
+
+scenario header_label_64_bytes from=tok:init_fresh
+poke off=8 hex=4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c
+load
+info
+
+scenario header_serial_edited from=tok:user_base
+poke off=77 hex=30
+load
+login role=user pin=USER
+info
+
+scenario iter_1000_div011 from=tok:user_base
+poke off=136 u32=1000
+load
+login role=so pin=SO
+info
+
+scenario iter_999_div011 from=tok:user_base
+poke off=136 u32=999
+load
+login role=so pin=SO
+info
+
+scenario iter_0_div011 from=tok:user_base
+poke off=136 u32=0
+load
+login role=user pin=USER
+info
+
+scenario iter_200001_div011 from=tok:user_base
+poke off=136 u32=200001
+load
+login role=so pin=SO
+info
+
+# ---------------------------------------------------------------- DIV-012 (flock transaction)
+scenario two_handles_bypass_lockout_div012 from=tok:user_base
+poke off=297 u32=4
+load
+load t=B
+login role=user pin=WRONG
+login t=B role=user pin=USER
+info t=B
+snap
+
+scenario stale_handle_after_reinit_div012 from=tok:multi_base
+load
+load t=B
+reinit t=B so=NEW label=golden-b
+login role=user pin=USER
+snap
+
+# ---------------------------------------------------------------- DIV-013 / H4 (write failures)
+scenario rodir_wrong_pin_div013 from=tok:user_base
+load
+rodir
+login role=user pin=WRONG
+rwdir
+close
+load
+info
+files
+
+scenario rodir_right_pin_div013 from=tok:user_base
+load
+rodir
+login role=user pin=USER
+role
+rwdir
+files
+
+scenario rodir_add_h4 from=tok:user_base
+load
+login role=user pin=USER
+rodir
+add class=0 kt=0 label=x value=pat:1:4 id=- flags=0
+find
+rwdir
+files
+
+scenario rodir_reinit_h4 from=tok:multi_base
+load
+rodir
+reinit so=NEW label=r
+info
+rwdir
+files
+
+scenario rodir_init
+rodir
+init so=SO label=x
+rwdir
+files
+
+scenario tokdir_init_leaves_tmp
+tokdir
+init so=SO label=x
+files
+
+# ---------------------------------------------------------------- TPM companion (RULE-089, DIV-015)
+scenario tpm_base
+tpm seal=1
+init so=SO label=golden-tpm
+files
+login role=so pin=SO
+init_user_pin pin=USER
+logout
+login role=user pin=USER
+role
+snap role=user pin=USER
+
+scenario tpm_login_pcr_moved_div015 from=tok:tpm_base
+tpm seal=1
+pcr v=moved-pcr
+load
+login role=user pin=USER
+info
+role
+add class=4 kt=31 label=k value=pat:1:16 id=- flags=0
+snap role=user pin=USER
+
+scenario tpm_login_unseal_fails from=tok:tpm_base
+tpm seal=1
+tpmfail v=unseal
+load
+login role=user pin=USER
+info
+
+scenario tpm_login_dek_mismatch from=tok:tpm_base
+tpm seal=1
+reseal_tpm dek=pat:0:32
+load
+login role=user pin=USER
+info
+
+scenario tpm_required_but_missing from=tok:user_base
+tpm seal=1
+load
+login role=user pin=USER
+info
+
+scenario tpm_companion_without_sealing from=tok:tpm_base
+tpm seal=0
+load
+login role=user pin=USER
+role
+
+scenario tpm_wrong_pin_never_reaches_tpm from=tok:tpm_base
+tpm seal=1
+pcr v=moved-pcr
+load
+login role=user pin=WRONG
+info
+
+scenario tpm_init_seal_fails
+tpm seal=1
+tpmfail v=create
+init so=SO label=x
+files
+
+scenario tpm_reinit_keeps_old_companion_div015 from=tok:tpm_base
+tpm seal=1
+load
+reinit so=SO label=golden-r
+files
+login role=so pin=SO
+
+scenario tpm_reinit_unsealed_div015 from=tok:tpm_base
+tpm seal=0
+load
+reinit so=SO label=golden-r
+files
+login role=so pin=SO
+
+scenario tpm_init_tok_write_fails_div015
+tpm seal=1
+tokdir
+init so=SO label=x
+files
+
+scenario tpm_mismatch_keeps_dek_live_div015
+tpm seal=1
+init so=SO label=x
+pcr v=moved-pcr
+login role=so pin=SO
+add class=4 kt=31 label=k value=pat:1:16 id=- flags=0
+snap role=so pin=SO
+
+scenario tpm_reset_write_fails_div013 from=tok:tpm_base
+poke off=297 u32=1
+tpm seal=1
+tpmprefix v=rodir
+load
+login role=user pin=USER
+role
+get h=1
+rwdir
+tpmprefix v=-
+close
+load
+info
+
+# ---------------------------------------------------------------- DIV-001 (audit fails closed)
+scenario audit_fail_init_div001
+audit fail
+init so=SO label=a
+files
+
+scenario audit_fail_add_div001 from=tok:user_base
+load
+login role=user pin=USER
+audit fail
+add class=0 kt=0 label=x value=pat:1:4 id=- flags=0
+find
+snap role=user pin=USER
+
+scenario audit_fail_destroy_div001 from=tok:multi_base
+load
+login role=user pin=USER
+audit fail
+destroy h=1
+find
+snap role=user pin=USER
+
+scenario audit_fail_set_pin_div001 from=tok:user_base
+load
+audit fail
+set_pin role=user old=USER new=NEW
+snap
+
+scenario audit_fail_reinit_div001 from=tok:user_base
+load
+audit fail
+reinit so=NEW label=golden-r
+info
+snap
+
+scenario audit_fail_tpm_init_div001
+tpm seal=1
+audit fail
+init so=SO label=a
+files
+
+scenario audit_fail_tpm_seal_failure_div001
+tpm seal=1
+tpmfail v=create
+audit fail
+init so=SO label=a
+files
+
+scenario audit_fail_tpm_login_div001 from=tok:tpm_base
+tpm seal=1
+load
+audit fail
+login role=user pin=USER
+role
+
+scenario audit_fail_tpm_unseal_failure_div001 from=tok:tpm_base
+tpm seal=1
+pcr v=moved-pcr
+load
+audit fail
+login role=user pin=USER
+info
+
+scenario audit_fail_tpm_mismatch_div001 from=tok:tpm_base
+tpm seal=1
+reseal_tpm dek=pat:0:32
+load
+audit fail
+login role=user pin=USER
+
+scenario audit_fail_tpm_missing_div001 from=tok:user_base
+tpm seal=1
+load
+audit fail
+login role=user pin=USER

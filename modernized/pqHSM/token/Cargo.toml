@@ -1,0 +1,44 @@
+[package]
+name = "pqhsm-token"
+description = "pqHSM token store and TPM sealing (replaces src/fhsm_tpm.c, src/fhsm_token_tpm.c; later src/fhsm_token.c)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# The C ABI of include/fhsm_tpm.h and include/fhsm_token_tpm.h (and, in slice 3,
+# include/fhsm_token.h). Off for `cargo test`, on for the hybrid build.
+ffi = []
+# Mirrors -DFHSM_TPM_TEST_HOOKS: `tpm::Cli::Shell`, and in the C ABI the FHSM_TPM_CMD /
+# FHSM_TPM_DEVICE overrides. Never enabled in the shipped staticlib (PHASE2_PLAN.md §3(d)).
+tpm-test-hooks = []
+# The offline `pqhsm-token migrate-zero-dek` command (DIV-010). Never with `ffi`: the command
+# uses libcrypto directly, and `ffi` would need the C fhsm_crypto symbols.
+tool = []
+
+[dependencies]
+libc.workspace = true
+# The crypto seam without `ffi` (PHASE2_PLAN.md §6.1): `cargo test` and migrate-zero-dek use
+# libcrypto directly; with `ffi` the token calls the C fhsm_crypto functions instead.
+openssl-sys.workspace = true
+zeroize.workspace = true
+
+[[bin]]
+name = "pqhsm-token"
+path = "src/bin/pqhsm-token.rs"
+required-features = ["tool"]
+
+[[test]]
+name = "tool"
+required-features = ["tool"]
+
+[dev-dependencies]
+tempfile.workspace = true
+# The characterization tests drive tests/tpm2-stub.sh through the hooks seam, so the crate's
+# own tests always build with it. Dev-dependencies never reach the shipped build.
+pqhsm-token = { path = ".", features = ["tpm-test-hooks"] }
+# Slice 3: the scenario harness decrypts what the token wrote, and renders audit records the
+# way the audit crate does, to compare with the C goldens.
+openssl.workspace = true
+pqhsm-audit = { path = "../audit" }

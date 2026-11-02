@@ -1,0 +1,115 @@
+== The FIPS provider ==
+  OK    openssl reports a fips provider
+  OK    module signed (digest 315ce58c68c73447...)
+
+== Does the signed module load the provider? ==
+  OK    fips provider available after C_Initialize
+
+== The suite, with the provider loaded ==
+  OK    test_advertised_operational  opens the signed .so
+  OK    test_aes_cmac_multipart      opens the signed .so
+  OK    test_aes_gmac_multipart      opens the signed .so
+  OK    test_aes_sizes               opens the signed .so
+  OK    test_allowed_mechanisms      opens the signed .so
+  OK    test_always_authenticate     opens the signed .so
+  OK    test_attributes              opens the signed .so
+  OK    test_audit_key_diag          opens the signed .so
+  OK    test_cbc_pad_oracle          opens the signed .so
+  OK    test_cbc_pad_update_size     opens the signed .so
+  OK    test_cipher_final_no_update  opens the signed .so
+  OK    test_composite_p11           opens the signed .so
+  OK    test_copyable_oneway         opens the signed .so
+  OK    test_decrypt_null_args       opens the signed .so
+  OK    test_derive_concat           opens the signed .so
+  OK    test_derive_hkdf             opens the signed .so
+  OK    test_digest_multipart        opens the signed .so
+  OK    test_ec_curve_bounds         opens the signed .so
+  OK    test_ec_curve_refusal        opens the signed .so
+  OK    test_ecdh_peer_point         opens the signed .so
+  OK    test_ecdsa_verify_edge       opens the signed .so
+  OK    test_eddsa_params            opens the signed .so
+  OK    test_encap_flags             opens the signed .so
+  OK    test_finalize_release        opens the signed .so
+  OK    test_fips_digests            opens the signed .so
+  OK    test_fork_child              opens the signed .so
+  OK    test_generic_secret_len      opens the signed .so
+  OK    test_gmac_params             opens the signed .so
+  OK    test_hash_ml_dsa             opens the signed .so
+  OK    test_hash_slh_dsa            opens the signed .so
+  OK    test_hmac_multipart          opens the signed .so
+  OK    test_init_token_session      opens the signed .so
+  OK    test_input_validation        opens the signed .so
+  OK    test_interface_v32           opens the signed .so
+  OK    test_kw_iv                   opens the signed .so
+  OK    test_legacy_cipher           opens the signed .so
+  OK    test_legacy_digest           opens the signed .so
+  OK    test_legacy_rsa              opens the signed .so
+  OK    test_login_conflicts         opens the signed .so
+  OK    test_mech_advertise          opens the signed .so
+  OK    test_nested_templates        opens the signed .so
+  OK    test_oaep_decrypt_size       opens the signed .so
+  OK    test_op_state                opens the signed .so
+  OK    test_p11_loader              opens the signed .so
+  OK    test_pbkd2                   opens the signed .so
+  OK    test_pkiops                  opens the signed .so
+  OK    test_pkiops_algs             opens the signed .so
+  OK    test_pkiops_envelope         opens the signed .so
+  OK    test_pkiops_envelope_rsa     opens the signed .so
+  OK    test_pkiops_objects          opens the signed .so
+  OK    test_pkiops_secret           opens the signed .so
+  OK    test_pqc_params              opens the signed .so
+  OK    test_pqc_pub_import          opens the signed .so
+  OK    test_robustness_args         opens the signed .so
+  OK    test_rsa_oaep                opens the signed .so
+  OK    test_secure_heap_shared      opens the signed .so
+  OK    test_sensitive_value         opens the signed .so
+  OK    test_session_cap             opens the signed .so
+  OK    test_session_objects         opens the signed .so
+  OK    test_set_dates               opens the signed .so
+  OK    test_sign_multipart          opens the signed .so
+  OK    test_slh_dsa_kat             opens the signed .so
+  OK    test_slh_dsa_sets            opens the signed .so
+  OK    test_unwrap_len              opens the signed .so
+  OK    test_wrap_with_trusted       opens the signed .so
+
+  OK    no test fell back to the integrity bypass
+  OK    65 test(s) passed against the FIPS provider
+
+== The tests that embed the module, signed as copies ==
+  OK    test_apilock                 signed copy, provider loaded
+  OK    test_audit_backpressure      signed copy, provider loaded
+  OK    test_audit_concurrent        signed copy, provider loaded
+  OK    test_audit_fsync             signed copy, provider loaded
+  OK    test_audit_key               signed copy, provider loaded
+  OK    test_audit_multiproc         signed copy, provider loaded
+  OK    test_audit_switch            signed copy, provider loaded
+  OK    test_audit_verify            signed copy, provider loaded
+  OK    test_composite_cms           signed copy, provider loaded
+  OK    test_composite_crl           signed copy, provider loaded
+  OK    test_composite_csr           signed copy, provider loaded
+  OK    test_composite_issue         signed copy, provider loaded
+  OK    test_composite_mprime        signed copy, provider loaded
+  OK    test_composite_ocsp          signed copy, provider loaded
+  OK    test_composite_prehash       signed copy, provider loaded
+  OK    test_composite_sign          signed copy, provider loaded
+  OK    test_composite_x509          signed copy, provider loaded
+  OK    test_conf                    signed copy, provider loaded
+  OK    test_encap_flags_store       signed copy, provider loaded
+  OK    test_pin_length              signed copy, provider loaded
+  OK    test_pki_classic             signed copy, provider loaded
+  OK    test_public_objects          signed copy, provider loaded
+  OK    test_smoke                   signed copy, provider loaded
+  OK    test_throttle_reboot         signed copy, provider loaded
+  OK    test_token_capacity          signed copy, provider loaded
+  OK    test_tpm                     signed copy, provider loaded
+  OK    test_v3_fixture              signed copy, provider loaded
+  OK    test_wrong_pin_store         signed copy, provider loaded
+
+  OK    28 of these passed against the FIPS provider too
+
+  Total against the provider: 93 of 93 (floor: 30)
+  Not counted: test_integrity, which make test-integrity drives through
+               unsigned / signed / tampered on its own.
+
+== the delegation is exercised, not just specified ==
+run_fips_tests rc=0

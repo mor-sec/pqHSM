@@ -1,0 +1,2 @@
+createpolicy --policy-pcr -l sha256:0,1,2,3,4,5,6,7 -L /proc/self/fd/5
+create -C 0x81010001 -i /proc/self/fd/4 -u /proc/self/fd/6 -r /proc/self/fd/7 -L /proc/self/fd/5 -g sha256

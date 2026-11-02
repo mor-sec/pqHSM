@@ -1,0 +1,815 @@
+# scenario	step	op line	output...  Made by gen_store.c from store_scenarios.txt.
+init_fresh	1	init so=SO label=golden-fresh	rv=0x0	audit=token_init/SO/0/{"label":"golden-fresh"}
+init_fresh	2	info	label=676f6c64656e2d6672657368	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+init_fresh	3	role	role=0
+init_fresh	4	files	files=slot0.tok:600
+init_fresh	5	snap role=so pin=SO	size=317	magic=4648534d	ver=1	label=676f6c64656e2d6672657368	serial=new	serial_fmt=ok	iter=200000	salt_so=new	so_nonce=new	so_ct=new	salt_user=new	user_nonce=zero	user_ct=zero	uinit=0	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+init_so_pin_7_bytes	1	init so=lit:a7bytes label=x	rv=0xa0
+init_so_pin_7_bytes	2	files	files=
+init_so_pin_7_bytes	3	init so=lit:8-bytes! label=x	rv=0x0	audit=token_init/SO/0/{"label":"x"}
+init_so_pin_7_bytes	4	info	label=78	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+init_label_70_bytes	1	init so=SO label=rep:L:70	rv=0x0	audit=token_init/SO/0/{"label":"LLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLLL"}
+init_label_70_bytes	2	info	label=4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+init_label_70_bytes	3	snap role=so pin=SO	size=317	magic=4648534d	ver=1	label=4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c	serial=new	serial_fmt=ok	iter=200000	salt_so=new	so_nonce=new	so_ct=new	salt_user=new	user_nonce=zero	user_ct=zero	uinit=0	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+init_then_add_div014	1	init so=SO label=golden-div014	rv=0x0	audit=token_init/SO/0/{"label":"golden-div014"}
+init_then_add_div014	2	role	role=0
+init_then_add_div014	3	add class=0 kt=0 label=early value=pat:1:4 id=- flags=0	rv=0x0	h=1	audit=object_create/NONE/0/{"label":"early"}
+init_then_add_div014	4	find	rv=0x0	n=1	hs=1
+init_user_pin_needs_so_login	1	init so=SO label=x	rv=0x0	audit=token_init/SO/0/{"label":"x"}
+init_user_pin_needs_so_login	2	init_user_pin pin=USER	rv=0x101
+init_user_pin_needs_so_login	3	login role=user pin=USER	rv=0x101
+init_user_pin_needs_so_login	4	close	-
+init_user_pin_needs_so_login	5	load	rv=0x0
+init_user_pin_needs_so_login	6	init_user_pin pin=USER	rv=0x101
+init_user_pin_needs_so_login	7	info	label=78	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+user_base	1	init so=SO label=golden-user	rv=0x0	audit=token_init/SO/0/{"label":"golden-user"}
+user_base	2	login role=so pin=SO	rv=0x0
+user_base	3	init_user_pin pin=lit:abc	rv=0xa0
+user_base	4	init_user_pin pin=USER	rv=0x0
+user_base	5	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=1
+user_base	6	logout	-
+user_base	7	login role=user pin=USER	rv=0x0
+user_base	8	role	role=2
+user_base	9	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=2
+user_base	10	snap role=user pin=USER	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=new	serial_fmt=ok	iter=200000	salt_so=new	so_nonce=new	so_ct=new	salt_user=new	user_nonce=new	user_ct=new	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+multi_base	1	load	rv=0x0
+multi_base	2	login role=user pin=USER	rv=0x0
+multi_base	3	add class=4 kt=31 label=aes-sensitive value=pat:16:32 id=hex:1d10 flags=0x01	rv=0x0	h=1	audit=object_create/USER/0/{"label":"aes-sensitive"}
+multi_base	4	add class=4 kt=31 label=aes-extractable value=pat:64:16 id=hex:1d40 flags=0x02	rv=0x0	h=2	audit=object_create/USER/0/{"label":"aes-extractable"}
+multi_base	5	add class=2 kt=3 label=ec-public value=pat:4:65 id=hex:1d04 flags=0	rv=0x0	h=3	audit=object_create/USER/0/{"label":"ec-public"}
+multi_base	6	add class=1 kt=0 label=certificate value=pat:48:90 id=hex:1d30 flags=0	rv=0x0	h=4	audit=object_create/USER/0/{"label":"certificate"}
+multi_base	7	add class=0 kt=0 label=data value=pat:97:8 id=hex:1d61 flags=0	rv=0x0	h=5	audit=object_create/USER/0/{"label":"data"}
+multi_base	8	dump	rv=0x0	n=5
+	obj h=1 class=4 kt=31 flags=0x01 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=6165732d73656e736974697665 id=1d10 value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=2 class=4 kt=31 flags=0x02 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=6165732d6578747261637461626c65 id=1d40 value=404142434445464748494a4b4c4d4e4f start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=3 class=2 kt=3 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=65632d7075626c6963 id=1d04 value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=4 class=1 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=6365727469666963617465 id=1d30 value=303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f80818283848586878889 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=5 class=0 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=64617461 id=1d61 value=6162636465666768 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+multi_base	9	snap role=user pin=USER	size=7159	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=4803	nonce=new	pub=file:2007	pt=ok:4803
+login_conflicts	1	load	rv=0x0
+login_conflicts	2	login role=so pin=SO	rv=0x0
+login_conflicts	3	login role=so pin=WRONG	rv=0x100
+login_conflicts	4	login role=user pin=USER	rv=0x104
+login_conflicts	5	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=1
+login_conflicts	6	logout	-
+login_conflicts	7	logout	-
+login_conflicts	8	role	role=0
+login_conflicts	9	login role=user pin=USER	rv=0x0
+login_conflicts	10	login role=so pin=SO	rv=0x104
+login_conflicts	11	role	role=2
+login_user_pin_not_initialized_rule083	1	load	rv=0x0
+login_user_pin_not_initialized_rule083	2	login role=user pin=USER	rv=0x101
+login_user_pin_not_initialized_rule083	3	verify role=user pin=USER	rv=0x101
+login_user_pin_not_initialized_rule083	4	info	label=676f6c64656e2d6672657368	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+wrong_pin_counts_and_resets	1	load	rv=0x0
+wrong_pin_counts_and_resets	2	login role=user pin=WRONG	rv=0xa0
+wrong_pin_counts_and_resets	3	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=1	uinit=1	lso=0	luser=0	tso=0	tuser=500	role=0
+wrong_pin_counts_and_resets	4	snap role=user pin=USER	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=1	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+wrong_pin_counts_and_resets	5	login role=user pin=USER	rv=0x0
+wrong_pin_counts_and_resets	6	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=2
+wrong_pin_counts_and_resets	7	snap role=user pin=USER	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+wrong_pin_keeps_blob_rule088	1	load	rv=0x0
+wrong_pin_keeps_blob_rule088	2	login role=user pin=WRONG	rv=0xa0
+wrong_pin_keeps_blob_rule088	3	snap role=user pin=USER	size=7159	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=1	thr=00000000000000000000000000000000	salts_differ=1	blob=same	ctlen=4803	nonce=same	pub=file:2007	pt=ok:4803
+wrong_pin_keeps_blob_rule088	4	login role=so pin=WRONG	rv=0xa0
+wrong_pin_keeps_blob_rule088	5	info	label=676f6c64656e2d75736572	serial=ok	fso=1	fuser=1	uinit=1	lso=0	luser=0	tso=500	tuser=500	role=0
+wrong_pin_keeps_blob_rule088	6	snap role=user pin=USER	size=7159	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=1	fuser=1	thr=00000000000000000000000000000000	salts_differ=1	blob=same	ctlen=4803	nonce=same	pub=file:2007	pt=ok:4803
+empty_pin_is_a_wrong_pin	1	load	rv=0x0
+empty_pin_is_a_wrong_pin	2	login role=user pin=txt:	rv=0xa0
+empty_pin_is_a_wrong_pin	3	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=1	uinit=1	lso=0	luser=0	tso=0	tuser=500	role=0
+fifth_failure_locks	1	poke off=297 u32=4	-
+fifth_failure_locks	2	load	rv=0x0
+fifth_failure_locks	3	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=4	uinit=1	lso=0	luser=0	tso=0	tuser=4000	role=0
+fifth_failure_locks	4	login role=user pin=WRONG	rv=0xa4
+fifth_failure_locks	5	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=5	uinit=1	lso=0	luser=1	tso=0	tuser=8000	role=0
+fifth_failure_locks	6	login role=user pin=USER	rv=0xa4
+fifth_failure_locks	7	verify role=user pin=USER	rv=0xa4
+fifth_failure_locks	8	snap role=user pin=USER	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=5	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+locked_before_uninitialized_rule083	1	poke off=297 u32=5	-
+locked_before_uninitialized_rule083	2	load	rv=0x0
+locked_before_uninitialized_rule083	3	login role=user pin=USER	rv=0xa4
+locked_before_uninitialized_rule083	4	login role=so pin=SO	rv=0x0
+locked_before_uninitialized_rule083	5	init_user_pin pin=USER	rv=0x0
+locked_before_uninitialized_rule083	6	info	label=676f6c64656e2d6672657368	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=1
+throttle_derived_on_load_rule026	1	poke off=293 u32=1	-
+throttle_derived_on_load_rule026	2	poke off=297 u32=2	-
+throttle_derived_on_load_rule026	3	load	rv=0x0
+throttle_derived_on_load_rule026	4	info	label=676f6c64656e2d75736572	serial=ok	fso=1	fuser=2	uinit=1	lso=0	luser=0	tso=500	tuser=1000	role=0
+throttle_derived_on_load_rule026	5	close	-
+throttle_derived_on_load_rule026	6	poke off=293 u32=3	-
+throttle_derived_on_load_rule026	7	poke off=297 u32=7	-
+throttle_derived_on_load_rule026	8	load	rv=0x0
+throttle_derived_on_load_rule026	9	info	label=676f6c64656e2d75736572	serial=ok	fso=3	fuser=7	uinit=1	lso=0	luser=1	tso=2000	tuser=32000	role=0
+throttle_derived_on_load_rule026	10	close	-
+throttle_derived_on_load_rule026	11	poke off=293 u32=8	-
+throttle_derived_on_load_rule026	12	poke off=297 u32=4294967295	-
+throttle_derived_on_load_rule026	13	load	rv=0x0
+throttle_derived_on_load_rule026	14	info	label=676f6c64656e2d75736572	serial=ok	fso=8	fuser=4294967295	uinit=1	lso=1	luser=1	tso=60000	tuser=60000	role=0
+verify_pin	1	load	rv=0x0
+verify_pin	2	verify role=user pin=USER	rv=0x0
+verify_pin	3	role	role=0
+verify_pin	4	verify role=user pin=WRONG	rv=0xa0
+verify_pin	5	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=1	uinit=1	lso=0	luser=0	tso=0	tuser=500	role=0
+verify_pin	6	login role=user pin=USER	rv=0x0
+verify_pin	7	verify role=so pin=SO	rv=0x0
+verify_pin	8	verify role=none pin=SO	rv=0x7
+verify_pin	9	role	role=2
+verify_pin	10	snap role=user pin=USER	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+logout_keeps_objects_rule086	1	load	rv=0x0
+logout_keeps_objects_rule086	2	login role=user pin=USER	rv=0x0
+logout_keeps_objects_rule086	3	logout	-
+logout_keeps_objects_rule086	4	role	role=0
+logout_keeps_objects_rule086	5	get h=1	rv=0x0	class=4	kt=31	value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f
+logout_keeps_objects_rule086	6	find	rv=0x0	n=5	hs=1,2,3,4,5
+logout_keeps_objects_rule086	7	get_label h=1	rv=0x0	v=6165732d73656e736974697665
+logout_keeps_objects_rule086	8	add class=0 kt=0 label=late value=pat:1:4 id=- flags=0	rv=0x101
+logout_keeps_objects_rule086	9	destroy h=1	rv=0x101
+logout_keeps_objects_rule086	10	set_label h=1 label=x	rv=0x101
+logout_keeps_objects_rule086	11	set_usage h=1 v=0x81	rv=0x101
+logout_keeps_objects_rule086	12	mark_session h=1 owner=5	rv=0x101
+logout_keeps_objects_rule086	13	destroy_session owner=5	rv=0x0
+logout_keeps_objects_rule086	14	mech_allowed h=1 mech=1	rv=0x0
+set_pin_logged_out_rule082	1	load	rv=0x0
+set_pin_logged_out_rule082	2	set_pin role=user old=USER new=NEW	rv=0x0	audit=set_pin/USER/0/{}
+set_pin_logged_out_rule082	3	role	role=2
+set_pin_logged_out_rule082	4	logout	-
+set_pin_logged_out_rule082	5	login role=user pin=USER	rv=0xa0
+set_pin_logged_out_rule082	6	login role=user pin=NEW	rv=0x0
+set_pin_logged_out_rule082	7	snap role=user pin=NEW	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=new	user_nonce=new	user_ct=new	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+set_pin_while_logged_in_rule082	1	load	rv=0x0
+set_pin_while_logged_in_rule082	2	login role=user pin=USER	rv=0x0
+set_pin_while_logged_in_rule082	3	set_pin role=user old=USER new=NEW	rv=0x100
+set_pin_while_logged_in_rule082	4	logout	-
+set_pin_while_logged_in_rule082	5	login role=user pin=NEW	rv=0xa0
+set_pin_while_logged_in_rule082	6	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=1	uinit=1	lso=0	luser=0	tso=0	tuser=500	role=0
+set_pin_so_does_not_rotate_dek_rule005	1	load	rv=0x0
+set_pin_so_does_not_rotate_dek_rule005	2	set_pin role=so old=SO new=NEW	rv=0x0	audit=set_pin/SO/0/{}
+set_pin_so_does_not_rotate_dek_rule005	3	logout	-
+set_pin_so_does_not_rotate_dek_rule005	4	login role=user pin=USER	rv=0x0
+set_pin_so_does_not_rotate_dek_rule005	5	find	rv=0x0	n=5	hs=1,2,3,4,5
+set_pin_so_does_not_rotate_dek_rule005	6	snap role=user pin=USER	size=7159	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=new	so_nonce=new	so_ct=new	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=4803	nonce=new	pub=file:2007	pt=ok:4803
+set_pin_short_new_pin	1	load	rv=0x0
+set_pin_short_new_pin	2	set_pin role=user old=WRONG new=lit:abc	rv=0xa0
+set_pin_short_new_pin	3	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+set_pin_short_new_pin	4	set_pin role=user old=WRONG new=lit:abcd	rv=0xa0
+set_pin_short_new_pin	5	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=1	uinit=1	lso=0	luser=0	tso=0	tuser=500	role=0
+init_user_pin_unlocks_user_rule081	1	poke off=297 u32=5	-
+init_user_pin_unlocks_user_rule081	2	load	rv=0x0
+init_user_pin_unlocks_user_rule081	3	login role=user pin=USER	rv=0xa4
+init_user_pin_unlocks_user_rule081	4	login role=so pin=SO	rv=0x0
+init_user_pin_unlocks_user_rule081	5	init_user_pin pin=NEW	rv=0x0
+init_user_pin_unlocks_user_rule081	6	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=1
+init_user_pin_unlocks_user_rule081	7	logout	-
+init_user_pin_unlocks_user_rule081	8	login role=user pin=NEW	rv=0x0
+init_user_pin_unlocks_user_rule081	9	snap role=user pin=NEW	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=new	user_nonce=new	user_ct=new	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+reinit_wipes_rule080	1	poke off=293 u32=3	-
+reinit_wipes_rule080	2	poke off=297 u32=2	-
+reinit_wipes_rule080	3	load	rv=0x0
+reinit_wipes_rule080	4	reinit so=SO label=golden-reinit	rv=0x0	audit=token_reinit/SO/0/{"label":"golden-reinit"}
+reinit_wipes_rule080	5	info	label=676f6c64656e2d7265696e6974	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+reinit_wipes_rule080	6	role	role=0
+reinit_wipes_rule080	7	find	rv=0x0	n=0	hs=
+reinit_wipes_rule080	8	snap role=so pin=SO	size=317	magic=4648534d	ver=1	label=676f6c64656e2d7265696e6974	serial=new	serial_fmt=ok	iter=200000	salt_so=new	so_nonce=new	so_ct=new	salt_user=zero	user_nonce=zero	user_ct=zero	uinit=0	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+reinit_wipes_rule080	9	login role=so pin=SO	rv=0x0
+reinit_wipes_rule080	10	logout	-
+reinit_wipes_rule080	11	login role=user pin=USER	rv=0x101
+reinit_short_pin_rule036	1	load	rv=0x0
+reinit_short_pin_rule036	2	reinit so=lit:abc label=x	rv=0xa0
+reinit_short_pin_rule036	3	reinit so=lit:abcd label=x	rv=0x0	audit=token_reinit/SO/0/{"label":"x"}
+reinit_short_pin_rule036	4	login role=so pin=lit:abcd	rv=0x0
+reinit_then_add_div014	1	load	rv=0x0
+reinit_then_add_div014	2	reinit so=SO label=golden-r	rv=0x0	audit=token_reinit/SO/0/{"label":"golden-r"}
+reinit_then_add_div014	3	add class=0 kt=0 label=early value=pat:1:4 id=- flags=0	rv=0x0	h=1	audit=object_create/NONE/0/{"label":"early"}
+objects_crud	1	load	rv=0x0
+objects_crud	2	login role=user pin=USER	rv=0x0
+objects_crud	3	add class=3 kt=0x40 label=- value=pat:1:20 id=- flags=0x01	rv=0x0	h=1	audit=object_create/USER/0/{"label":""}
+objects_crud	4	add class=2 kt=0x40 label=pub value=pat:2:20 id=hex:01 flags=0	rv=0x0	h=2	audit=object_create/USER/0/{"label":"pub"}
+objects_crud	5	add class=1 kt=0 label=cert value=pat:3:30 id=hex:0102 flags=0	rv=0x0	h=3	audit=object_create/USER/0/{"label":"cert"}
+objects_crud	6	add class=0 kt=0 label=data value=- id=- flags=0	rv=0x0	h=4	audit=object_create/USER/0/{"label":"data"}
+objects_crud	7	add class=2 kt=3 label=sens-pub value=pat:5:10 id=- flags=0x01	rv=0x0	h=5	audit=object_create/USER/0/{"label":"sens-pub"}
+objects_crud	8	find	rv=0x0	n=5	hs=1,2,3,4,5
+objects_crud	9	find class=2	rv=0x0	n=2	hs=2,5
+objects_crud	10	find label=pub	rv=0x0	n=1	hs=2
+objects_crud	11	find class=2 label=cert	rv=0x0	n=0	hs=
+objects_crud	12	find cap=2	rv=0x0	n=5	hs=1,2
+objects_crud	13	find cap=0	rv=0x0	n=5	hs=
+objects_crud	14	get h=1	rv=0x0	class=3	kt=64	value=0102030405060708090a0b0c0d0e0f1011121314
+objects_crud	15	get h=4	rv=0x0	class=0	kt=0	value=
+objects_crud	16	get h=99	rv=0x60
+objects_crud	17	get_label h=1	rv=0x0	v=
+objects_crud	18	get_label h=2	rv=0x0	v=707562
+objects_crud	19	get_id h=3	rv=0x0	v=0102
+objects_crud	20	get_flags h=1	rv=0x0	v=0x01
+objects_crud	21	is_token h=1	rv=0x0	v=1
+objects_crud	22	set_label h=2 label=rep:Q:70	rv=0x0
+objects_crud	23	get_label h=2	rv=0x0	v=515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151
+objects_crud	24	set_id h=2 id=zero:33	rv=0x13
+objects_crud	25	set_id h=2 id=-	rv=0x0
+objects_crud	26	get_id h=2	rv=0x0	v=
+objects_crud	27	set_id h=3 id=pat:9:32	rv=0x0
+objects_crud	28	get_id h=3	rv=0x0	v=090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728
+objects_crud	29	set_flags h=2 v=0x02	rv=0x0
+objects_crud	30	get_flags h=2	rv=0x0	v=0x02
+objects_crud	31	set_flags h=2 v=0x01	rv=0x0
+objects_crud	32	set_flags2 h=1 v=0x87	rv=0x0
+objects_crud	33	get_flags2 h=1	rv=0x0	v=0x87
+objects_crud	34	set_flags3 h=1 v=0x01	rv=0x0
+objects_crud	35	get_flags3 h=1	rv=0x0	v=0x01
+objects_crud	36	set_usage h=1 v=0x8f	rv=0x0
+objects_crud	37	get_usage h=1	rv=0x0	v=0x8f
+objects_crud	38	set_meta h=1 start=txt:20260101 end=- app=-	rv=0x0
+objects_crud	39	set_meta h=1 start=- end=pat:48:8 app=rep:A:64	rv=0x0
+objects_crud	40	set_meta h=1 start=zero:9 end=- app=-	rv=0x13
+objects_crud	41	set_meta h=1 start=- end=- app=zero:65	rv=0x13
+objects_crud	42	get_meta h=1 which=0	rv=0x0	v=3230323630313031
+objects_crud	43	get_meta h=1 which=1	rv=0x0	v=3031323334353637
+objects_crud	44	get_meta h=1 which=2	rv=0x0	v=41414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141
+objects_crud	45	get_meta h=2 which=0	rv=0x0	v=
+objects_crud	46	set_meta h=2 start=- end=- app=-	rv=0x0
+objects_crud	47	set_meta h=2 start=txt: end=- app=-	rv=0x0
+objects_crud	48	get_meta h=2 which=0	rv=0x0	v=
+objects_crud	49	dump	rv=0x0	n=5
+	obj h=1 class=3 kt=64 flags=0x01 flags2=0x87 flags3=0x01 usage=0x8f tok=1 label= id= value=0102030405060708090a0b0c0d0e0f1011121314 start=3230323630313031 end=3031323334353637 app=41414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141 counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=2 class=2 kt=64 flags=0x01 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151515151 id= value=02030405060708090a0b0c0d0e0f101112131415 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=3 class=1 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=63657274 id=090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728 value=030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=4 class=0 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=64617461 id= value= start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=5 class=2 kt=3 flags=0x01 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=73656e732d707562 id= value=05060708090a0b0c0d0e start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+objects_crud	50	snap role=user pin=USER	size=5987	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=4672	nonce=new	pub=file:966	pt=ok:4672
+objects_crud	51	destroy h=2	rv=0x0	audit=object_destroy/USER/0/{}
+objects_crud	52	find	rv=0x0	n=4	hs=1,5,3,4
+objects_crud	53	destroy h=2	rv=0x60
+objects_crud	54	get_label h=2	rv=0x60
+objects_crud	55	get_flags h=99	rv=0x60
+objects_crud	56	get_flags2 h=99	rv=0x60
+objects_crud	57	get_flags3 h=99	rv=0x60
+objects_crud	58	get_usage h=99	rv=0x60
+objects_crud	59	get_id h=99	rv=0x60
+objects_crud	60	get_meta h=99 which=0	rv=0x60
+objects_crud	61	is_token h=99	rv=0x60
+objects_crud	62	policy h=99	rv=0x60
+objects_crud	63	set_label h=99 label=x	rv=0x60
+objects_crud	64	set_id h=99 id=-	rv=0x60
+objects_crud	65	set_flags h=99 v=0	rv=0x60
+objects_crud	66	set_flags2 h=99 v=0	rv=0x60
+objects_crud	67	set_flags3 h=99 v=0	rv=0x60
+objects_crud	68	set_usage h=99 v=0	rv=0x60
+objects_crud	69	set_meta h=99 start=- end=- app=-	rv=0x60
+objects_crud	70	set_mechs h=99 list=1	rv=0x60
+objects_crud	71	get_mechs h=99	rv=0x60
+objects_crud	72	set_tmpl h=99 which=0 e=empty	rv=0x60
+objects_crud	73	get_tmpl h=99 which=0	rv=0x60
+objects_crud	74	dump	rv=0x0	n=4
+	obj h=1 class=3 kt=64 flags=0x01 flags2=0x87 flags3=0x01 usage=0x8f tok=1 label= id= value=0102030405060708090a0b0c0d0e0f1011121314 start=3230323630313031 end=3031323334353637 app=41414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414141 counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=5 class=2 kt=3 flags=0x01 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=73656e732d707562 id= value=05060708090a0b0c0d0e start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=3 class=1 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=63657274 id=090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728 value=030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=4 class=0 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=64617461 id= value= start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+objects_crud	75	snap role=user pin=USER	size=5051	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=3736	nonce=new	pub=file:966	pt=ok:3736
+add_limits_rule091	1	load	rv=0x0
+add_limits_rule091	2	login role=user pin=USER	rv=0x0
+add_limits_rule091	3	add class=0 kt=0 label=x value=- id=zero:33 flags=0	rv=0x7
+add_limits_rule091	4	add class=0 kt=0 label=x value=zero:2097153 id=- flags=0	rv=0x62
+add_limits_rule091	5	add class=0 kt=0 label=x value=- id=zero:32 flags=0	rv=0x0	h=1	audit=object_create/USER/0/{"label":"x"}
+add_limits_rule091	6	add class=0 kt=0 label=rep:B:70 value=- id=- flags=0	rv=0x0	h=2	audit=object_create/USER/0/{"label":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}
+add_limits_rule091	7	get_label h=2	rv=0x0	v=424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242424242
+add_limits_rule091	8	find label=rep:B:63	rv=0x0	n=1	hs=2
+add_limits_rule091	9	find label=rep:B:64	rv=0x0	n=0	hs=
+policy_attrs_rule061	1	load	rv=0x0
+policy_attrs_rule061	2	login role=user pin=USER	rv=0x0
+policy_attrs_rule061	3	add class=4 kt=31 label=k1 value=pat:1:16 id=- flags=0	rv=0x0	h=1	audit=object_create/USER/0/{"label":"k1"}
+policy_attrs_rule061	4	add class=4 kt=31 label=k2 value=pat:2:16 id=- flags=0	rv=0x0	h=2	audit=object_create/USER/0/{"label":"k2"}
+policy_attrs_rule061	5	mech_allowed h=1 mech=0x1081	rv=0x0
+policy_attrs_rule061	6	policy h=1	rv=0x0	counts=0,0,0,0
+policy_attrs_rule061	7	set_mechs h=1 list=0x1081,0x1082	rv=0x0
+policy_attrs_rule061	8	get_mechs h=1	rv=0x0	n=2	v=0x1081,0x1082
+policy_attrs_rule061	9	mech_allowed h=1 mech=0x1082	rv=0x0
+policy_attrs_rule061	10	mech_allowed h=1 mech=0x1	rv=0x70
+policy_attrs_rule061	11	mech_allowed h=99 mech=0x1	rv=0x0
+policy_attrs_rule061	12	set_mechs h=2 list=empty	rv=0x0
+policy_attrs_rule061	13	mech_allowed h=2 mech=0x1081	rv=0x70
+policy_attrs_rule061	14	get_mechs h=2	rv=0x0	n=0	v=
+policy_attrs_rule061	15	get_flags2 h=2	rv=0x0	v=0x08
+policy_attrs_rule061	16	set_mechs h=1 list=1,2,3,4,5,6,7,8,9	rv=0x13
+policy_attrs_rule061	17	set_mechs h=1 list=1,2,3,4,5,6,7,8	rv=0x0
+policy_attrs_rule061	18	get_mechs h=1	rv=0x0	n=8	v=0x1,0x2,0x3,0x4,0x5,0x6,0x7,0x8
+policy_attrs_rule061	19	set_mechs h=1 list=7	rv=0x0
+policy_attrs_rule061	20	get_mechs h=1	rv=0x0	n=1	v=0x7
+policy_attrs_rule061	21	set_tmpl h=1 which=0 e=0x3:3:5:6c6162656c,0x100:2:8:1f00000000000000	rv=0x0
+policy_attrs_rule061	22	set_tmpl h=1 which=1 e=empty	rv=0x0
+policy_attrs_rule061	23	set_tmpl h=1 which=2 e=0x162:1:1:01aabbcc	rv=0x0
+policy_attrs_rule061	24	set_tmpl h=1 which=0 e=1:1:1:01,2:1:1:01,3:1:1:01,4:1:1:01,5:1:1:01	rv=0x13
+policy_attrs_rule061	25	set_tmpl h=1 which=0 e=1:1:49:01	rv=0x13
+policy_attrs_rule061	26	set_tmpl h=1 which=0 e=1:0:1:01	rv=0x13
+policy_attrs_rule061	27	set_tmpl h=1 which=0 e=1:4:1:01	rv=0x13
+policy_attrs_rule061	28	get_tmpl h=1 which=0	rv=0x0	n=2	v=0x3:3:5:6c6162656c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000,0x100:2:8:1f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+policy_attrs_rule061	29	get_tmpl h=1 which=1	rv=0x0	n=0	v=
+policy_attrs_rule061	30	get_tmpl h=1 which=2	rv=0x0	n=1	v=0x162:1:1:01aabbcc0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+policy_attrs_rule061	31	get_flags2 h=1	rv=0x0	v=0x78
+policy_attrs_rule061	32	policy h=1	rv=0x0	counts=1,2,0,1
+policy_attrs_rule061	33	set_flags2 h=1 v=0	rv=0x0
+policy_attrs_rule061	34	mech_allowed h=1 mech=0x1	rv=0x0
+policy_attrs_rule061	35	dump	rv=0x0	n=2
+	obj h=1 class=4 kt=31 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=6b31 id= value=0102030405060708090a0b0c0d0e0f10 start= end= app= counts=1,2,0,1 mechs=0x7 wrap=0x3:3:5:6c6162656c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000,0x100:2:8:1f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000 unwrap= derive=0x162:1:1:01aabbcc0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+	obj h=2 class=4 kt=31 flags=0x00 flags2=0x08 flags3=0x00 usage=0x00 tok=1 label=6b32 id= value=02030405060708090a0b0c0d0e0f1011 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+policy_attrs_rule061	36	snap role=user pin=USER	size=2245	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=1876	nonce=new	pub=file:20	pt=ok:1876
+policy_attrs_rule061	37	close	-
+policy_attrs_rule061	38	load	rv=0x0
+policy_attrs_rule061	39	login role=user pin=USER	rv=0x0
+policy_attrs_rule061	40	get_tmpl h=1 which=2	rv=0x0	n=1	v=0x162:1:1:010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+policy_attrs_rule061	41	get_mechs h=1	rv=0x0	n=1	v=0x7
+session_objects_rule090	1	load	rv=0x0
+session_objects_rule090	2	login role=user pin=USER	rv=0x0
+session_objects_rule090	3	add class=4 kt=31 label=tok value=pat:1:16 id=- flags=0	rv=0x0	h=1	audit=object_create/USER/0/{"label":"tok"}
+session_objects_rule090	4	add class=4 kt=31 label=ses value=pat:2:16 id=- flags=0	rv=0x0	h=2	audit=object_create/USER/0/{"label":"ses"}
+session_objects_rule090	5	mark_session h=2 owner=7	rv=0x0
+session_objects_rule090	6	is_token h=2	rv=0x0	v=0
+session_objects_rule090	7	mark_session h=1 owner=0	rv=0x7
+session_objects_rule090	8	mark_session h=9 owner=7	rv=0x60
+session_objects_rule090	9	find	rv=0x0	n=2	hs=1,2
+session_objects_rule090	10	snap role=user pin=USER	size=1313	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=944	nonce=new	pub=file:20	pt=ok:944
+session_objects_rule090	11	destroy_session owner=0	rv=0x7
+session_objects_rule090	12	destroy_session owner=9	rv=0x0
+session_objects_rule090	13	destroy_session owner=7	rv=0x0
+session_objects_rule090	14	find	rv=0x0	n=1	hs=1
+session_objects_rule090	15	add class=2 kt=3 label=ses2 value=pat:3:8 id=- flags=0	rv=0x0	h=3	audit=object_create/USER/0/{"label":"ses2"}
+session_objects_rule090	16	mark_session h=4 owner=8	rv=0x60
+session_objects_rule090	17	logout	-
+session_objects_rule090	18	destroy_session owner=8	rv=0x0
+session_objects_rule090	19	find	rv=0x0	n=2	hs=1,3
+session_objects_rule090	20	snap role=user pin=USER	size=3161	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=1868	nonce=new	pub=file:944	pt=ok:1868
+handle_wraps_rule091	1	reblob pt=v4_next_handle_max role=user pin=USER pub=none	-
+handle_wraps_rule091	2	load	rv=0x0
+handle_wraps_rule091	3	login role=user pin=USER	rv=0x0
+handle_wraps_rule091	4	add class=0 kt=0 label=a value=- id=- flags=0	rv=0x0	h=4294967295	audit=object_create/USER/0/{"label":"a"}
+handle_wraps_rule091	5	add class=0 kt=0 label=b value=- id=- flags=0	rv=0x0	h=1	audit=object_create/USER/0/{"label":"b"}
+handle_wraps_rule091	6	find	rv=0x0	n=3	hs=1,4294967295,1
+handle_wraps_rule091	7	get_label h=1	rv=0x0	v=6f6e65
+handle_wraps_rule091	8	dump	rv=0x0	n=3
+	obj h=1 class=0 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=6f6e65 id= value= start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=4294967295 class=0 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=61 id= value= start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=1 class=0 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=6f6e65 id= value= start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+capacity_1024_rule091	1	reblob pt=v4_1023_objects role=user pin=USER pub=none	-
+capacity_1024_rule091	2	load	rv=0x0
+capacity_1024_rule091	3	login role=user pin=USER	rv=0x0
+capacity_1024_rule091	4	add class=0 kt=0 label=last value=- id=- flags=0	rv=0x0	h=1024	audit=object_create/USER/0/{"label":"last"}
+capacity_1024_rule091	5	add class=0 kt=0 label=over value=- id=- flags=0	rv=0x131
+capacity_1024_rule091	6	find cap=0	rv=0x0	n=1024	hs=
+capacity_1024_rule091	7	nosave	-
+destroy_compacts_rule092	1	load	rv=0x0
+destroy_compacts_rule092	2	login role=user pin=USER	rv=0x0
+destroy_compacts_rule092	3	destroy h=1	rv=0x0	audit=object_destroy/USER/0/{}
+destroy_compacts_rule092	4	find	rv=0x0	n=4	hs=5,2,3,4
+destroy_compacts_rule092	5	destroy h=4	rv=0x0	audit=object_destroy/USER/0/{}
+destroy_compacts_rule092	6	find	rv=0x0	n=3	hs=5,2,3
+destroy_compacts_rule092	7	dump	rv=0x0	n=3
+	obj h=5 class=0 kt=0 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=64617461 id=1d61 value=6162636465666768 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=2 class=4 kt=31 flags=0x02 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=6165732d6578747261637461626c65 id=1d40 value=404142434445464748494a4b4c4d4e4f start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=3 class=2 kt=3 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=65632d7075626c6963 id=1d04 value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+destroy_compacts_rule092	8	snap role=user pin=USER	size=4199	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=2849	nonce=new	pub=file:1001	pt=ok:2849
+public_view_before_login	1	load	rv=0x0
+public_view_before_login	2	find	rv=0x0	n=2	hs=3,4
+public_view_before_login	3	get h=3	rv=0x0	class=2	kt=3	value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344
+public_view_before_login	4	get h=1	rv=0x60
+public_view_before_login	5	get_label h=3	rv=0x0	v=65632d7075626c6963
+public_view_before_login	6	get_flags h=3	rv=0x0	v=0x00
+public_view_before_login	7	policy h=3	rv=0x0	counts=0,0,0,0
+public_view_before_login	8	get_mechs h=3	rv=0x0	n=0	v=
+public_view_before_login	9	get_tmpl h=3 which=0	rv=0x0	n=0	v=
+public_view_before_login	10	mech_allowed h=3 mech=1	rv=0x0
+public_view_before_login	11	add class=0 kt=0 label=x value=- id=- flags=0	rv=0x101
+public_view_before_login	12	set_label h=3 label=x	rv=0x101
+public_view_before_login	13	destroy h=3	rv=0x101
+public_view_before_login	14	login role=user pin=USER	rv=0x0
+public_view_before_login	15	find	rv=0x0	n=5	hs=1,2,3,4,5
+public_view_absent	1	pubsec drop	-
+public_view_absent	2	load	rv=0x0
+public_view_absent	3	find	rv=0x101	n=0	hs=
+public_view_absent	4	get h=3	rv=0x101
+public_view_absent	5	get_label h=3	rv=0x60
+public_view_absent	6	policy h=3	rv=0x101
+public_view_absent	7	mech_allowed h=3 mech=1	rv=0x0
+public_view_absent	8	login role=user pin=USER	rv=0x0
+public_view_absent	9	find	rv=0x0	n=5	hs=1,2,3,4,5
+public_view_absent	10	snap role=user pin=USER	size=7159	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=4803	nonce=new	pub=file:2007	pt=ok:4803
+public_view_bad_magic	1	pubsec magic=0xF5B5B002	-
+public_view_bad_magic	2	load	rv=0x0
+public_view_bad_magic	3	find	rv=0x101	n=0	hs=
+public_view_length_short_of_file	1	pubsec byte=0	-
+public_view_length_short_of_file	2	load	rv=0x0
+public_view_length_short_of_file	3	find	rv=0x101	n=0	hs=
+public_view_secret_object	1	pubsec set=v4_secret_key	-
+public_view_secret_object	2	load	rv=0x0
+public_view_secret_object	3	find	rv=0x101	n=0	hs=
+public_view_sensitive_public_key	1	pubsec set=v4_sensitive_public_key	-
+public_view_sensitive_public_key	2	load	rv=0x0
+public_view_sensitive_public_key	3	find	rv=0x101	n=0	hs=
+public_view_v3_section	1	pubsec set=v3_ok	-
+public_view_v3_section	2	load	rv=0x0
+public_view_v3_section	3	find	rv=0x101	n=0	hs=
+public_view_unparsable	1	pubsec set=v4_wrap_kind_4	-
+public_view_unparsable	2	load	rv=0x0
+public_view_unparsable	3	find	rv=0x101	n=0	hs=
+public_view_empty_section	1	pubsec set=v4_empty	-
+public_view_empty_section	2	load	rv=0x0
+public_view_empty_section	3	find	rv=0x0	n=0	hs=
+public_view_planted_trusted_key_rule044	1	pubsec set=v4_planted_trusted	-
+public_view_planted_trusted_key_rule044	2	load	rv=0x0
+public_view_planted_trusted_key_rule044	3	find	rv=0x0	n=1	hs=77
+public_view_planted_trusted_key_rule044	4	get_flags h=77	rv=0x0	v=0x40
+public_view_planted_trusted_key_rule044	5	get h=77	rv=0x0	class=2	kt=3	value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344
+public_view_planted_trusted_key_rule044	6	login role=user pin=USER	rv=0x0
+public_view_planted_trusted_key_rule044	7	find	rv=0x0	n=5	hs=1,2,3,4,5
+public_view_planted_trusted_key_rule044	8	get h=77	rv=0x60
+empty_store_view	1	load	rv=0x0
+empty_store_view	2	find	rv=0x0	n=0	hs=
+empty_store_view	3	get h=1	rv=0x60
+empty_store_view	4	get_label h=1	rv=0x60
+header_plus_10_bytes	1	append b=zero:10	-
+header_plus_10_bytes	2	load	rv=0x0
+header_plus_10_bytes	3	find	rv=0x101	n=0	hs=
+header_plus_10_bytes	4	login role=user pin=USER	rv=0x0
+header_plus_10_bytes	5	find	rv=0x101	n=0	hs=
+header_plus_10_bytes	6	snap role=user pin=USER	size=327	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=bad	pt=none
+blob_ct_len_zero	1	poke off=317 u32=0	-
+blob_ct_len_zero	2	load	rv=0x0
+blob_ct_len_zero	3	find	rv=0x101	n=0	hs=
+blob_ct_len_zero	4	login role=user pin=USER	rv=0x0
+blob_ct_len_zero	5	find	rv=0x101	n=0	hs=
+blob_ct_len_zero	6	get_label h=1	rv=0x60
+blob_ct_len_zero	7	snap role=user pin=USER	size=7159	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=bad	ctlen=0	pt=none
+blob_ct_len_over_max_rule003	1	poke off=317 u32=2148421645	-
+blob_ct_len_over_max_rule003	2	load	rv=0x0
+blob_ct_len_over_max_rule003	3	login role=user pin=USER	rv=0x0
+blob_ct_len_over_max_rule003	4	find	rv=0x101	n=0	hs=
+blob_ct_len_over_max_rule003	5	snap role=user pin=USER	size=7159	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=bad	ctlen=2148421645	pt=none
+blob_ct_len_at_max_rule003	1	poke off=317 u32=2148421644	-
+blob_ct_len_at_max_rule003	2	load	rv=0x0
+blob_ct_len_at_max_rule003	3	login role=user pin=USER	rv=0x0
+blob_ct_len_at_max_rule003	4	find	rv=0x101	n=0	hs=
+blob_truncated	1	truncate len=343	-
+blob_truncated	2	load	rv=0x0
+blob_truncated	3	login role=user pin=USER	rv=0x0
+blob_truncated	4	find	rv=0x101	n=0	hs=
+blob_bad_tag_div010	1	reblob pt=v4_ok role=user pin=USER pub=none tag=bad	-
+blob_bad_tag_div010	2	load	rv=0x0
+blob_bad_tag_div010	3	login role=user pin=USER	rv=0x0
+blob_bad_tag_div010	4	find	rv=0x101	n=0	hs=
+blob_bad_tag_div010	5	snap role=user pin=USER	size=2290	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=1941	nonce=new	pub=none	pt=fail
+zero_dek_store_div010	1	load	rv=0x0
+zero_dek_store_div010	2	login role=user pin=USER	rv=0x0
+zero_dek_store_div010	3	find	rv=0x0	n=5	hs=1,2,3,4,5
+zero_dek_store_div010	4	snap role=user pin=USER	size=7159	magic=4648534d	ver=1	label=676f6c64656e2d6d756c7469	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=4803	nonce=new	pub=file:2007	pt=ok:4803
+parse_v1_ok	1	reblob pt=v1_ok role=user pin=USER pub=none	-
+parse_v1_ok	2	load	rv=0x0
+parse_v1_ok	3	login role=user pin=USER	rv=0x0
+parse_v1_ok	4	dump	rv=0x0	n=2
+	obj h=1 class=4 kt=31 flags=0x01 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=626c6f622d736563726574 id=1d10 value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=2 class=2 kt=3 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=626c6f622d7075626c6963 id=1d04 value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+parse_v1_ok	5	set_usage h=1 v=0x81	rv=0x0
+parse_v1_ok	6	snap role=user pin=USER	size=3291	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=1941	nonce=new	pub=file:1001	pt=ok:1941
+parse_v1_empty	1	reblob pt=v1_empty role=user pin=USER pub=none	-
+parse_v1_empty	2	load	rv=0x0
+parse_v1_empty	3	login role=user pin=USER	rv=0x0
+parse_v1_empty	4	dump	rv=0x0	n=0
+parse_v1_count_1025	1	reblob pt=v1_count_1025 role=user pin=USER pub=none	-
+parse_v1_count_1025	2	load	rv=0x0
+parse_v1_count_1025	3	login role=user pin=USER	rv=0x0
+parse_v1_count_1025	4	find	rv=0x101	n=0	hs=
+parse_v1_short	1	reblob pt=v1_short role=user pin=USER pub=none	-
+parse_v1_short	2	load	rv=0x0
+parse_v1_short	3	login role=user pin=USER	rv=0x0
+parse_v1_short	4	find	rv=0x101	n=0	hs=
+parse_v1_value_len_5501	1	reblob pt=v1_value_len_5501 role=user pin=USER pub=none	-
+parse_v1_value_len_5501	2	load	rv=0x0
+parse_v1_value_len_5501	3	login role=user pin=USER	rv=0x0
+parse_v1_value_len_5501	4	find	rv=0x101	n=0	hs=
+parse_v1_id_len_33	1	reblob pt=v1_id_len_33 role=user pin=USER pub=none	-
+parse_v1_id_len_33	2	load	rv=0x0
+parse_v1_id_len_33	3	login role=user pin=USER	rv=0x0
+parse_v1_id_len_33	4	find	rv=0x101	n=0	hs=
+parse_v2_ok	1	reblob pt=v2_ok role=user pin=USER pub=none	-
+parse_v2_ok	2	load	rv=0x0
+parse_v2_ok	3	login role=user pin=USER	rv=0x0
+parse_v2_ok	4	dump	rv=0x0	n=2
+	obj h=1 class=4 kt=31 flags=0x01 flags2=0x00 flags3=0x00 usage=0x85 tok=1 label=626c6f622d736563726574 id=1d10 value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=2 class=2 kt=3 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=626c6f622d7075626c6963 id=1d04 value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+parse_v2_ok	5	set_usage h=1 v=0x81	rv=0x0
+parse_v2_ok	6	snap role=user pin=USER	size=3291	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=1941	nonce=new	pub=file:1001	pt=ok:1941
+parse_v2_count_1025	1	reblob pt=v2_count_1025 role=user pin=USER pub=none	-
+parse_v2_count_1025	2	load	rv=0x0
+parse_v2_count_1025	3	login role=user pin=USER	rv=0x0
+parse_v2_count_1025	4	find	rv=0x101	n=0	hs=
+parse_v2_missing_record	1	reblob pt=v2_missing_record role=user pin=USER pub=none	-
+parse_v2_missing_record	2	load	rv=0x0
+parse_v2_missing_record	3	login role=user pin=USER	rv=0x0
+parse_v2_missing_record	4	find	rv=0x101	n=0	hs=
+parse_v2_rec_len_119	1	reblob pt=v2_rec_len_119 role=user pin=USER pub=none	-
+parse_v2_rec_len_119	2	load	rv=0x0
+parse_v2_rec_len_119	3	login role=user pin=USER	rv=0x0
+parse_v2_rec_len_119	4	find	rv=0x101	n=0	hs=
+parse_v2_rec_len_over_max	1	reblob pt=v2_rec_len_over_max role=user pin=USER pub=none	-
+parse_v2_rec_len_over_max	2	load	rv=0x0
+parse_v2_rec_len_over_max	3	login role=user pin=USER	rv=0x0
+parse_v2_rec_len_over_max	4	find	rv=0x101	n=0	hs=
+parse_v2_rec_overrun	1	reblob pt=v2_rec_overrun role=user pin=USER pub=none	-
+parse_v2_rec_overrun	2	load	rv=0x0
+parse_v2_rec_overrun	3	login role=user pin=USER	rv=0x0
+parse_v2_rec_overrun	4	find	rv=0x101	n=0	hs=
+parse_v2_value_len_mismatch	1	reblob pt=v2_value_len_mismatch role=user pin=USER pub=none	-
+parse_v2_value_len_mismatch	2	load	rv=0x0
+parse_v2_value_len_mismatch	3	login role=user pin=USER	rv=0x0
+parse_v2_value_len_mismatch	4	find	rv=0x101	n=0	hs=
+parse_v2_id_len_33	1	reblob pt=v2_id_len_33 role=user pin=USER pub=none	-
+parse_v2_id_len_33	2	load	rv=0x0
+parse_v2_id_len_33	3	login role=user pin=USER	rv=0x0
+parse_v2_id_len_33	4	find	rv=0x101	n=0	hs=
+parse_v3_ok	1	reblob pt=v3_ok role=user pin=USER pub=none	-
+parse_v3_ok	2	load	rv=0x0
+parse_v3_ok	3	login role=user pin=USER	rv=0x0
+parse_v3_ok	4	dump	rv=0x0	n=2
+	obj h=1 class=4 kt=31 flags=0x01 flags2=0x87 flags3=0x00 usage=0x85 tok=1 label=626c6f622d736563726574 id=1d10 value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f start=3230323630313031 end= app=676f6c64656e2d617070 counts=0,0,0,0 mechs= wrap= unwrap= derive=
+	obj h=2 class=2 kt=3 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=626c6f622d7075626c6963 id=1d04 value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+parse_v3_ok	5	set_usage h=1 v=0x81	rv=0x0
+parse_v3_ok	6	snap role=user pin=USER	size=3291	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=1941	nonce=new	pub=file:1001	pt=ok:1941
+parse_v3_start_len_9	1	reblob pt=v3_start_len_9 role=user pin=USER pub=none	-
+parse_v3_start_len_9	2	load	rv=0x0
+parse_v3_start_len_9	3	login role=user pin=USER	rv=0x0
+parse_v3_start_len_9	4	find	rv=0x101	n=0	hs=
+parse_v3_end_len_9	1	reblob pt=v3_end_len_9 role=user pin=USER pub=none	-
+parse_v3_end_len_9	2	load	rv=0x0
+parse_v3_end_len_9	3	login role=user pin=USER	rv=0x0
+parse_v3_end_len_9	4	find	rv=0x101	n=0	hs=
+parse_v3_app_len_65	1	reblob pt=v3_app_len_65 role=user pin=USER pub=none	-
+parse_v3_app_len_65	2	load	rv=0x0
+parse_v3_app_len_65	3	login role=user pin=USER	rv=0x0
+parse_v3_app_len_65	4	find	rv=0x101	n=0	hs=
+parse_v4_ok	1	reblob pt=v4_ok role=user pin=USER pub=none	-
+parse_v4_ok	2	load	rv=0x0
+parse_v4_ok	3	login role=user pin=USER	rv=0x0
+parse_v4_ok	4	dump	rv=0x0	n=2
+	obj h=1 class=4 kt=31 flags=0x01 flags2=0x5b flags3=0x01 usage=0x85 tok=1 label=626c6f622d736563726574 id=1d10 value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f start=3230323630313031 end= app=676f6c64656e2d617070 counts=2,1,0,2 mechs=0x1081,0x1082 wrap=0x3:3:5:6c6162656c4a554e4b2d706173742d6c656e000000000000000000000000000000000000000000000000000000000000 unwrap= derive=0x162:1:1:010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,0x100:2:8:1f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+	obj h=2 class=2 kt=3 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=626c6f622d7075626c6963 id=1d04 value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+parse_v4_ok	5	set_usage h=1 v=0x81	rv=0x0
+parse_v4_ok	6	dump	rv=0x0	n=2
+	obj h=1 class=4 kt=31 flags=0x01 flags2=0x5b flags3=0x01 usage=0x81 tok=1 label=626c6f622d736563726574 id=1d10 value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f start=3230323630313031 end= app=676f6c64656e2d617070 counts=2,1,0,2 mechs=0x1081,0x1082 wrap=0x3:3:5:6c6162656c4a554e4b2d706173742d6c656e000000000000000000000000000000000000000000000000000000000000 unwrap= derive=0x162:1:1:010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,0x100:2:8:1f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+	obj h=2 class=2 kt=3 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=626c6f622d7075626c6963 id=1d04 value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+parse_v4_ok	7	snap role=user pin=USER	size=3291	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=1941	nonce=new	pub=file:1001	pt=ok:1941
+parse_v4_allowed_9	1	reblob pt=v4_allowed_9 role=user pin=USER pub=none	-
+parse_v4_allowed_9	2	load	rv=0x0
+parse_v4_allowed_9	3	login role=user pin=USER	rv=0x0
+parse_v4_allowed_9	4	find	rv=0x101	n=0	hs=
+parse_v4_wrap_count_5	1	reblob pt=v4_wrap_count_5 role=user pin=USER pub=none	-
+parse_v4_wrap_count_5	2	load	rv=0x0
+parse_v4_wrap_count_5	3	login role=user pin=USER	rv=0x0
+parse_v4_wrap_count_5	4	find	rv=0x101	n=0	hs=
+parse_v4_unwrap_entry_len_49	1	reblob pt=v4_unwrap_entry_len_49 role=user pin=USER pub=none	-
+parse_v4_unwrap_entry_len_49	2	load	rv=0x0
+parse_v4_unwrap_entry_len_49	3	login role=user pin=USER	rv=0x0
+parse_v4_unwrap_entry_len_49	4	find	rv=0x101	n=0	hs=
+parse_v4_derive_kind_0	1	reblob pt=v4_derive_kind_0 role=user pin=USER pub=none	-
+parse_v4_derive_kind_0	2	load	rv=0x0
+parse_v4_derive_kind_0	3	login role=user pin=USER	rv=0x0
+parse_v4_derive_kind_0	4	find	rv=0x101	n=0	hs=
+parse_v4_wrap_kind_4	1	reblob pt=v4_wrap_kind_4 role=user pin=USER pub=none	-
+parse_v4_wrap_kind_4	2	load	rv=0x0
+parse_v4_wrap_kind_4	3	login role=user pin=USER	rv=0x0
+parse_v4_wrap_kind_4	4	find	rv=0x101	n=0	hs=
+parse_v4_rec_len_911	1	reblob pt=v4_rec_len_911 role=user pin=USER pub=none	-
+parse_v4_rec_len_911	2	load	rv=0x0
+parse_v4_rec_len_911	3	login role=user pin=USER	rv=0x0
+parse_v4_rec_len_911	4	find	rv=0x101	n=0	hs=
+parse_v4_trailing_bytes	1	reblob pt=v4_trailing_bytes role=user pin=USER pub=none	-
+parse_v4_trailing_bytes	2	load	rv=0x0
+parse_v4_trailing_bytes	3	login role=user pin=USER	rv=0x0
+parse_v4_trailing_bytes	4	dump	rv=0x0	n=2
+	obj h=1 class=4 kt=31 flags=0x01 flags2=0x5b flags3=0x01 usage=0x85 tok=1 label=626c6f622d736563726574 id=1d10 value=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f start=3230323630313031 end= app=676f6c64656e2d617070 counts=2,1,0,2 mechs=0x1081,0x1082 wrap=0x3:3:5:6c6162656c4a554e4b2d706173742d6c656e000000000000000000000000000000000000000000000000000000000000 unwrap= derive=0x162:1:1:010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000,0x100:2:8:1f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+	obj h=2 class=2 kt=3 flags=0x00 flags2=0x00 flags3=0x00 usage=0x00 tok=1 label=626c6f622d7075626c6963 id=1d04 value=0405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f4041424344 start= end= app= counts=0,0,0,0 mechs= wrap= unwrap= derive=
+parse_blob_7_bytes	1	reblob pt=blob_7_bytes role=user pin=USER pub=none	-
+parse_blob_7_bytes	2	load	rv=0x0
+parse_blob_7_bytes	3	login role=user pin=USER	rv=0x0
+parse_blob_7_bytes	4	find	rv=0x101	n=0	hs=
+parse_v4_magic_10_bytes	1	reblob pt=v4_magic_10_bytes role=user pin=USER pub=none	-
+parse_v4_magic_10_bytes	2	load	rv=0x0
+parse_v4_magic_10_bytes	3	login role=user pin=USER	rv=0x0
+parse_v4_magic_10_bytes	4	find	rv=0x101	n=0	hs=
+parse_unknown_magic	1	reblob pt=unknown_magic role=user pin=USER pub=none	-
+parse_unknown_magic	2	load	rv=0x0
+parse_unknown_magic	3	login role=user pin=USER	rv=0x0
+parse_unknown_magic	4	find	rv=0x101	n=0	hs=
+header_missing	1	load	rv=0xe0
+header_missing	2	files	files=
+header_316_bytes	1	truncate len=316	-
+header_316_bytes	2	load	rv=0x6
+header_bad_magic	1	poke off=0 hex=4648534e	-
+header_bad_magic	2	load	rv=0x6
+header_version_2	1	poke off=4 u32=2	-
+header_version_2	2	load	rv=0x6
+header_version_0	1	poke off=4 u32=0	-
+header_version_0	2	load	rv=0x6
+header_user_initialized_byte_2	1	poke off=292 u8=2	-
+header_user_initialized_byte_2	2	load	rv=0x0
+header_user_initialized_byte_2	3	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+header_user_initialized_byte_2	4	login role=user pin=WRONG	rv=0xa0
+header_user_initialized_byte_2	5	snap	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=1	thr=00000000000000000000000000000000	salts_differ=1	blob=none
+header_throttle_bytes_ignored	1	poke off=301 hex=ffffffffffffffffffffffffffffffff	-
+header_throttle_bytes_ignored	2	load	rv=0x0
+header_throttle_bytes_ignored	3	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+header_throttle_bytes_ignored	4	login role=so pin=WRONG	rv=0xa0
+header_throttle_bytes_ignored	5	snap	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=1	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none
+header_label_64_bytes	1	poke off=8 hex=4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c	-
+header_label_64_bytes	2	load	rv=0x0
+header_label_64_bytes	3	info	label=4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c+overrun:serial	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+header_serial_edited	1	poke off=77 hex=30	-
+header_serial_edited	2	load	rv=0x0
+header_serial_edited	3	login role=user pin=USER	rv=0xa0
+header_serial_edited	4	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=1	uinit=1	lso=0	luser=0	tso=0	tuser=500	role=0
+iter_1000_div011	1	poke off=136 u32=1000	-
+iter_1000_div011	2	load	rv=0x0
+iter_1000_div011	3	login role=so pin=SO	rv=0xa0
+iter_1000_div011	4	info	label=676f6c64656e2d75736572	serial=ok	fso=1	fuser=0	uinit=1	lso=0	luser=0	tso=500	tuser=0	role=0
+iter_999_div011	1	poke off=136 u32=999	-
+iter_999_div011	2	load	rv=0x0
+iter_999_div011	3	login role=so pin=SO	rv=0x80000003
+iter_999_div011	4	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+iter_0_div011	1	poke off=136 u32=0	-
+iter_0_div011	2	load	rv=0x0
+iter_0_div011	3	login role=user pin=USER	rv=0x80000003
+iter_0_div011	4	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+iter_200001_div011	1	poke off=136 u32=200001	-
+iter_200001_div011	2	load	rv=0x0
+iter_200001_div011	3	login role=so pin=SO	rv=0xa0
+iter_200001_div011	4	info	label=676f6c64656e2d75736572	serial=ok	fso=1	fuser=0	uinit=1	lso=0	luser=0	tso=500	tuser=0	role=0
+two_handles_bypass_lockout_div012	1	poke off=297 u32=4	-
+two_handles_bypass_lockout_div012	2	load	rv=0x0
+two_handles_bypass_lockout_div012	3	load t=B	rv=0x0
+two_handles_bypass_lockout_div012	4	login role=user pin=WRONG	rv=0xa4
+two_handles_bypass_lockout_div012	5	login t=B role=user pin=USER	rv=0x0
+two_handles_bypass_lockout_div012	6	info t=B	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=2
+two_handles_bypass_lockout_div012	7	snap	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none
+stale_handle_after_reinit_div012	1	load	rv=0x0
+stale_handle_after_reinit_div012	2	load t=B	rv=0x0
+stale_handle_after_reinit_div012	3	reinit t=B so=NEW label=golden-b	rv=0x0	audit=token_reinit/SO/0/{"label":"golden-b"}
+stale_handle_after_reinit_div012	4	login role=user pin=USER	rv=0x0
+stale_handle_after_reinit_div012	5	snap	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none
+rodir_wrong_pin_div013	1	load	rv=0x0
+rodir_wrong_pin_div013	2	rodir	-
+rodir_wrong_pin_div013	3	login role=user pin=WRONG	rv=0xa0
+rodir_wrong_pin_div013	4	rwdir	-
+rodir_wrong_pin_div013	5	close	-
+rodir_wrong_pin_div013	6	load	rv=0x0
+rodir_wrong_pin_div013	7	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+rodir_wrong_pin_div013	8	files	files=slot0.tok:600
+rodir_right_pin_div013	1	load	rv=0x0
+rodir_right_pin_div013	2	rodir	-
+rodir_right_pin_div013	3	login role=user pin=USER	rv=0x0
+rodir_right_pin_div013	4	role	role=2
+rodir_right_pin_div013	5	rwdir	-
+rodir_right_pin_div013	6	files	files=slot0.tok:600
+rodir_add_h4	1	load	rv=0x0
+rodir_add_h4	2	login role=user pin=USER	rv=0x0
+rodir_add_h4	3	rodir	-
+rodir_add_h4	4	add class=0 kt=0 label=x value=pat:1:4 id=- flags=0	rv=0x6	audit=object_create/USER/6/{"label":"x"}
+rodir_add_h4	5	find	rv=0x0	n=1	hs=1
+rodir_add_h4	6	rwdir	-
+rodir_add_h4	7	files	files=slot0.tok:600
+rodir_reinit_h4	1	load	rv=0x0
+rodir_reinit_h4	2	rodir	-
+rodir_reinit_h4	3	reinit so=NEW label=r	rv=0x6	audit=token_reinit/SO/6/{"label":"r"}
+rodir_reinit_h4	4	info	label=72	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+rodir_reinit_h4	5	rwdir	-
+rodir_reinit_h4	6	files	files=slot0.tok:600
+rodir_init	1	rodir	-
+rodir_init	2	init so=SO label=x	rv=0x6
+rodir_init	3	rwdir	-
+rodir_init	4	files	files=
+tokdir_init_leaves_tmp	1	tokdir	-
+tokdir_init_leaves_tmp	2	init so=SO label=x	rv=0x6
+tokdir_init_leaves_tmp	3	files	files=slot0.tok/:755,slot0.tok.tmp:600
+tpm_base	1	tpm seal=1	-
+tpm_base	2	init so=SO label=golden-tpm	rv=0x0	audit=seal_success/SO/0/{"tpm-seal-init":"INVALID"}	audit=token_init/SO/0/{"label":"golden-tpm"}
+tpm_base	3	files	files=slot0.tok:600,slot0.tok.tpm:600
+tpm_base	4	login role=so pin=SO	rv=0x0	audit=unseal_success/SO/0/{"tpm-check-login":"INVALID"}
+tpm_base	5	init_user_pin pin=USER	rv=0x0
+tpm_base	6	logout	-
+tpm_base	7	login role=user pin=USER	rv=0x0	audit=unseal_success/USER/0/{"tpm-check-login":"INVALID"}
+tpm_base	8	role	role=2
+tpm_base	9	snap role=user pin=USER	size=317	magic=4648534d	ver=1	label=676f6c64656e2d74706d	serial=new	serial_fmt=ok	iter=200000	salt_so=new	so_nonce=new	so_ct=new	salt_user=new	user_nonce=new	user_ct=new	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+tpm_login_pcr_moved_div015	1	tpm seal=1	-
+tpm_login_pcr_moved_div015	2	pcr v=moved-pcr	-
+tpm_login_pcr_moved_div015	3	load	rv=0x0
+tpm_login_pcr_moved_div015	4	login role=user pin=USER	rv=0x30	audit=unseal_failure/USER/6/{"tpm-unseal-failed":"INVALID"}
+tpm_login_pcr_moved_div015	5	info	label=676f6c64656e2d74706d	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+tpm_login_pcr_moved_div015	6	role	role=0
+tpm_login_pcr_moved_div015	7	add class=4 kt=31 label=k value=pat:1:16 id=- flags=0	rv=0x101
+tpm_login_pcr_moved_div015	8	snap role=user pin=USER	size=317	magic=4648534d	ver=1	label=676f6c64656e2d74706d	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none	pt=none
+tpm_login_unseal_fails	1	tpm seal=1	-
+tpm_login_unseal_fails	2	tpmfail v=unseal	-
+tpm_login_unseal_fails	3	load	rv=0x0
+tpm_login_unseal_fails	4	login role=user pin=USER	rv=0x30	audit=unseal_failure/USER/6/{"tpm-unseal-failed":"INVALID"}
+tpm_login_unseal_fails	5	info	label=676f6c64656e2d74706d	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+tpm_login_dek_mismatch	1	tpm seal=1	-
+tpm_login_dek_mismatch	2	reseal_tpm dek=pat:0:32	rv=0x0
+tpm_login_dek_mismatch	3	load	rv=0x0
+tpm_login_dek_mismatch	4	login role=user pin=USER	rv=0x30	audit=unseal_failure/USER/48/{"tpm-dek-mismatch":"INVALID"}
+tpm_login_dek_mismatch	5	info	label=676f6c64656e2d74706d	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+tpm_required_but_missing	1	tpm seal=1	-
+tpm_required_but_missing	2	load	rv=0x0
+tpm_required_but_missing	3	login role=user pin=USER	rv=0x30	audit=unseal_failure/USER/2147483653/{"tpm-required-but-missing":"INVALID"}
+tpm_required_but_missing	4	info	label=676f6c64656e2d75736572	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+tpm_companion_without_sealing	1	tpm seal=0	-
+tpm_companion_without_sealing	2	load	rv=0x0
+tpm_companion_without_sealing	3	login role=user pin=USER	rv=0x0	audit=unseal_success/USER/0/{"tpm-check-login":"INVALID"}
+tpm_companion_without_sealing	4	role	role=2
+tpm_wrong_pin_never_reaches_tpm	1	tpm seal=1	-
+tpm_wrong_pin_never_reaches_tpm	2	pcr v=moved-pcr	-
+tpm_wrong_pin_never_reaches_tpm	3	load	rv=0x0
+tpm_wrong_pin_never_reaches_tpm	4	login role=user pin=WRONG	rv=0xa0
+tpm_wrong_pin_never_reaches_tpm	5	info	label=676f6c64656e2d74706d	serial=ok	fso=0	fuser=1	uinit=1	lso=0	luser=0	tso=0	tuser=500	role=0
+tpm_init_seal_fails	1	tpm seal=1	-
+tpm_init_seal_fails	2	tpmfail v=create	-
+tpm_init_seal_fails	3	init so=SO label=x	rv=0x6	audit=seal_failure/SO/6/{"tpm-seal-init":"INVALID"}
+tpm_init_seal_fails	4	files	files=
+tpm_reinit_keeps_old_companion_div015	1	tpm seal=1	-
+tpm_reinit_keeps_old_companion_div015	2	load	rv=0x0
+tpm_reinit_keeps_old_companion_div015	3	reinit so=SO label=golden-r	rv=0x0	audit=token_reinit/SO/0/{"label":"golden-r"}
+tpm_reinit_keeps_old_companion_div015	4	files	files=slot0.tok:600,slot0.tok.tpm:600
+tpm_reinit_keeps_old_companion_div015	5	login role=so pin=SO	rv=0x30	audit=unseal_failure/SO/48/{"tpm-dek-mismatch":"INVALID"}
+tpm_reinit_unsealed_div015	1	tpm seal=0	-
+tpm_reinit_unsealed_div015	2	load	rv=0x0
+tpm_reinit_unsealed_div015	3	reinit so=SO label=golden-r	rv=0x0	audit=token_reinit/SO/0/{"label":"golden-r"}
+tpm_reinit_unsealed_div015	4	files	files=slot0.tok:600,slot0.tok.tpm:600
+tpm_reinit_unsealed_div015	5	login role=so pin=SO	rv=0x30	audit=unseal_failure/SO/48/{"tpm-dek-mismatch":"INVALID"}
+tpm_init_tok_write_fails_div015	1	tpm seal=1	-
+tpm_init_tok_write_fails_div015	2	tokdir	-
+tpm_init_tok_write_fails_div015	3	init so=SO label=x	rv=0x6	audit=seal_success/SO/0/{"tpm-seal-init":"INVALID"}
+tpm_init_tok_write_fails_div015	4	files	files=slot0.tok/:755,slot0.tok.tmp:600,slot0.tok.tpm:600
+tpm_mismatch_keeps_dek_live_div015	1	tpm seal=1	-
+tpm_mismatch_keeps_dek_live_div015	2	init so=SO label=x	rv=0x0	audit=seal_success/SO/0/{"tpm-seal-init":"INVALID"}	audit=token_init/SO/0/{"label":"x"}
+tpm_mismatch_keeps_dek_live_div015	3	pcr v=moved-pcr	-
+tpm_mismatch_keeps_dek_live_div015	4	login role=so pin=SO	rv=0x30	audit=unseal_failure/SO/6/{"tpm-unseal-failed":"INVALID"}
+tpm_mismatch_keeps_dek_live_div015	5	add class=4 kt=31 label=k value=pat:1:16 id=- flags=0	rv=0x0	h=1	audit=object_create/NONE/0/{"label":"k"}
+tpm_mismatch_keeps_dek_live_div015	6	snap role=so pin=SO	size=1313	magic=4648534d	ver=1	label=78	serial=new	serial_fmt=ok	iter=200000	salt_so=new	so_nonce=new	so_ct=new	salt_user=new	user_nonce=zero	user_ct=zero	uinit=0	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=944	nonce=new	pub=file:20	pt=zero:944
+tpm_reset_write_fails_div013	1	poke off=297 u32=1	-
+tpm_reset_write_fails_div013	2	tpm seal=1	-
+tpm_reset_write_fails_div013	3	tpmprefix v=rodir	-
+tpm_reset_write_fails_div013	4	load	rv=0x0
+tpm_reset_write_fails_div013	5	login role=user pin=USER	rv=0x0	audit=unseal_success/USER/0/{"tpm-check-login":"INVALID"}
+tpm_reset_write_fails_div013	6	role	role=2
+tpm_reset_write_fails_div013	7	get h=1	rv=0x60
+tpm_reset_write_fails_div013	8	rwdir	-
+tpm_reset_write_fails_div013	9	tpmprefix v=-	-
+tpm_reset_write_fails_div013	10	close	-
+tpm_reset_write_fails_div013	11	load	rv=0x0
+tpm_reset_write_fails_div013	12	info	label=676f6c64656e2d74706d	serial=ok	fso=0	fuser=1	uinit=1	lso=0	luser=0	tso=0	tuser=500	role=0
+audit_fail_init_div001	1	audit fail	-
+audit_fail_init_div001	2	init so=SO label=a	rv=0x0	audit=token_init/SO/0/{"label":"a"}
+audit_fail_init_div001	3	files	files=slot0.tok:600
+audit_fail_add_div001	1	load	rv=0x0
+audit_fail_add_div001	2	login role=user pin=USER	rv=0x0
+audit_fail_add_div001	3	audit fail	-
+audit_fail_add_div001	4	add class=0 kt=0 label=x value=pat:1:4 id=- flags=0	rv=0x0	h=1	audit=object_create/USER/0/{"label":"x"}
+audit_fail_add_div001	5	find	rv=0x0	n=1	hs=1
+audit_fail_add_div001	6	snap role=user pin=USER	size=1301	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=932	nonce=new	pub=file:20	pt=ok:932
+audit_fail_destroy_div001	1	load	rv=0x0
+audit_fail_destroy_div001	2	login role=user pin=USER	rv=0x0
+audit_fail_destroy_div001	3	audit fail	-
+audit_fail_destroy_div001	4	destroy h=1	rv=0x0	audit=object_destroy/USER/0/{}
+audit_fail_destroy_div001	5	find	rv=0x0	n=4	hs=5,2,3,4
+audit_fail_destroy_div001	6	snap role=user pin=USER	size=6211	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=same	user_nonce=same	user_ct=same	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=new	ctlen=3855	nonce=new	pub=file:2007	pt=ok:3855
+audit_fail_set_pin_div001	1	load	rv=0x0
+audit_fail_set_pin_div001	2	audit fail	-
+audit_fail_set_pin_div001	3	set_pin role=user old=USER new=NEW	rv=0x0	audit=set_pin/USER/0/{}
+audit_fail_set_pin_div001	4	snap	size=317	magic=4648534d	ver=1	label=676f6c64656e2d75736572	serial=same	serial_fmt=ok	iter=200000	salt_so=same	so_nonce=same	so_ct=same	salt_user=new	user_nonce=new	user_ct=new	uinit=1	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none
+audit_fail_reinit_div001	1	load	rv=0x0
+audit_fail_reinit_div001	2	audit fail	-
+audit_fail_reinit_div001	3	reinit so=NEW label=golden-r	rv=0x0	audit=token_reinit/SO/0/{"label":"golden-r"}
+audit_fail_reinit_div001	4	info	label=676f6c64656e2d72	serial=ok	fso=0	fuser=0	uinit=0	lso=0	luser=0	tso=0	tuser=0	role=0
+audit_fail_reinit_div001	5	snap	size=317	magic=4648534d	ver=1	label=676f6c64656e2d72	serial=new	serial_fmt=ok	iter=200000	salt_so=new	so_nonce=new	so_ct=new	salt_user=zero	user_nonce=zero	user_ct=zero	uinit=0	fso=0	fuser=0	thr=00000000000000000000000000000000	salts_differ=1	blob=none
+audit_fail_tpm_init_div001	1	tpm seal=1	-
+audit_fail_tpm_init_div001	2	audit fail	-
+audit_fail_tpm_init_div001	3	init so=SO label=a	rv=0x0	audit=seal_success/SO/0/{"tpm-seal-init":"INVALID"}
+audit_fail_tpm_init_div001	4	files	files=slot0.tok:600,slot0.tok.tpm:600
+audit_fail_tpm_seal_failure_div001	1	tpm seal=1	-
+audit_fail_tpm_seal_failure_div001	2	tpmfail v=create	-
+audit_fail_tpm_seal_failure_div001	3	audit fail	-
+audit_fail_tpm_seal_failure_div001	4	init so=SO label=a	rv=0x6	audit=seal_failure/SO/6/{"tpm-seal-init":"INVALID"}
+audit_fail_tpm_seal_failure_div001	5	files	files=
+audit_fail_tpm_login_div001	1	tpm seal=1	-
+audit_fail_tpm_login_div001	2	load	rv=0x0
+audit_fail_tpm_login_div001	3	audit fail	-
+audit_fail_tpm_login_div001	4	login role=user pin=USER	rv=0x0	audit=unseal_success/USER/0/{"tpm-check-login":"INVALID"}
+audit_fail_tpm_login_div001	5	role	role=2
+audit_fail_tpm_unseal_failure_div001	1	tpm seal=1	-
+audit_fail_tpm_unseal_failure_div001	2	pcr v=moved-pcr	-
+audit_fail_tpm_unseal_failure_div001	3	load	rv=0x0
+audit_fail_tpm_unseal_failure_div001	4	audit fail	-
+audit_fail_tpm_unseal_failure_div001	5	login role=user pin=USER	rv=0x30	audit=unseal_failure/USER/6/{"tpm-unseal-failed":"INVALID"}
+audit_fail_tpm_unseal_failure_div001	6	info	label=676f6c64656e2d74706d	serial=ok	fso=0	fuser=0	uinit=1	lso=0	luser=0	tso=0	tuser=0	role=0
+audit_fail_tpm_mismatch_div001	1	tpm seal=1	-
+audit_fail_tpm_mismatch_div001	2	reseal_tpm dek=pat:0:32	rv=0x0
+audit_fail_tpm_mismatch_div001	3	load	rv=0x0
+audit_fail_tpm_mismatch_div001	4	audit fail	-
+audit_fail_tpm_mismatch_div001	5	login role=user pin=USER	rv=0x30	audit=unseal_failure/USER/48/{"tpm-dek-mismatch":"INVALID"}
+audit_fail_tpm_missing_div001	1	tpm seal=1	-
+audit_fail_tpm_missing_div001	2	load	rv=0x0
+audit_fail_tpm_missing_div001	3	audit fail	-
+audit_fail_tpm_missing_div001	4	login role=user pin=USER	rv=0x30	audit=unseal_failure/USER/2147483653/{"tpm-required-but-missing":"INVALID"}

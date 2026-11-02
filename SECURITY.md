@@ -1,0 +1,610 @@
+# Security Policy
+
+FreeHSM C is a cryptographic module : security vulnerabilities have direct impact on the confidentiality and integrity of every key managed by deployments.
+
+We take security reports seriously and aim to acknowledge every responsible disclosure within **5 business days**.
+
+Project lead : **Afchine Madjlessi** ([`afchine.mad@gmail.com`](mailto:afchine.mad@gmail.com))
+
+---
+
+## Maintainer GPG key rotation — 2026-06-12
+
+**Advisory:** [GHSA-wgv9-m9cv-4647](https://github.com/afchine1337/freehsm/security/advisories/GHSA-wgv9-m9cv-4647) · Moderate
+
+The maintainer GPG signing key has been rotated. The previous key
+`B79726CB087375CF990E00E4A0BC5BB2FB1EE342` (Ed25519, generated
+2026-06-12 06:42 UTC) was **compromised** : an ASCII-armored export
+of the private key was accidentally committed to the public
+repository in commit `922c6f7` during the initial open-source
+release.
+
+> **Correction note (2026-06-27).** Earlier versions of this section
+> (between the 2026-06-13 rotation commit `2e6a413` and the
+> 2026-06-27 correction in commit listed below) listed the previous
+> key fingerprint incorrectly --- the *new* key fingerprint
+> `743A6A59…DBBF28A2` was shown in both the "previous" and the
+> "new" position due to a copy-paste typo when this section was
+> first drafted. The fingerprints below are now consistent with
+> the canonical record in the rotation commit message
+> `2e6a413` (`git show 2e6a413`) and with the keyring state of the
+> maintainer.
+
+Mitigations completed on 2026-06-12 :
+
+- A revocation certificate was generated for
+  `B79726CB087375CF990E00E4A0BC5BB2FB1EE342` with reason **"Key has
+  been compromised"** and pushed to `keys.openpgp.org` and
+  `keyserver.ubuntu.com`. The old key now appears as `[revoked]` on
+  any synchronized client (verify locally :
+  `gpg --keyserver hkps://keys.openpgp.org --recv-keys
+  B79726CB087375CF990E00E4A0BC5BB2FB1EE342`).
+- A new release signing key was generated :
+  `743A6A5904A1461A646408DE48560162DBBF28A2` (Ed25519, generated
+  2026-06-12 20:51 UTC, valid until 2028-06-11), published on the
+  same keyservers. The new key carries a cv25519 encryption subkey
+  `9813876A34BADD4A0A50915E7EAC4BA55574DBE8` added on 2026-06-26 in
+  response to the Denis Mingulov v1.2.2 disclosure (see below).
+- The git history on GitHub, GitLab and Codeberg was rewritten with
+  `git-filter-repo --invert-paths --path afchine-secret-BACKUP.asc`
+  to remove every blob reference to the leaked file. The current
+  `git log -- afchine-secret-BACKUP.asc` is empty on all three
+  mirrors.
+- The release tag `v1.1.0` was re-signed with the new key and
+  force-pushed.
+
+If you cloned `freehsm-c` between 2026-06-12 morning (~07:00 UTC)
+and 2026-06-12 evening (~21:00 UTC), your local clone may still
+contain the leaked file in `.git/objects/`. You should re-clone
+from scratch:
+
+```bash
+rm -rf freehsm-c
+git clone git@github.com:afchine1337/freehsm-c.git
+```
+
+If you previously verified the `v1.1.0` tag with the old key, please
+re-verify with the new key — the signature has changed.
+
+---
+
+## Self-disclosed integrity self-test defect — v1.2.1 (2026-06-21)
+
+**Advisory:** [GHSA-6jx9-gh48-5qf6](https://github.com/afchine1337/freehsm/security/advisories/GHSA-6jx9-gh48-5qf6) · High
+
+A critical defect in the module's `§7.10.2` software / firmware integrity
+self-test (`src/fhsm_integrity.c::do_verify`) was self-discovered and
+self-corrected in v1.2.1.
+
+**What was wrong.** The comparison block in `do_verify` was supposed to
+return `FHSM_RV_INTEGRITY_FAILED` when the embedded SHA-256 (in
+`.fhsm_digest`) did not match the runtime-computed SHA-256, and the
+development bypass env var `FHSM_INTEGRITY_ALLOW_UNSIGNED` was not set.
+The implementation fell through to a final `return FHSM_RV_OK` regardless
+of the comparison outcome. As a result, a tampered `libfreehsm-fips.so`
+would have passed the integrity self-test silently and the module would
+have exposed cryptographic services on a binary that did not match the
+signed digest.
+
+**Affected releases.** Every signed release from v1.1.0 (origin :
+commit `0c0f5df`, 2026-06-12) through v1.2.0 inclusive — that is, 19
+GPG-signed releases over a 9-day window.
+
+**Fixed in.** v1.2.1 (commit `63e1b35`, 2026-06-21). The fix returns
+`FHSM_RV_INTEGRITY_FAILED` in both the all-zero (unsigned build) and the
+mismatched-digest paths when the bypass env var is not set. Two adjacent
+defects in the same translation unit (a use-after-free on the
+`find_section_offset` failure path, and a `locate_self` regression for
+binaries that statically link `fhsm_integrity.o`) were fixed in the same
+commit ; see CHANGELOG entry for v1.2.1 and Security Target v0.7 §9.1.1
+for the full breakdown.
+
+<!-- doc-audit: allow tests/test_smoke.tampered -- named as the June 2026
+     artefact; the paragraph says so and gives the current form. -->
+**Validation.** A reproducible artifact — a signed binary with one byte
+flipped in `.text`, outside `.fhsm_digest` — is rejected with `C_Initialize`
+returning `0x80000002 = FHSM_RV_INTEGRITY_FAILED` on v1.2.1. The same artifact
+is accepted silently by v1.2.0, confirming the defect's behaviour on the
+affected window.
+
+That artifact was `tests/test_smoke.tampered`. Nothing in the current tree
+produces it, and it is not in the repository — it survives in an off-repository
+archive of 2026-08-15, dated **2026-06-21 20:07**, the day of the v1.2.1 fix,
+and 1 580 544 bytes:
+
+    sha256  8f6327dd0007361b581a21472c3a16c66f3c34c0924dc11f2557be3f293bf31e
+    .fhsm_digest  707e11ee5855957d27e410c8c2104a50a72abedd2934cbf437a92220c557e8ef
+
+The embedded digest is non-zero: the binary was signed first and modified
+after, which is the mechanism this section describes. The
+"1 byte flipped" figure is not re-verifiable: the untampered signed binary of
+that day did not survive, so what is established is the artifact's existence,
+its date and that it was signed, not the size of the edit.
+
+The check itself is still exercised on every run of `make test-integrity`,
+which signs `tests/test_integrity`, flips a byte and requires the refusal —
+the only place in the suite that runs the integrity check without
+`FHSM_INTEGRITY_ALLOW_UNSIGNED`.
+
+**Disclosure decision : no CVE.** The project holds no certificate and
+has no known production deployments. The defect is disclosed transparently via :
+
+- the CHANGELOG entry for v1.2.1 ;
+- this SECURITY.md section ;
+- the updated Security Target v0.7 (§9.1.1 and §13.8) ;
+- a GitHub Security Advisory published in **informational mode** (no CVE
+  identifier) on the project's repository.
+
+A CVE will be requested for any equivalent defect found post-certification
+or post-first-deployment, following the standard MITRE coordination
+described in [§Patch process](#patch-process) below.
+
+**Recommended action for anyone running v1.1.0 through v1.2.0.** Upgrade
+to v1.2.1 when it ships (within 48 hours of this writing). The upgrade is
+a drop-in `.so` replacement ; PKCS#11 wire compatibility is unchanged.
+Either re-sign the embedded digest via `make integrity` from the v1.2.1
+source, or take the pre-signed binary tarball directly from the v1.2.1
+GitHub Release.
+
+For installations where an immediate upgrade is not possible, the interim
+mitigation is to verify the SHA-256 of the deployed `.so` against the
+value published in the corresponding release notes by an out-of-band
+channel (e.g. download `sha256sum` from the GitHub Release page over
+HTTPS, compare with `sha256sum` on the running binary). This restores
+the integrity guarantee externally to the module's own self-test.
+
+**Discovery + correction protocol.** This defect was found by following
+the five-step protocol described in Security Target v0.7 §13.8 :
+symptom triage in dev → read both sides of the disagreement → cross-check
+the contract → produce a killer-test artifact → scope the temporal impact
+via `git blame`. The protocol generalises the cross-validation
+triangulation methodology established for KAT data between v1.1.13 and
+v1.1.18 (§13.6 of the same Security Target) and is now documented as the
+standing practice for any future evidence-bearing surface defect.
+
+---
+
+## Raw signature double-hashing — v1.1.0 to v1.2.1 (2026-06-28)
+
+**Advisory:** [GHSA-xpxx-66pp-pf99](https://github.com/afchine1337/freehsm/security/advisories/GHSA-xpxx-66pp-pf99) · High
+
+Raw `CKM_ECDSA` and `CKM_RSA_PKCS` signatures were silently double-hashed, and
+five PKCS#11 function-list slots were left unwired. Reported externally by Denis
+Mingulov; fixed in v1.2.2, with v1.3.0 closing the remaining slots he flagged.
+
+The advisory carries the full description. This section exists because it did
+not: the advisory was published on 2026-06-28 and this file never gained an
+entry for it, so a reader working from `SECURITY.md` alone would have counted
+three disclosures where there were four.
+
+---
+
+## Self-disclosed release-integrity defect — v1.4.0 published unsigned (2026-09-03)
+
+**No advisory, deliberately.** The other four entries here have one; this does
+not, because there is nothing in the module to advise against. The integrity
+check worked as specified and refused to run an unsigned module. What failed was
+the release path, and the remedy is to use a later version rather than to assess
+exposure. Recorded in full below all the same — the harm it caused is real and
+described at the end of this section.
+
+**v1.4.0 was published without its integrity digest.** Measured on the released
+artefact, not inferred:
+
+| release | `.fhsm_digest` |
+|---|---|
+| v1.4.0 | **all zeros — unsigned** |
+| v1.5.0 | `5fb23673a8fef7f09572189fe61d2730f86a2dcd478a461bc55e6eef605c6906` |
+| v1.6.0 | `df05720f12e9c721c69ccdb131509bca12ff3fc0cccaa509824bf99560b63501` |
+
+**Cause.** `.github/workflows/release.yml` ran `make integrity || echo "WARN…"`.
+A failed signing step wrote a warning into an otherwise green log and the
+release published anyway.
+
+**Effect.** The module refuses to initialise when its digest slot is zero, so
+every download of v1.4.0 returned `FHSM_RV_INTEGRITY_FAILED (0x80000002)` from
+`C_Initialize`, for every user, on every machine. It fails closed: an unsigned
+module is unusable, not silently trusted.
+
+**Why it is recorded here rather than as a mere packaging slip.** Two
+independent reporters hit it on 2026-06-29 (issues #1 and #3) and both found the
+same way forward — `FHSM_INTEGRITY_ALLOW_UNSIGNED=1`, which starts the module by
+**turning the integrity check off**. A broken release drove users to disable a
+security control in order to evaluate the product at all. That is the harm, and
+it is larger than the outage.
+
+**Not a vulnerability in the module.** The check behaved exactly as specified.
+Nothing about a signed release is weakened, and no key material was exposed. The
+defect is in the release path.
+
+**Fixed in v2.0.0.** Signing is a hard step; a separate step reads `.fhsm_digest`
+back and fails the release if it is all zeros; the build is compared against a
+committed reproducibility reference and the workflow refuses to publish without
+one. Three further occurrences of the same swallowed-failure shape were found
+and fixed in `ci.yml` (twice) and `scripts/release.sh`.
+
+**Detection.** For any release, before trusting it:
+
+    objcopy --dump-section .fhsm_digest=/dev/stdout libfreehsm.so /dev/null \
+      | od -An -tx1 -v | tr -d ' \n'
+
+All zeros means unsigned; do not use it, and do not set the bypass to work
+around it.
+
+**Timeline.** Published in v1.4.0; reported by two users 2026-06-29; the cause
+was removed 2026-09-01 during v2.0.0 preparation, described at the time as a
+hypothetical risk; the connection to the two open reports was made 2026-09-03,
+by reading the published artefacts. Ten weeks between the report and the answer,
+and two days between fixing the cause and noticing it had already happened.
+
+---
+
+## Self-disclosed stack buffer overflow — `C_UnwrapKey`, AES-KW (2026-09-07)
+
+**Advisory:** [GHSA-833h-crp9-f378](https://github.com/afchine1337/freehsm/security/advisories/GHSA-833h-crp9-f378)
+· High · CWE-121 · no CVE requested
+
+**`C_UnwrapKey` wrote past a 256-byte stack buffer when given a long AES-KW
+blob.** Affects every release up to and including v2.0.3; fixed on `main` in
+`4586a34`, shipping in v2.1.0.
+
+**Cause.** The function decrypted into `uint8_t pt[256]` on the stack.
+`EVP_DecryptUpdate` takes no output-capacity argument — the caller guarantees
+the buffer — and nothing checked `ulWrappedKeyLen` against `sizeof(pt)`. AES-KW
+yields `ulWrappedKeyLen - 8` bytes, so any wrapped blob over 264 bytes wrote
+past the end.
+
+The same function's sibling branches, RSA-OAEP and RSA v1.5, both pass
+`sizeof(pt)` to their helpers. The AES-KW branch was the one that did not.
+
+**Effect, and it differs by build.**
+
+| build | outcome |
+|---|---|
+| with `_FORTIFY_SOURCE` and `-fstack-protector` (our releases) | `*** stack smashing detected ***`, `SIGABRT`, process ends |
+| without them | out-of-bounds stack write, driven by the input |
+
+In the published binaries this fails closed: the process dies rather than
+continuing on a corrupted stack. That is a denial of service against the
+calling application, not code execution. **Both protections are compile-time
+choices**, and issue #7 established that distributions do not all apply the
+same flags — a package built without them takes the write instead of the abort.
+
+**Reachability.** A wrapped blob is, by the purpose of key wrapping, data that
+arrives from somewhere else. An application that unwraps a key it received is
+passing attacker-influenced length and content to this path. The PKCS#11 model
+places the caller inside the trust boundary, but not necessarily the blob.
+
+**A second defect on the same branch.** Nine Wycheproof vectors
+(`tc111-invalid` … `tc119-invalid`) had forged blobs *accepted* — a key object
+was created from data that should have been refused. Both symptoms came from
+the single missing bound.
+
+**Fixed.** The wrapped-blob length is now validated before anything writes into
+the buffer: a multiple of 8, at least 24 for KW and 16 for KWP per RFC 3394 /
+RFC 5649, and within the buffer. The unwrapping-key size is validated too — it
+was not, so a 20-byte key silently selected `AES-256-WRAP`, a fix `C_WrapKey`
+had already received on its own side. `tests/test_unwrap_len.c` fails with exit
+134 if the bound is removed.
+
+**Detection.** There is no way to tell from the outside whether a given
+deployment has been given an over-long blob; nothing is logged when the process
+aborts. If you run an affected version and your application unwraps keys from
+an external source, treat unexplained process terminations as a candidate.
+
+**Found by** the Project Wycheproof AES-KW vectors, via `pkcs11-check` — on the
+first run made after @petrn pointed out in issue #10 that
+`pkcs11-check fetch-data` had never been run here. Every previous run, local
+and CI, had covered 4,014 vectors of 111,739 without anyone knowing.
+
+**Timeline.** Present since the AES-KW unwrap path was written; surfaced
+2026-09-07 as a reproducible abort during the first full-corpus run; cause
+identified the same evening; fixed, tested and pushed within the hour.
+
+---
+
+## Self-disclosed out-of-bounds write — `C_DecryptFinal`, AES-CBC-PAD (2026-09-23)
+
+**Advisory:** [GHSA-c634-gqj6-4p2f](https://github.com/afchine1337/freehsm/security/advisories/GHSA-c634-gqj6-4p2f)
+· High · CWE-787 · no CVE requested
+
+**`C_DecryptFinal` wrote past the caller's output buffer.** Affects every
+published release: the call is present in `0c0f5df`, the v1.1.0 initial
+open-source release. Fixed on `main`, shipping in v2.2.0.
+
+**Cause.** The function had no output-size check of any kind. It called
+`EVP_DecryptFinal_ex` straight into `pLastPart` and reported the length
+afterwards:
+
+```c
+int out_len = 0;
+int ok = EVP_DecryptFinal_ex(op->cipher_ctx, pLast, &out_len);
+*pulLastLen = (CK_ULONG)out_len;
+```
+
+For `CKM_AES_CBC_PAD` the held-back block yields 0 to 15 bytes once padding is
+removed. Every one of them was written, whatever the caller had declared.
+
+**The size query made it reachable rather than mitigating it.** PKCS#11 §5.2
+has the caller ask for the length with a NULL buffer, allocate, and call
+again. This function answered a flat `0` to that question. So an application
+following the pattern the specification prescribes allocated nothing, called
+again, and had up to fifteen bytes written into it. **The correct usage was
+the reachable one** — an application that guessed a generous buffer instead
+was safe.
+
+**Effect, and how it differs from GHSA-833h-crp9-f378.** That one overflowed a
+buffer inside the module, on the stack, where `_FORTIFY_SOURCE` and the stack
+protector turned it into an abort. This one writes into the *caller's* buffer:
+the module knows neither its size nor where it lives, and it is commonly heap.
+No compile-time protection in our build sees it, and the failure is silent.
+
+**Reachability.** Any application decrypting `CKM_AES_CBC_PAD` in multiple
+parts. The ciphertext is, by the nature of decryption, data from elsewhere —
+it decides the padding, and the padding decides how many bytes are written. An
+attacker without the key cannot steer that precisely; a legitimate peer's
+message does it as a matter of course.
+
+**Fixed.** The size query answers the real bound. An undersized buffer is
+refused with `CKR_BUFFER_TOO_SMALL` and a length the caller can retry with,
+the operation and its held-back block staying alive for the retry, as §5.2
+requires. When the padding does not check out, the answer comes from a copy of
+the cipher context rather than from calling the real `Final` with an
+undersized buffer and trusting it not to write on failure.
+`tests/test_cbc_pad_update_size.c` covers both guard cases.
+
+**A second defect, in front of this one.** `C_DecryptUpdate` refused undersized
+buffers against `ulEncLen` + one block — `C_EncryptUpdate`'s bound, which
+decryption cannot reach, since each ciphertext block yields one plaintext block
+and padding only removes bytes. Nothing was overrun there; the cost was that
+`pkcs11-check`'s probe was refused at its *setup* step and never reached
+`C_DecryptFinal`. The module had passed four full-corpus runs with the
+overflow behind it. Fixing the refusal exposed the write within the hour.
+
+**Detection.** Nothing is logged, and in the common case nothing crashes —
+fifteen bytes into an adjacent allocation. If you run an affected version and
+your application uses multipart CBC-PAD decryption, the two-call sizing path is
+where to look: a buffer sized from `C_DecryptFinal`'s size query was sized from
+`0`.
+
+**Found by** `pkcs11-check`'s `aes_cbc_pad_decrypt_final_buffer_too_small`
+probe, which became reachable only after the `C_DecryptUpdate` bound was
+corrected on 2026-09-23.
+
+**Timeline.** Present since v1.1.0 (2026-06-11), the first public release, and
+in every release since — three months and four full-corpus runs, behind a
+defect that refused the probe before it could arrive. Surfaced 2026-09-23
+within an hour of that refusal being corrected; fixed, tested under ASan and
+measured against the full corpus (55,202 passed · 2 failed · 0 crashed) before
+disclosure.
+
+---
+
+## Self-disclosed object-store defect — a wrong PIN (2026-10-28)
+
+**Advisory:** [GHSA-fv8x-qmqp-f7j5](https://github.com/afchine1337/freehsm/security/advisories/GHSA-fv8x-qmqp-f7j5)
+· High · CWE-321 · no CVE requested
+
+**A wrong PIN could re-encrypt the token's object store under a key of 32
+zero bytes, or remove it from the token file.** Affects every published
+release, v1.1.0 to v2.5.0. Fixed in v2.5.1.
+
+**Cause.** Every PIN attempt writes the token file, to persist the failure
+counter. That write re-encrypted the object store whenever the DEK buffer
+existed and the objects were loaded, and wrote the file without a store
+otherwise. A wrong PIN zeroizes the DEK buffer in place but keeps it
+allocated, so:
+
+- **in a process that had logged in before** — a service that logs out and
+  in again, a `p11-kit server`, any long-lived application — a wrong PIN
+  re-encrypted the store under 32 zero bytes. The private and secret keys in
+  the token file could then be decrypted by anyone able to read that file,
+  and no longer with the token's own DEK;
+- **as the first attempt of a process** — `pkcs11-tool --login` with a
+  mistyped PIN, any short-lived client — the objects were not loaded yet, and
+  the file was rewritten without them: the token kept its PINs and lost
+  every object.
+
+**Effect.** The first case is a disclosure to whoever can read the token
+file: by default its owner only (mode 0600), but also backups, copies and
+any other account or process that can read it. The second is a loss of
+every token object, caused by an ordinary typing mistake.
+
+**Fixed.** The store is re-encrypted only while the DEK is actually known and
+the objects loaded; otherwise the encrypted store on disk is copied as it is.
+Changing an object after a logout is refused with `CKR_USER_NOT_LOGGED_IN`,
+as before the first login. `tests/test_wrong_pin_store.c` checks both cases
+from the file; it fails three times without the fix.
+
+**If you ran an affected version.**
+
+- A store re-encrypted under the zero key is read by v2.5.1 at the next
+  correct login and re-encrypted at once under the token's DEK. Log in once
+  after upgrading. Any copy of the token file taken while it was in that
+  state — a backup, a snapshot, a file copied elsewhere — still opens with
+  the zero key: if such copies may have left your control, treat the keys
+  in it as exposed and replace them.
+- A store removed by a wrong PIN cannot be recovered from the token file. A
+  backup of the file taken before that attempt holds the objects, encrypted
+  under the token's DEK as usual.
+- A token that answers `C_FindObjects` with nothing after a correct login,
+  when it held objects, was emptied this way.
+
+**Found by** reading the token store while designing `C_FindObjectsInit`
+for public objects before login: the store's notion of "the DEK is known"
+did not match the login state. Confirmed by `tests/test_wrong_pin_store.c`
+on v2.5.0.
+
+**Timeline.** Present since v1.1.0 (2026-06-11), the first public release.
+Found, confirmed, fixed and released on 2026-10-28.
+
+---
+
+## Self-disclosed missing SO PIN check — `C_InitToken` (2026-10-28)
+
+**Advisory:** [GHSA-p69v-2p5f-hx6q](https://github.com/afchine1337/freehsm/security/advisories/GHSA-p69v-2p5f-hx6q)
+· Moderate · CWE-306 · no CVE requested
+
+**`C_InitToken` re-initialized an existing token without its SO PIN.**
+Affects every published release, v1.1.0 to v2.5.0. Fixed in v2.5.1.
+
+PKCS#11 checks `pPin` against the token's current SO PIN when the token is
+already initialized, and answers `CKR_PIN_INCORRECT` when it does not match.
+FreeHSM accepted any PIN and re-initialized the token: new SO PIN, user PIN
+reset, every object destroyed.
+
+**Effect.** Anything able to call the module could destroy the token's
+objects and take over its SO role. No object was disclosed: the
+re-initialization creates a new DEK and starts from an empty store.
+
+**Fixed.** The PIN is verified against the current SO PIN first, with the
+same failure counter and throttle as `C_Login`. `tests/integration_pkcs11.sh`,
+step 10.
+
+**Timeline.** Present since v1.1.0. Found on 2026-10-28 while fixing the
+object-store defect above, which goes through the same function.
+
+---
+
+## Supported versions
+
+| Version | Supported |
+|---|---|
+| `2.6.x` | ✅ — active development |
+| `2.5.1` | ✅ — supported. First version carrying the object-store and `C_InitToken` fixes described above. After a `C_Logout` it does not enforce a public key's `CKA_ALLOWED_MECHANISMS` (low; fixed in 2.6.0, see the CHANGELOG) |
+| `2.2.0` – `2.5.0` | ⚠️ — **affected by the wrong-PIN object-store defect** and the `C_InitToken` check; upgrade to v2.5.1 |
+| `2.1.x` | ⚠️ — affected by the above, and by the `C_DecryptFinal` out-of-bounds write; upgrade to v2.5.1 |
+| `2.0.x` | ⚠️ — affected by the above, the `C_DecryptFinal` write and the `C_UnwrapKey` stack overflow; upgrade to v2.5.1 |
+| `1.5.x` – `1.6.x` | ⚠️ — affected by all of them; no backports planned, upgrade |
+| `1.4.0` | ❌ — **published unsigned** (see above); unusable as shipped, do not work around it |
+| `1.1.x` – `1.3.x` | ❌ — end of life. Affected by the `C_DecryptFinal` write, and all `1.1.x` additionally by the integrity self-test defect |
+| `< 1.0` | ❌ — end of life (Python proof of concept) |
+
+The `C_DecryptFinal` write reaches every row from `1.1.x` upward: the call is
+present in `0c0f5df`, the initial open-source release. There is no version of
+this module published before v2.2.0 that does not have it.
+
+The `-FIPS` suffix was dropped from version strings in v2.0.0: it asserted in
+the version number a certification this project does not hold.
+Older tags carry it; it means nothing beyond the name they were released under.
+
+The wrong-PIN object-store defect and the `C_InitToken` check also reach
+every row from `1.1.x` upward. v2.5.1 is the first version without them.
+
+This table was last accurate at v1.2.1, corrected when the `C_UnwrapKey` entry
+was written, corrected again for v2.2.0, and again for v2.5.1 — a supported-versions table
+that lags is the one place a reader checks to find out whether an advisory
+concerns them, so it is updated in the same commit as the advisory rather than
+in a tidying pass afterwards.
+
+---
+
+## Reporting a vulnerability
+
+**Do NOT open a public GitHub issue, pull request, or discussion thread.**
+
+Instead :
+
+1. Email [`afchine.mad@gmail.com`](mailto:afchine.mad@gmail.com) with subject prefix `[FreeHSM-SECURITY]`.
+2. Encrypt the body with the maintainer's GPG public key (fingerprint below).
+3. Include :
+   - A description of the vulnerability.
+   - The affected version(s) and architecture(s).
+   - A proof-of-concept (PoC) or reproduction steps.
+   - Your suggested severity (low / medium / high / critical).
+   - Whether you would like to be credited in the advisory and how (handle, name, affiliation).
+
+### Acknowledgement timeline
+
+| Step | Target |
+|---|---|
+| Acknowledgement | ≤ 5 business days |
+| Triage + initial assessment | ≤ 10 business days |
+| Patch development | ≤ 30 days for critical, ≤ 90 days otherwise |
+| Coordinated disclosure | 90 days from report (configurable on request) |
+| Public advisory + CVE | Same day as patched release |
+
+---
+
+## Severity classification
+
+We follow CVSS v3.1. Examples relevant to a PKCS#11 module :
+
+| Severity | Examples |
+|---|---|
+| **Critical** | Key extraction via timing side-channel ; DRBG output predictability ; integrity bypass without `FHSM_INTEGRITY_ALLOW_UNSIGNED` |
+| **High** | PIN-throttle bypass ; audit-log tampering ; CKA_SENSITIVE leak |
+| **Medium** | Denial of service on `C_Initialize` ; misleading `CKR_*` return codes |
+| **Low** | Information leak in error messages ; non-critical use-after-free in unauthenticated state |
+
+---
+
+## Patch process
+
+1. The maintainer assigns a CVE via MITRE (or GitHub Security Advisory).
+2. A private fork is created with the fix.
+3. The patch is reviewed by at least one independent reviewer holding sufficient cryptographic expertise.
+4. The fix is backported to every supported release branch.
+5. A coordinated release date is agreed with the reporter.
+6. On release day :
+   - Patched tags are pushed (`v1.1.<patch>-FIPS`).
+   - A signed advisory is published on the project's GitHub Security Advisories page.
+   - The reporter is credited in the advisory (unless they declined).
+   - The `CHANGELOG.md` is updated with a `### Security` entry citing the CVE.
+
+---
+
+## Hardening guidance (operator side)
+
+Even with the latest patches applied, the following operational controls are **mandatory** to keep the certified configuration valid :
+
+- `FHSM_INTEGRITY_ALLOW_UNSIGNED` MUST NOT be set in production.
+- `FHSM_MODE=fips` MUST be set for any deployment claiming FIPS 140-3 conformance.
+- TPM 2.0 sealing (`FHSM_TPM_SEALING=1`) is RECOMMENDED for any deployment storing long-lived keys.
+- Audit log MUST be reviewed at least weekly ; alarms on `FHSM_EV_INTEGRITY_FAIL`, `FHSM_EV_KAT_REPORT (rv != OK)`, `FHSM_EV_LOGIN_LOCKED` MUST be paged.
+
+See [`docs/AGD_OPE.md`](docs/AGD_OPE.md) §4 for the full operational hardening guide.
+
+---
+
+## Out of scope
+
+The following are NOT considered vulnerabilities :
+
+- Issues affecting only the integrity bypass (`FHSM_INTEGRITY_ALLOW_UNSIGNED=1`).
+- Issues that require root access on the host (out-of-boundary attacker per FIPS 140-3 §7.7).
+- Issues in third-party dependencies (OpenSSL FIPS provider, tpm2-tools, etc.) — please report those upstream.
+- Issues in mechanisms exposed only when `FHSM_MODE=legacy` (the operator has explicitly opted out of FIPS-strict).
+
+---
+
+## GPG public key
+
+```
+pub   ed25519 2026-06-12 [SCA] [expires: 2028-06-11]
+      743A 6A59 04A1 461A 6464 08DE 4856 0162 DBBF 28A2
+uid           [ultimate] Afchine Madjlessi <afchine.mad@gmail.com>
+sub   cv25519 2026-06-26 [E] [expires: 2028-06-11]
+      9813 876A 34BA DD4A 0A50 915E 7EAC 4BA5 5574 DBE8
+```
+
+The key is published and verified on [`keys.openpgp.org`](https://keys.openpgp.org/search?q=afchine.mad%40gmail.com) (search by `afchine.mad@gmail.com`) and on `keyserver.ubuntu.com`.
+
+To encrypt a vulnerability report :
+
+```bash
+# By email (the published verification on keys.openpgp.org makes this
+# work via --auto-key-locate keyserver)
+gpg --auto-key-locate keyserver --locate-key afchine.mad@gmail.com
+gpg --encrypt --armor --recipient afchine.mad@gmail.com report.txt
+
+# Or by primary-key fingerprint (no email lookup needed)
+gpg --encrypt --armor \
+    --recipient 743A6A5904A1461A646408DE48560162DBBF28A2 report.txt
+```
+
+GnuPG automatically selects the encryption subkey `9813876A34BADD4A0A50915E7EAC4BA55574DBE8` for the encryption operation ; the primary key `743A6A5904A1461A646408DE48560162DBBF28A2` remains sign / certify / authenticate only.
+
+### Encryption subkey added in response to an external report
+
+The encryption subkey was added on 2026-06-26 following a vulnerability report from a third party who could not encrypt their report to the maintainer because the published primary key was sign-only. The gap is fixed in this revision ; the change is logged here so any future reporter can verify the encryption capability has been continuously available from this date onward.

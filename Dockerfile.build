@@ -1,0 +1,161 @@
+# ===========================================================================
+# Dockerfile.build --- Reproducible build environment for FreeHSM C TOE.
+#
+# Goal : produce a bit-identical libfreehsm.so given the same source
+#        archive. Required by ALC_CMC.4 ("production support, acceptance
+#        procedures, automation") of CC EAL4+ and by the CMVP reviewers
+#        who need to independently reconstruct the binary submitted for
+#        validation.
+#
+# Strategy :
+#   1. Base image : Debian 13 (trixie) slim, pinned by digest.
+#   2. Toolchain & FIPS provider come from Debian apt (OpenSSL 3.5.x with
+#      the FIPS module built and packaged by the Debian crypto team), read
+#      from snapshot.debian.org at one fixed instant. Every package version
+#      is therefore fixed by the timestamp below, and rebuilding this image
+#      on any day installs the same .debs.
+#   3. SOURCE_DATE_EPOCH is set at build time -- purges __DATE__,
+#      __TIME__, .file timestamps, ar timestamps, etc.
+#   4. The .so is linked with LD_BUILD_ID=none and `-frandom-seed=<commit>`
+#      via the Makefile to keep .build-id and .comment slots stable.
+#   5. Debug info is dropped into a separate file (--separate-debug-info)
+#      so the shipped .so has no DWARF that could vary between runs.
+#
+# Usage (handled by scripts/build_reproducible.sh) :
+#   docker buildx build --output type=docker -t freehsm-build-1.1.x .
+#   docker run --rm -v "$PWD":/src:ro -v "$PWD/out":/out freehsm-build-1.1.x
+# ===========================================================================
+
+# --- Base image -----------------------------------------------------------
+# Debian 13 ("trixie") slim, the 2026-10-05 build, pinned by its multi-arch
+# index digest. Until 2026-10-14 this was `debian:trixie-slim` by tag, with
+# apt unpinned, and a comment saying to pin it before v2.0. It never was, and
+# it cost what it said it would: the release image (ghcr, built once and then
+# served from the Actions cache) kept the toolchain of the day it was built,
+# while `make dist-verify` rebuilt this file from scratch with that day's
+# packages. The two stopped agreeing from v2.2.0 on, and dist-verify failed on
+# every tag since -- with the published binaries matching their references
+# all along. docs/REPRODUCIBLE_BUILD.md §6 says how to move both pins.
+FROM debian:trixie-20261005-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS build
+
+# --- Toolchain ------------------------------------------------------------
+# The archive as it was at SNAPSHOT, in place of the live mirrors. Valid-Until
+# is not checked: a snapshot's Release files expire by design, and the
+# signatures, which apt still checks, are what vouches for them.
+ARG SNAPSHOT=20261006T000000Z
+ARG DEBIAN_FRONTEND=noninteractive
+RUN printf '%s\n' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian/${SNAPSHOT}" \
+        'Suites: trixie trixie-updates' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        '' \
+        'Types: deb' \
+        "URIs: http://snapshot.debian.org/archive/debian-security/${SNAPSHOT}" \
+        'Suites: trixie-security' \
+        'Components: main' \
+        'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+        > /etc/apt/sources.list.d/debian.sources \
+    && printf '%s\n' \
+        'Acquire::Check-Valid-Until "false";' \
+        'Acquire::Retries "5";' \
+        > /etc/apt/apt.conf.d/99snapshot
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        binutils \
+        libssl-dev \
+        make \
+        cmake \
+        ninja-build \
+        pkg-config \
+        ca-certificates \
+        curl \
+        git \
+        gnupg2 \
+        python3 \
+        python3-pip \
+        cppcheck \
+        clang-tidy \
+        xz-utils \
+        coreutils \
+        ; \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# --- Reproducibility knobs -------------------------------------------------
+# SOURCE_DATE_EPOCH is consumed by tar, gcc (__DATE__/__TIME__),
+# binutils (ar timestamps), and most build tools shipping in this image.
+ARG SOURCE_DATE_EPOCH=1735689600
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
+ENV LC_ALL=C.UTF-8
+ENV TZ=UTC
+ENV LANG=C.UTF-8
+# Disable color output in build logs -- ANSI codes differ between TTYs.
+ENV TERM=dumb
+# Sort find/ls output deterministically across libc locales.
+ENV LC_COLLATE=C
+
+# --- User and entry --------------------------------------------------------
+# Build runs as an unprivileged user with a fixed UID so the file owners
+# inside any tar archive produced by `make dist` are stable.
+RUN groupadd -g 2000 freehsm && useradd -u 2000 -g 2000 -m -s /bin/bash freehsm
+USER freehsm
+WORKDIR /src
+VOLUME ["/src", "/out"]
+# Build in a writable COPY of the source, never in /src itself.
+#
+# /src is mounted read-only, on purpose: the reproducible build must not be
+# able to modify the tree it is measuring. But the entrypoint ran
+# `cd /src && make clean`, and `make clean` writes -- it removes .obj/,
+# libfreehsm.so, tests/*.o, tools/*. So this path could never complete:
+#
+#   rm -rf .obj
+#   rm: cannot remove '.obj/src/fhsm_state.o': Read-only file system
+#   make: *** [Makefile:838: clean] Error 1
+#
+# Reported by an external user (issue #4). The first fix moved out/ outside the
+# tree, which was one symptom of several -- .obj/ and every other clean target
+# are inside /src too. Moving directories one at a time was the wrong shape;
+# the build simply must not write to /src.
+#
+# This also explains dist/refs/ better than the .gitignore fix did on its own.
+# Six releases went out with no reproducibility reference for two independent
+# reasons: the file could not be committed, AND the path meant to produce it
+# could not run. Either alone would have been enough.
+#
+# The copy does not move the digest: the Makefile's -ffile-prefix-map is
+# derived from CURDIR, so building at /home/freehsm/build maps to the same "."
+# as building at /src. Verify rather than trust that sentence -- two runs must
+# agree, which is what scripts/verify_reproducibility.sh is for.
+# `make integrity` before hashing, because the reference is of the SIGNED
+# module and this was hashing the unsigned one.
+#
+# The two numbers gave it away. On 2026-09-04, v2.0.2:
+#
+#   published libfreehsm.so, sha256      25b50513…   <- dist/refs/v2.0.2.sha256
+#   published .fhsm_digest section       b5acc024…
+#   this entrypoint's digest.txt         b5acc024…
+#
+# The embedded digest is SHA-256 of the file with its .fhsm_digest section
+# zeroed -- which is exactly the unsigned image. So the third number being the
+# second is not a coincidence: this path was hashing the module before signing
+# it, while .github/workflows/baseline.yml runs `make integrity` first and says
+# so ("WHAT THE DIGEST IS OF: The SIGNED module").
+#
+# Two different artefacts, one number, and `make dist-verify` could therefore
+# never agree -- which nobody discovered for as long as the step could not run
+# at all. It is the fourth defect on this path in three days, and the first one
+# found here rather than by the external user who reported the other three.
+#
+# Signing is deterministic (the digest patched in is a function of the
+# reproducible pre-image), so a signed build is exactly as reproducible as an
+# unsigned one. sign_module.sh exits 3 when the module already carries a digest,
+# which is not a failure; `make integrity` is run once on a fresh build here, so
+# it returns 0, but the `|| [ $? = 3 ]` keeps that from being a trap later.
+ENTRYPOINT ["/bin/bash", "-c", \
+    "cp -a /src /home/freehsm/build && cd /home/freehsm/build && \
+     make clean && make all && \
+     { make integrity || [ $? = 3 ]; } && \
+     sha256sum libfreehsm.so > /out/digest.txt && \
+     cp libfreehsm.so /out/ && \
+     echo '[repro] build complete (signed)' && cat /out/digest.txt"]

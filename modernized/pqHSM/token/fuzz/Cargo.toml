@@ -1,0 +1,33 @@
+# cargo-fuzz targets for the token file parsers (brief Phase 2 exit criterion 4). Outside the
+# workspace, as `cargo fuzz init` makes it: nightly-only, and never part of the module build.
+#
+#   cargo +nightly fuzz run token_file      seeds/token_file
+#   cargo +nightly fuzz run store_plaintext seeds/store_plaintext
+[package]
+name = "pqhsm-token-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pqhsm-token = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "token_file"
+path = "fuzz_targets/token_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "store_plaintext"
+path = "fuzz_targets/store_plaintext.rs"
+test = false
+doc = false
+bench = false

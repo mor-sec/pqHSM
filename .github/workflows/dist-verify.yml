@@ -1,0 +1,132 @@
+# ===========================================================================
+# Copyright 2026 Afchine Madjlessi <afchine.mad@gmail.com>
+# SPDX-License-Identifier: Apache-2.0
+# ===========================================================================
+# dist-verify.yml --- run the reproducibility check AGD_PRE documents.
+#
+# WHY THIS EXISTS
+#
+# `make dist-verify` builds twice in Docker and compares. It is the step
+# AGD_PRE tells an evaluator to run, and until 2026-09-03 nobody in the project
+# had ever run it: the maintainer's machine has no Docker. It was broken, and
+# it took an external user three round trips to surface three defects stacked
+# behind one another --
+#
+#   1. `cd /src && make clean` in a read-only mount -- could never complete
+#   2. out/ inside the source tree, so the same rm hit it too
+#   3. /out owned by the host user, mode 0755, container running as uid 2000:
+#      "/out/digest.txt: Permission denied"
+#
+# -- each invisible until the one before it was fixed. A fourth is entirely
+# possible, and finding it should not cost a stranger another evening.
+#
+# So this runs on a runner that has Docker. It is slow -- it builds an image
+# and compiles twice -- and it is not a required check, so a failure here
+# blocks nobody. That is what "non-gating" means; it is a branch-protection
+# setting, not something to arrange by making the job unable to fail.
+#
+# The first version of this file had `continue-on-error: true` for that
+# reasoning, and reported success in 47 seconds without doing the work. Ten
+# consecutive red CI runs went unnoticed on this repository on 2026-09-02
+# because a signal nobody reads is worthless -- but a signal that cannot say
+# "no" is worse, because it is read and it lies.
+# ===========================================================================
+
+name: dist-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'tag = verify the released version; head = exercise the tooling on this branch'
+        type: choice
+        options: [tag, head]
+        default: tag
+  push:
+    paths:
+      - 'Dockerfile.build'
+      - 'scripts/build_reproducible.sh'
+      - 'scripts/verify_reproducibility.sh'
+      - 'scripts/dist_baseline.sh'
+      - 'scripts/dist_verify_ref.sh'
+      - '.github/workflows/dist-verify.yml'
+
+jobs:
+  # No `continue-on-error`. It was here for one run, on the reasoning that a
+  # slow infrastructure job should not paint main red -- and it makes the job
+  # report success whatever happens inside it. The first run went green in 47
+  # seconds, which is not long enough to build an image and compile twice, and
+  # the tick said nothing at all.
+  #
+  # Non-gating is a property of branch protection, not of this line: this
+  # workflow is not a required check, so a red X here blocks nobody. Hiding the
+  # result was never the goal, and a control that cannot report failure is the
+  # exact defect this job exists to catch on someone else's behalf.
+  dist-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0        # tags, for the checkout below
+
+      # Verify the version the header claims, not whatever main happens to be.
+      #
+      # dist/refs/vX.Y.Z.sha256 anchors one commit: the one that was tagged.
+      # Running this on main compares a modified tree against a release anchor
+      # and always diverges -- the first run of this job did exactly that, and
+      # the digest difference said nothing except "main is not v2.0.1", which
+      # was already known.
+      # Two questions live in this job and they need different trees.
+      #
+      # "Does the published version still reproduce?" is about a release, and
+      # must be asked of the tagged commit -- dist/refs/vX.Y.Z.sha256 anchors
+      # exactly that one.
+      #
+      # "Does the reproducibility tooling work?" is about Dockerfile.build and
+      # the scripts, and must be asked of HEAD. Every fix to that tooling is
+      # invisible to the tagged tree until the next release, so checking out
+      # the tag makes it impossible to test a fix before shipping it -- which
+      # is how the /out permission fix and the signed-vs-unsigned fix both had
+      # to be pushed unverified.
+      - name: Choose the tree to verify
+        run: |
+          if [ "${{ inputs.target }}" = "head" ]; then
+            echo "exercising the tooling on $(git rev-parse --short HEAD)"
+            echo "NOTE: a digest divergence here is expected whenever HEAD is"
+            echo "      not the tagged commit. What is being tested is whether"
+            echo "      the path RUNS."
+            exit 0
+          fi
+          V=$(awk -F'"' '/FHSM_VERSION_STRING/{print $2; exit}' include/fhsm_common.h)
+          [ -n "$V" ] || { echo "::error::could not read FHSM_VERSION_STRING"; exit 1; }
+          if ! git rev-parse -q --verify "refs/tags/v$V" >/dev/null; then
+            echo "::error::no tag v$V -- the header names a version that was"
+            echo "::error::never tagged, so there is no anchor to verify against."
+            exit 1
+          fi
+          echo "verifying v$V at $(git rev-parse --short "v$V")"
+          git checkout --quiet "v$V"
+
+      # Run it as an ordinary user with an ordinary umask, which is the
+      # situation the reports came from. Running as root would pass for
+      # reasons that tell us nothing about anyone else's machine.
+      - name: id and docker
+        run: |
+          id
+          umask
+          docker --version
+
+      - name: make dist-verify
+        run: |
+          set -o pipefail
+          make dist-verify 2>&1 | tee /tmp/dist-verify.log
+
+      # The log is the deliverable when this fails: the next defect on this
+      # path, whatever it is, should be readable here rather than reported by
+      # someone who tried the documented instructions.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: dist-verify-log
+          path: /tmp/dist-verify.log
+          if-no-files-found: warn

@@ -1,0 +1,3 @@
+createpolicy --policy-pcr -l sha256:0,1,2,3,4,5,6,7 -L <fhsm-unseal-policy>|fd1=/dev/null|fd2=/dev/null|inherited=fhsm-unseal-ctx,fhsm-unseal-out,fhsm-unseal-policy,fhsm-unseal-priv,fhsm-unseal-pub
+load -C 0x81010001 -u <fhsm-unseal-pub> -r <fhsm-unseal-priv> -c <fhsm-unseal-ctx>|fd1=/dev/null|fd2=/dev/null|inherited=fhsm-unseal-ctx,fhsm-unseal-out,fhsm-unseal-policy,fhsm-unseal-priv,fhsm-unseal-pub
+unseal -c <fhsm-unseal-ctx> -p pcr:sha256:0,1,2,3,4,5,6,7 -o <fhsm-unseal-out>|fd1=/dev/null|fd2=/dev/null|inherited=fhsm-unseal-ctx,fhsm-unseal-out,fhsm-unseal-policy,fhsm-unseal-priv,fhsm-unseal-pub

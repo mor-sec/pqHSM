@@ -1,0 +1,25 @@
+[package]
+name = "pqhsm-audit"
+description = "pqHSM audit trail: HMAC-chained JSON-lines log (replaces src/fhsm_audit.c)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# The C ABI of include/fhsm_audit.h, plus the calls back into legacy C
+# (state latch, DRBG, TPM). Off for `cargo test`, on for the hybrid build.
+ffi = []
+
+[dependencies]
+openssl-sys.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+# Tests only: property tests check that the module verifier and the auditor tool agree.
+pqhsm-audit-verify = { path = "../audit-verify" }

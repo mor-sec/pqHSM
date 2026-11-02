@@ -1,0 +1,2687 @@
+/* ===========================================================================
+ * Copyright 2026 Afchine Madjlessi <afchine.mad@gmail.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * ========================================================================= */
+/* ===========================================================================
+ * fhsm_token.c --- Encrypted token store (slot persistence).
+ *
+ *  Layout : one binary file per slot (317-byte fixed header + optional
+ *  AES-256-GCM objects section). The DEK is wrapped under PBKDF2 +
+ *  AES-GCM keyed by the operator's PIN. Objects live in a second
+ *  AES-GCM blob keyed by the DEK. Full byte-level specification :
+ *  docs/TOKEN_STORE_FORMAT.md (#108).
+ *
+ *  Fixed layout = constant-time parse, no allocator on the hot path,
+ *  minimal parser attack surface per CC EAL4+ ADV_TDS.3 ("the simpler
+ *  the better").
+ *
+ *  PIN throttling and lockout : see header for the rules. Counters are
+ *  stored plaintext in the header (they must be readable before login)
+ *  so the throttle survives process restart.
+ * ========================================================================= */
+
+#include "fhsm_common.h"
+#include "fhsm_token.h"
+#include "fhsm_crypto.h"
+#include "fhsm_audit.h"
+#include "fhsm_token_tpm.h"
+#include "fhsm_apilock.h"
+
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/stat.h>
+
+/* ---------------------------------------------------------------------------
+ * Opaque token struct. Lives outside the secure heap (the *file path*,
+ * label, serial, and failure counters are non-sensitive). Only the
+ * unwrapped DEK pointer is secure-heap-resident.
+ * ----------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * Object store layout. PKCS#11 objects are stored inside the token as
+ * fixed-record structs (no dynamic attribute table) so the per-object
+ * memory footprint is bounded. The full attribute model is supported
+ * by serializing extra attributes in the `extras` opaque blob (CBOR
+ * in production) ; the integration test exercises only the scalar
+ * fields below.
+ * ----------------------------------------------------------------------- */
+/* Per-token object capacity comes from fhsm_token.h, included above.
+ *
+ * There used to be a second #ifndef/#define 1024 right here. It could not
+ * disagree with the header -- the header is included first, so the guard never
+ * fired and this copy was dead -- which is a quieter failure than divergence,
+ * not a safer one: editing the number here changed nothing at all, silently.
+ * The fixed in-memory array trades RAM for simplicity (constant time, no
+ * allocator on the object hot path); -DFHSM_MAX_OBJECTS=N still overrides it,
+ * and FHSM_SECURE_HEAP_BYTES is checked against it by the _Static_assert
+ * below rather than by hoping the two were updated together. */
+#define FHSM_OBJ_LABEL_LEN  64
+/* Value buffer sized to hold the largest supported key type :
+ *   RSA-4096 PKCS#8 priv     ≈ 2400 bytes
+ *   ML-DSA-87 PKCS#8 priv    ≈ 4896 bytes  (FIPS 204)
+ *   ML-KEM-1024 PKCS#8 priv  ≈ 3168 bytes  (FIPS 203)
+ *   SLH-DSA-* priv           ≤ 64 bytes
+ * 5500 covers ML-DSA-87 with margin. Symmetric keys use only the
+ * first 16-64 bytes ; the unused tail is zeroized.
+ *
+ * v2 (#110) : FHSM_OBJ_VALUE_LEN is frozen as the LEGACY v1 record
+ * field size (still needed to parse v1 blobs). The in-memory buffer
+ * and the v2 on-disk cap is FHSM_OBJ_VALUE_MAX, sized for X.509
+ * certificates carrying PQC / composite keys and signatures
+ * (ML-DSA-87 cert ~8-10 KB ; composite larger). */
+#define FHSM_OBJ_VALUE_LEN  5500      /* legacy v1 record field size  */
+/* #125 large-object storage : the in-memory value is now heap-allocated
+ * (see fhsm_object_t.value), so this cap no longer costs static memory.
+ * 2 MiB covers 1 MiB data objects (test_large_objects) with headroom. */
+#define FHSM_OBJ_VALUE_MAX  (2u * 1024u * 1024u) /* v2 per-object value cap */
+
+/* The secure-heap arena must be able to hold a full token of sensitive values
+ * (#127). That link is set by hand -- the 8 MiB default was computed for
+ * FHSM_MAX_OBJECTS = 1024 -- so someone building with a larger count would
+ * otherwise get an arena too small for it and a run of unexplained
+ * CKR_DEVICE_MEMORY. Forgetting exactly this kind of
+ * derived bound is what broke loading past 11 objects in v1.4.0.
+ *
+ * 5 120 bytes per object is the working assumption: an ML-DSA-87 private key,
+ * the largest sensitive value the module generates, measures 4 962 bytes.
+ * Public keys and certificates are not sensitive and never enter the arena.
+ * The assert deliberately does not compute the arena size from the object
+ * count -- it refuses an inconsistent pair rather than guess a good one. */
+#define FHSM_SENSITIVE_VALUE_TYPICAL  5120u
+_Static_assert(FHSM_SECURE_HEAP_BYTES
+                 >= (size_t)FHSM_MAX_OBJECTS * FHSM_SENSITIVE_VALUE_TYPICAL,
+               "FHSM_SECURE_HEAP_BYTES too small for FHSM_MAX_OBJECTS: a full "
+               "token of sensitive values will not fit in the mlock'd arena. "
+               "Raise FHSM_SECURE_HEAP_BYTES (include/fhsm_common.h) or lower "
+               "FHSM_MAX_OBJECTS.");
+
+/* FHSM_POLICY_MECH_MAX, _ATTR_MAX and _VALUE_MAX are in fhsm_token.h: a caller
+ * that builds a policy has to know what the store will accept before it calls,
+ * and a cap it can only discover by being refused is a cap it will hit in
+ * production. The on-disk entry size stays here -- that one is nobody's
+ * business above this file. The v4 record comment below says where the numbers
+ * came from. */
+#define FHSM_POLICY_ENTRY_SZ     56u   /* 8 header + 48 value, on disk */
+
+/* fhsm_policy_attr_t and the FHSM_POLICY_KIND_* values are in fhsm_token.h:
+ * the PKCS#11 layer builds these entries from the caller's CK_ATTRIBUTE array
+ * and hands them over, so the shape is part of the interface, not of this
+ * file. */
+
+typedef struct fhsm_object_s {
+    uint32_t handle;        /* CK_OBJECT_HANDLE, opaque to PKCS#11 caller */
+    uint32_t class;         /* CKO_SECRET_KEY, CKO_DATA, ... */
+    uint32_t key_type;      /* CKK_AES, CKK_GENERIC_SECRET, ... */
+    uint32_t value_len;     /* actual key bytes used */
+    uint8_t  label[FHSM_OBJ_LABEL_LEN];
+    uint8_t *value;         /* heap-allocated, value_len bytes (#125) */
+    uint8_t  id[32];        /* CKA_ID */
+    uint32_t id_len;
+    uint8_t  flags;         /* bit 0 = CKA_PRIVATE, bit 1 = CKA_EXTRACTABLE */
+    /* Second flags byte (FHSM_OBJF2_*), serialised into the v3 record's pad
+     * byte at offset 203. Negative sense: set = restricted, so zero -- which
+     * is what every record written before 2026-09-19 carries there -- means
+     * permitted, and no migration is needed. */
+    uint8_t  flags2;
+    /* Third flags byte (FHSM_OBJF3_*), serialised into the v4 record's spare
+     * byte at offset 118. Same polarity rule as flags2: zero is what every
+     * record written before it carried there, and zero means what those
+     * records meant. */
+    uint8_t  flags3;
+    /* In-memory only (NOT serialised to the .tok file) : 0 = persistent
+     * token object ; non-zero = session object owned by that session
+     * handle, destroyed on C_CloseSession and never written to disk
+     * (#125 PKCS#11 CKA_TOKEN semantics). */
+    uint32_t owner_session;
+    /* Per-object usage flags (CKA_ENCRYPT/DECRYPT/SIGN/VERIFY/WRAP/UNWRAP/
+     * DERIVE), serialised in a previously-spare record byte. Bit 7
+     * (0x80) = "explicit usage stored" ; if unset (legacy objects) the
+     * PKCS#11 layer falls back to class defaults. #125. */
+    uint8_t  usage_flags;
+    /* CKA_START_DATE / CKA_END_DATE (CK_DATE, "YYYYMMDD") and CKA_APPLICATION,
+     * persisted by the v3 record at offsets 120..202. Presence is tracked by
+     * the *_len fields -- "absent" and "set to empty" are different answers to
+     * a reader, and a length byte is what tells them apart. That is the same
+     * problem the policy attributes below have, and they solve it the same
+     * way, in flags2 rather than in a count. */
+    uint8_t  start_date[8];
+    uint8_t  start_date_len;
+    uint8_t  end_date[8];
+    uint8_t  end_date_len;
+    uint8_t  application[FHSM_OBJ_LABEL_LEN];
+    uint8_t  application_len;
+    /* Which allocator owns `value` (#127). In-memory only. Needed because the
+     * choice is made from the SENSITIVE flag at allocation time, and that flag
+     * can later turn on -- freeing with the wrong allocator would corrupt one
+     * of the two heaps. */
+    uint8_t  value_secure;
+    /* Per-object policy, persisted by the v4 record.
+     *
+     * A count of zero cannot mean two things at once. "No CKA_ALLOWED_MECHANISMS
+     * was ever set" permits every mechanism; "CKA_ALLOWED_MECHANISMS was set to
+     * the empty list" permits none, and pkcs11-check sends exactly that case.
+     * The store already had to answer this for CKA_START_DATE and answered it
+     * with an explicit length byte; a count byte cannot, because both readings
+     * are zero.
+     *
+     * So presence lives in flags2, whose bits are negative -- set = restricted.
+     * Present means a restriction exists, absent means none, and a record
+     * written before these bits meant anything reads as unrestricted. Same
+     * polarity argument as FHSM_OBJF2_NO_ENCAPSULATE, for the same reason. */
+    uint8_t  allowed_count;
+    uint32_t allowed[FHSM_POLICY_MECH_MAX];
+    uint8_t  wrap_count;
+    fhsm_policy_attr_t wrap[FHSM_POLICY_ATTR_MAX];
+    uint8_t  unwrap_count;
+    fhsm_policy_attr_t unwrap[FHSM_POLICY_ATTR_MAX];
+    uint8_t  derive_count;
+    fhsm_policy_attr_t derive[FHSM_POLICY_ATTR_MAX];
+} fhsm_object_t;
+
+struct fhsm_token_s {
+    pthread_mutex_t mu;
+
+    char     path[512];
+    char     label[64];
+    char     serial[64];
+    uint8_t  salt_so[16];
+    uint8_t  salt_user[16];
+    uint32_t pbkdf2_iter;
+    uint8_t  so_wrap_nonce[12];
+    uint8_t  so_wrap_ct[48];    /* 32 (DEK) + 16 (GCM tag) */
+    uint8_t  user_wrap_nonce[12];
+    uint8_t  user_wrap_ct[48];
+    int      user_initialized;
+
+    uint32_t failed_so;
+    uint32_t failed_user;
+    uint64_t throttle_so_until_ms;
+    uint64_t throttle_user_until_ms;
+
+    /* Live --- DEK is in the secure heap and is zeroized on logout. */
+    uint8_t *dek;       /* fhsm_secure_malloc, 32 bytes when logged-in */
+    /* 1 while `dek` holds the token's key. The buffer outlives the key: a
+     * logout and a wrong PIN zeroize it in place and leave it allocated, so
+     * `dek != NULL` says nothing about its content. write_atomic() read it
+     * that way, and a wrong PIN after a logout re-encrypted the object store
+     * under 32 zero bytes; in a fresh process the same write dropped the
+     * store (tests/test_wrong_pin_store.c). Everything that encrypts with the
+     * DEK or changes the store asks this, not the pointer. */
+    int      dek_live;
+    fhsm_role_t logged_in;
+
+    /* Object store. Populated by fhsm_token_objects_load after login.
+     * `objects_dirty` flips to 1 when an object is added/destroyed and
+     * the .tok file is rewritten on the next fhsm_token_objects_write. */
+    fhsm_object_t  objects[FHSM_MAX_OBJECTS];
+    uint32_t       object_count;
+    uint32_t       next_handle;
+    int            objects_dirty;
+    int            objects_loaded;   /* 1 after first successful load */
+    /* 1 while objects[] holds only the public view, read in clear from the
+     * public section at load time, before any login. Readable, never
+     * written: every mutation asks objects_loaded, which stays 0 until the
+     * encrypted store replaces this view at login. */
+    int            objects_public;
+};
+
+#define DEK_LEN   32
+#define WRAP_LEN  (DEK_LEN + 16)   /* DEK + GCM tag */
+
+/* Monotonic millisecond clock (independent of wall-time so throttle
+ * cannot be bypassed by `date -s`). */
+static uint64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ull + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+/* Throttle delay after N failed attempts: 500 ms * 2^(N-1), capped. */
+static uint64_t throttle_delay_ms(uint32_t fails) {
+    if (fails == 0) return 0;
+    uint64_t d = FHSM_PIN_THROTTLE_BASE_MS;
+    for (uint32_t i = 1; i < fails && d < FHSM_PIN_THROTTLE_MAX_MS; ++i) {
+        d *= 2;
+    }
+    return d > FHSM_PIN_THROTTLE_MAX_MS ? FHSM_PIN_THROTTLE_MAX_MS : d;
+}
+
+/* Sleep `ms` with t->mu released; the caller holds it before and after, and
+ * must look at the token again since anything may have changed meanwhile.
+ *
+ * A PIN attempt inside the throttle waits instead of being refused. Up to
+ * 2.5.0 it got FHSM_RV_PIN_THROTTLED; but a load re-imposes the delay from
+ * the failure count, so a process that loads the token and presents the PIN
+ * a few ms later -- pkcs11-tool, every command-line client -- found the
+ * throttle running every time, and after a single wrong PIN the correct one
+ * was refused in every new process, for good. Waiting keeps one attempt per
+ * delay, and a restart still does not skip it. */
+static void throttle_sleep(fhsm_token_t *t, uint64_t ms) {
+    pthread_mutex_unlock(&t->mu);
+    struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
+    while (nanosleep(&ts, &ts) != 0) { }
+    pthread_mutex_lock(&t->mu);
+}
+
+/* ---------------------------------------------------------------------------
+ * Persistence : write the JSON atomically (tmp + rename) so a power
+ * loss never leaves a half-written token file.
+ * ----------------------------------------------------------------------- */
+/* ---------------------------------------------------------------------------
+ * On-disk format : compact binary, fixed layout, single write.
+ *
+ *   Offset  Size  Field
+ *      0      4   Magic   = "FHSM"
+ *      4      4   Version = 1 (little-endian uint32)
+ *      8     64   label   (null-padded ASCII)
+ *     72     64   serial  (null-padded ASCII)
+ *    136      4   pbkdf2_iter (little-endian uint32)
+ *    140     16   salt_so
+ *    156     12   so_wrap_nonce
+ *    168     48   so_wrap_ct (DEK + 16-byte GCM tag)
+ *    216     16   salt_user
+ *    232     12   user_wrap_nonce
+ *    244     48   user_wrap_ct
+ *    292      1   user_initialized (0/1)
+ *    293      4   failed_so       (LE uint32)
+ *    297      4   failed_user     (LE uint32)
+ *    301      8   throttle_so_until_ms   (LE uint64)
+ *    309      8   throttle_user_until_ms (LE uint64)
+ *
+ *   Total = 317 bytes.
+ *
+ *  Rationale for binary over JSON : (a) fixed layout = constant-time
+ *  parse, no allocator; (b) no base64 round-trip; (c) avoids parser
+ *  complexity per CC EAL4+ ADV_TDS.3 "the simpler the better".
+ * ----------------------------------------------------------------------- */
+#define FHSM_TOK_MAGIC    "FHSM"
+#define FHSM_TOK_VERSION  1u
+#define FHSM_TOK_FILE_SZ  317
+
+static void put_u32_le(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)(v); p[1] = (uint8_t)(v >> 8);
+    p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+static void put_u64_le(uint8_t *p, uint64_t v) {
+    for (int i = 0; i < 8; ++i) p[i] = (uint8_t)(v >> (8*i));
+}
+static uint32_t get_u32_le(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+/* No get_u64_le: nothing in the format is read back as a u64 any more. The
+ * only two u64 fields were the throttle deadlines, which are now derived from
+ * the failure count rather than stored -- see write_atomic(). put_u64_le stays
+ * because those offsets are still written, as zero, to keep the layout fixed. */
+
+/* ---------------------------------------------------------------------------
+ * Object blob serialization. Each object is FHSM_OBJ_REC_SZ bytes :
+ *
+ *   Offset  Size  Field
+ *      0     4    handle (LE u32)
+ *      4     4    class
+ *      8     4    key_type
+ *     12     4    value_len
+ *     16    64    label
+ *     80    64    value (only first value_len bytes are meaningful)
+ *    144    32    id
+ *    176     4    id_len
+ *    180     1    flags
+ *    181     3    padding
+ *
+ *   Total = 184 bytes.
+ *
+ *  The blob is { u32 object_count ; u32 next_handle ; N × 184-byte recs }
+ *  then AES-256-GCM(dek, nonce, AAD=serial, plaintext=blob). The encrypted
+ *  blob is appended after the 317-byte header as :
+ *      u32 ct_len ; u8 nonce[12] ; u8 ct[ct_len] ; u8 tag[16]
+ * ----------------------------------------------------------------------- */
+/* Record layout when FHSM_OBJ_VALUE_LEN = 5500 :
+ *   handle(4) + class(4) + key_type(4) + value_len(4) +
+ *   label(64) + value(5500) + id(32) + id_len(4) + flags(1) + pad(3)
+ * = 16 + 64 + 5500 + 32 + 4 + 4 = 5620 bytes. */
+#define FHSM_OBJ_REC_SZ   5620
+
+/* v2 blob (#110) : variable-size records so certificates don't pay the
+ * fixed 5500-byte value field. Layout :
+ *   u32 magic = FHSM_OBJ_BLOB_V2_MAGIC | u32 count | u32 next_handle
+ *   per record : u32 rec_len (bytes after this field)
+ *                handle(4) class(4) key_type(4) value_len(4)
+ *                label(64) id(32) id_len(4) flags(1) pad(3)
+ *                value[value_len]
+ * The magic cannot collide with a v1 blob, whose first field is
+ * object_count <= FHSM_MAX_OBJECTS. v1 blobs remain readable ; every
+ * write re-serializes as v2. Spec : docs/TOKEN_STORE_FORMAT.md. */
+#define FHSM_OBJ_BLOB_V2_MAGIC 0xF5B20002u
+#define FHSM_OBJ_REC_V2_FIXED  120u   /* bytes after rec_len, before value */
+
+/* v3 blob (#125) : v2 plus the three metadata attributes that had nowhere to
+ * live. Layout is v2's, with 84 bytes appended before the value :
+ *   ... v2 fixed fields (120) ...
+ *   start_date(8) start_date_len(1)
+ *   end_date(8)   end_date_len(1)
+ *   application(64) application_len(1)
+ *   pad(1)
+ *   value[value_len]
+ *
+ * The explicit length bytes are what separate "absent" from "set to empty" --
+ * a reader cannot tell those apart from the payload alone, and they are
+ * different answers.
+ *
+ * A fixed extension rather than a TLV blob: the alternative's only real
+ * advantage was avoiding a v4 for the next attribute, and with no
+ * compatibility burden a v4 is cheap. A third bounds-checked parser in this
+ * module is not -- the first two each shipped with a bounds bug.
+ *
+ * v1 and v2 blobs stay readable. Keeping those readers costs no new code
+ * (they exist and are exercised), and the failure mode of dropping them is not
+ * a red test, it is an unreadable key. Every write emits v3. */
+#define FHSM_OBJ_BLOB_V3_MAGIC 0xF5B30003u
+#define FHSM_OBJ_REC_V3_FIXED  204u
+#define FHSM_OBJ_APP_LEN       64u
+
+/* v4 blob : the four per-object policy attributes, which were refused up to
+ * now because they are variable-length and the record had no field for them.
+ *
+ *   ... v3 fixed fields (204) ...
+ *   allowed_count(1) allowed[8]  (8 x u32 mechanism type)          33
+ *   wrap_count(1)    wrap[4]     (4 x 56-byte entry)              225
+ *   unwrap_count(1)  unwrap[4]                                    225
+ *   derive_count(1)  derive[4]                                    225
+ *   value[value_len]
+ *
+ * = 204 + 708 = 912 bytes of fixed record.
+ *
+ * ## The caps came from the corpus, not from taste
+ *
+ * Measured against pkcs11-check 0.2.0 before a line of this was written:
+ * CKA_ALLOWED_MECHANISMS is sent with exactly one mechanism at all seventeen
+ * literal sites (plus the empty list, which means "nothing is allowed" and is
+ * a count of zero here); the three templates are sent with one or two entries
+ * and never more. Eight and four are above what anything observed asks for.
+ *
+ * The first draft of this block capped the templates at eight (attribute,
+ * boolean) pairs, which would have grown every record by 228 bytes and still
+ * refused every nested-template test in the corpus -- because the corpus does
+ * not send booleans. It sends CKA_LABEL, a byte string of 33 to 41 octets, and
+ * CKA_KEY_TYPE, a CK_ULONG. The cap was never the risk; the value type was.
+ *
+ * Which is also what fhsm_parse_unwrap_template has been doing: it requires
+ * ulValueLen == 1 before it looks at the attribute type at all, so its
+ * "deliberately partial" support overlaps what the corpus sends by exactly
+ * nothing.
+ *
+ * ## The entry
+ *
+ *   +0  u32 type       the CKA_ attribute this entry constrains
+ *   +4  u8  kind       FHSM_POLICY_KIND_*
+ *   +5  u8  len        significant bytes of value
+ *   +6  u8  pad[2]
+ *   +8  u8  value[48]  bool in value[0]; ulong as u64 LE; bytes over len
+ *   = 56 bytes, 8-aligned.
+ *
+ * 48 is the longest label the corpus sends (41) with room, not a round number
+ * chosen first and justified after.
+ *
+ * ## A cap is part of the format
+ *
+ * A later build that wants nine mechanisms or five entries must emit v5. It
+ * must not write more of them into a v4 record: this reader refuses a count
+ * above the cap, because unlike the unknown flags2 bit -- which a reader can
+ * safely ignore -- a count it cannot store is a policy it would silently drop,
+ * and a dropped policy reads as permission.
+ *
+ * v1, v2 and v3 stay readable and load with all four counts at zero, which is
+ * what those records mean. Every write emits v4. */
+/* The caps and the entry size are declared above fhsm_object_s, which needs
+ * them to size its fields; only the on-disk constants live here. */
+#define FHSM_OBJ_BLOB_V4_MAGIC   0xF5B40004u
+#define FHSM_OBJ_REC_V4_FIXED \
+    (FHSM_OBJ_REC_V3_FIXED \
+     + 1u + FHSM_POLICY_MECH_MAX * 4u \
+     + 3u * (1u + FHSM_POLICY_ATTR_MAX * FHSM_POLICY_ENTRY_SZ))
+
+/* Pin the number the format documents. The writer places the value at
+ * FHSM_OBJ_REC_V4_FIXED and the reader reads it from there; if an edit to a cap
+ * moved one of them without the other, a key would be read as policy and a
+ * policy as key. A changed size is a new format version, not a bigger v4. */
+_Static_assert(FHSM_OBJ_REC_V4_FIXED == 912u, "v4 fixed record is 912 bytes");
+_Static_assert(FHSM_POLICY_ENTRY_SZ == 8u + FHSM_POLICY_VALUE_MAX,
+               "policy entry header is 8 bytes");
+
+/* Upper bound of the objects-blob plaintext/ciphertext (GCM keeps
+ * length) : the v2 bound (12 + 64 x (4 + 120 + 16384)), which also
+ * covers the smaller v1 bound (8 + 64 x 5620). Used as the loader's
+ * sanity cap. v1.4.0 wrongly capped at 65536, which bricked loading of
+ * tokens holding more than 11 objects (see docs/TOKEN_STORE_FORMAT.md,
+ * "Regression note"). */
+#define FHSM_OBJ_BLOB_MAX \
+    (12u + (uint32_t)FHSM_MAX_OBJECTS * (4u + FHSM_OBJ_REC_V4_FIXED + FHSM_OBJ_VALUE_MAX))
+
+/* The public section, after the encrypted blob: the token's public objects
+ * in clear, so that C_FindObjects and C_GetAttributeValue answer for them
+ * before a login, as PKCS#11 asks of a public session.
+ *
+ *   u32  magic = FHSM_PUB_MAGIC
+ *   u32  len
+ *   u8   v4 blob plaintext[len]   (the public objects only)
+ *
+ * Public means CKA_PRIVATE=FALSE as C_GetAttributeValue reports it: public
+ * keys and certificates, never sensitive. Nothing else is written there, and
+ * the reader refuses a section holding anything else.
+ *
+ * The section is a copy. The encrypted blob stays the store: a login drops
+ * this view and loads the blob, and every write that re-encrypts the blob
+ * writes the section afresh from it. A build that predates the section reads
+ * the blob by its own length and never looks past it, and drops the section
+ * at its next write -- after which the token simply has no view before login,
+ * as it had none before. */
+#define FHSM_PUB_MAGIC        0xF5B5B001u
+#define FHSM_CKO_CERTIFICATE  0x01u
+#define FHSM_CKO_PUBLIC_KEY   0x02u
+
+static int obj_is_public(const fhsm_object_t *o) {
+    return o->owner_session == 0
+        && (o->class == FHSM_CKO_PUBLIC_KEY || o->class == FHSM_CKO_CERTIFICATE)
+        && !(o->flags & FHSM_OBJF_SENSITIVE);
+}
+
+/* #125 large-object storage helpers. The per-object value is heap-owned;
+ * these keep ownership sane across the struct-copy compaction pattern. */
+/*
+ * Released through fhsm_api_free_value rather than freed here: another
+ * session may be between fhsm_token_object_get and its last use of this
+ * pointer. Inside an EXCLUSIVE C_ call (or outside any) that cannot be, and it
+ * is zeroized and freed at once; inside a SHARED one it is parked until no
+ * call is in flight (#111-prep, include/fhsm_apilock.h). */
+static void obj_free_value(fhsm_object_t *o) {
+    if (o && o->value) {
+        fhsm_api_free_value(o->value, o->value_len, o->value_secure);
+        o->value = NULL;
+        o->value_len = 0;
+        o->value_secure = 0;
+    }
+}
+
+/* Allocate an object's value, in the mlock'd secure heap when the object is
+ * sensitive (#127).
+ *
+ * Before this, every decrypted value -- private keys included -- lived in a
+ * plain malloc block. It was zeroized on free, but pageable while live: the
+ * DEK was kept out of swap and the key material it protects was not. A module
+ * that mlocks the vault key and leaves the private keys beside it in swappable
+ * memory is protecting the safe and setting the jewels next to it.
+ *
+ * Arena exhaustion is a hard failure, never a quiet fallback to malloc. If the
+ * module cannot keep a private key out of swap it does not load the key and
+ * says so; CKR_DEVICE_MEMORY tells the operator to raise secure_heap_kb (#128
+ * made that knob real). A silent fallback would be a guarantee that holds
+ * until it quietly does not, which is the shape this whole series removes. */
+static fhsm_rv_t obj_alloc_value(fhsm_object_t *o, size_t len, int sensitive) {
+    o->value = NULL;
+    o->value_secure = 0;
+    if (len == 0) return FHSM_RV_OK;
+    if (sensitive) {
+        o->value = fhsm_secure_malloc(len);
+        if (!o->value) return FHSM_RV_DEVICE_MEMORY;   /* raise secure_heap_kb */
+        o->value_secure = 1;
+    } else {
+        o->value = malloc(len);
+        if (!o->value) return FHSM_RV_HOST_MEMORY;
+    }
+    return FHSM_RV_OK;
+}
+/* Free every object value slot (not just [0,object_count)) so partial
+ * allocations from a failed load are also reclaimed, then reset count. */
+static void objects_free_all(fhsm_token_t *t) {
+    if (!t) return;
+    for (uint32_t i = 0; i < FHSM_MAX_OBJECTS; ++i) obj_free_value(&t->objects[i]);
+    t->object_count = 0;
+}
+
+/* Write one policy template's count and its entries at `p`, and return the
+ * number of bytes written -- always 1 + FHSM_POLICY_ATTR_MAX * entry, so the
+ * record stays fixed whether the template is present or not.
+ *
+ * Unused entry slots are written as zero rather than left as whatever the
+ * caller's buffer held: the blob is encrypted as a whole, so a stale byte here
+ * would be a byte of some other object's value carried into this record. */
+static size_t put_policy_tmpl(uint8_t *p, uint8_t count,
+                               const fhsm_policy_attr_t *a) {
+    p[0] = count;
+    size_t off = 1;
+    for (uint32_t k = 0; k < FHSM_POLICY_ATTR_MAX; ++k) {
+        uint8_t *e = p + off;
+        memset(e, 0, FHSM_POLICY_ENTRY_SZ);
+        if (k < count) {
+            put_u32_le(e + 0, a[k].type);
+            e[4] = a[k].kind;
+            e[5] = a[k].len;
+            /* a[k].len is bounded at the boundary that filled the struct, and
+             * again on read; clamp here too rather than trust three layers to
+             * agree forever. */
+            uint8_t n = a[k].len > FHSM_POLICY_VALUE_MAX
+                            ? (uint8_t)FHSM_POLICY_VALUE_MAX : a[k].len;
+            memcpy(e + 8, a[k].value, n);
+        }
+        off += FHSM_POLICY_ENTRY_SZ;
+    }
+    return off;
+}
+
+/* Does `o` go into this serialization? Every token object for the encrypted
+ * blob; only the public ones for the public section. */
+static int obj_serialized(const fhsm_object_t *o, int public_only) {
+    return public_only ? obj_is_public(o) : o->owner_session == 0;
+}
+
+/* Bytes serialize_objects() will write for the same arguments. */
+static size_t serialized_size(const fhsm_token_t *t, int public_only) {
+    size_t sz = 12;   /* magic + count + next_handle */
+    for (uint32_t i = 0; i < t->object_count; ++i)
+        if (obj_serialized(&t->objects[i], public_only))
+            sz += 4 + FHSM_OBJ_REC_V4_FIXED + t->objects[i].value_len;
+    return sz;
+}
+
+static size_t serialize_objects(const fhsm_token_t *t, uint8_t *out,
+                                int public_only) {
+    /* v4 writer. Returns the number of bytes written. */
+    put_u32_le(out + 0, FHSM_OBJ_BLOB_V4_MAGIC);
+    /* Persist only token objects (owner_session == 0) ; session objects
+     * live in memory for the lifetime of their session and are never
+     * written to disk. Count them first for the header. */
+    uint32_t token_count = 0;
+    for (uint32_t i = 0; i < t->object_count; ++i)
+        if (obj_serialized(&t->objects[i], public_only)) token_count++;
+    put_u32_le(out + 4, token_count);
+    put_u32_le(out + 8, t->next_handle);
+    size_t off = 12;
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        const fhsm_object_t *o = &t->objects[i];
+        if (!obj_serialized(o, public_only)) continue;
+        uint32_t rec_len = FHSM_OBJ_REC_V4_FIXED + o->value_len;
+        put_u32_le(out + off, rec_len); off += 4;
+        put_u32_le(out + off + 0,  o->handle);
+        put_u32_le(out + off + 4,  o->class);
+        put_u32_le(out + off + 8,  o->key_type);
+        put_u32_le(out + off + 12, o->value_len);
+        memcpy(out + off + 16, o->label, FHSM_OBJ_LABEL_LEN);
+        memcpy(out + off + 80, o->id,    32);
+        put_u32_le(out + off + 112, o->id_len);
+        out[off + 116] = o->flags;
+        out[off + 117] = o->usage_flags;
+        /* Was pad, written zero by every writer since v2. Now the third
+         * flags byte -- see FHSM_OBJF3_* in fhsm_token.h. 119 stays pad. */
+        out[off + 118] = o->flags3; out[off + 119] = 0;
+        /* v3 metadata block. */
+        memcpy(out + off + 120, o->start_date, 8);
+        out[off + 128] = o->start_date_len;
+        memcpy(out + off + 129, o->end_date, 8);
+        out[off + 137] = o->end_date_len;
+        memcpy(out + off + 138, o->application, FHSM_OBJ_APP_LEN);
+        out[off + 202] = o->application_len;
+        /* Was pad, written zero. Now the second flags byte -- see
+         * FHSM_OBJF2_* in fhsm_token.h for why zero still reads correctly on
+         * records written before it meant anything. */
+        out[off + 203] = o->flags2;
+        /* v4 policy block. */
+        {
+            uint8_t *p = out + off + FHSM_OBJ_REC_V3_FIXED;
+            p[0] = o->allowed_count;
+            for (uint32_t k = 0; k < FHSM_POLICY_MECH_MAX; ++k)
+                put_u32_le(p + 1 + k * 4,
+                           k < o->allowed_count ? o->allowed[k] : 0u);
+            size_t q = 1 + FHSM_POLICY_MECH_MAX * 4;
+            q += put_policy_tmpl(p + q, o->wrap_count,   o->wrap);
+            q += put_policy_tmpl(p + q, o->unwrap_count, o->unwrap);
+            q += put_policy_tmpl(p + q, o->derive_count, o->derive);
+            (void)q;   /* size is fixed by construction; see the _Static_assert
+                        * beside FHSM_OBJ_REC_V4_FIXED */
+        }
+        memcpy(out + off + FHSM_OBJ_REC_V4_FIXED, o->value, o->value_len);
+        off += rec_len;
+    }
+    return off;
+}
+
+/* Legacy fixed-record blobs written by v1.4.x and earlier. */
+static fhsm_rv_t parse_objects_v1(fhsm_token_t *t, const uint8_t *buf, size_t len) {
+    uint32_t count = get_u32_le(buf + 0);
+    if (count > FHSM_MAX_OBJECTS) return FHSM_RV_FUNCTION_FAILED;
+    uint32_t next_h = get_u32_le(buf + 4);
+    size_t need = 8 + (size_t)count * FHSM_OBJ_REC_SZ;
+    if (len < need) return FHSM_RV_FUNCTION_FAILED;
+    const size_t OFF_LABEL  = 16;
+    const size_t OFF_VALUE  = OFF_LABEL + FHSM_OBJ_LABEL_LEN;
+    const size_t OFF_ID     = OFF_VALUE + FHSM_OBJ_VALUE_LEN;
+    const size_t OFF_IDLEN  = OFF_ID + 32;
+    const size_t OFF_FLAGS  = OFF_IDLEN + 4;
+    size_t off = 8;
+    for (uint32_t i = 0; i < count; ++i) {
+        fhsm_object_t *o = &t->objects[i];
+        memset(o, 0, sizeof(*o));
+        o->handle    = get_u32_le(buf + off + 0);
+        o->class     = get_u32_le(buf + off + 4);
+        o->key_type  = get_u32_le(buf + off + 8);
+        o->value_len = get_u32_le(buf + off + 12);
+        if (o->value_len > FHSM_OBJ_VALUE_LEN) return FHSM_RV_FUNCTION_FAILED;
+        memcpy(o->label, buf + off + OFF_LABEL, FHSM_OBJ_LABEL_LEN);
+        memcpy(o->id,    buf + off + OFF_ID,    32);
+        o->id_len = get_u32_le(buf + off + OFF_IDLEN);
+        if (o->id_len > 32) return FHSM_RV_FUNCTION_FAILED;
+        /* Flags before the value: obj_alloc_value needs to know whether this
+         * object is sensitive to pick the allocator (#127). */
+        o->flags  = buf[off + OFF_FLAGS];
+        if (o->value_len) {
+            fhsm_rv_t ar = obj_alloc_value(o, o->value_len,
+                                            (o->flags & FHSM_OBJF_SENSITIVE) != 0);
+            if (ar != FHSM_RV_OK) return ar;
+            memcpy(o->value, buf + off + OFF_VALUE, o->value_len);
+        }
+        off += FHSM_OBJ_REC_SZ;
+    }
+    t->object_count = count;
+    t->next_handle  = next_h;
+    return FHSM_RV_OK;
+}
+
+/* v2 variable-record blobs (#110). Every record is bounds-checked
+ * before any copy ; a malformed record rejects the whole blob (the GCM
+ * tag already authenticates it, so corruption here means a logic bug,
+ * not an attacker). */
+static fhsm_rv_t parse_objects_v2(fhsm_token_t *t, const uint8_t *buf, size_t len) {
+    uint32_t count = get_u32_le(buf + 4);
+    if (count > FHSM_MAX_OBJECTS) return FHSM_RV_FUNCTION_FAILED;
+    uint32_t next_h = get_u32_le(buf + 8);
+    size_t off = 12;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (off + 4 > len) return FHSM_RV_FUNCTION_FAILED;
+        uint32_t rec_len = get_u32_le(buf + off); off += 4;
+        if (rec_len < FHSM_OBJ_REC_V2_FIXED
+            || rec_len > FHSM_OBJ_REC_V2_FIXED + FHSM_OBJ_VALUE_MAX
+            || off + rec_len > len) return FHSM_RV_FUNCTION_FAILED;
+        fhsm_object_t *o = &t->objects[i];
+        memset(o, 0, sizeof(*o));
+        o->handle    = get_u32_le(buf + off + 0);
+        o->class     = get_u32_le(buf + off + 4);
+        o->key_type  = get_u32_le(buf + off + 8);
+        o->value_len = get_u32_le(buf + off + 12);
+        if (o->value_len != rec_len - FHSM_OBJ_REC_V2_FIXED)
+            return FHSM_RV_FUNCTION_FAILED;
+        memcpy(o->label, buf + off + 16, FHSM_OBJ_LABEL_LEN);
+        memcpy(o->id,    buf + off + 80, 32);
+        o->id_len = get_u32_le(buf + off + 112);
+        if (o->id_len > 32) return FHSM_RV_FUNCTION_FAILED;
+        o->flags  = buf[off + 116];
+        o->usage_flags = buf[off + 117];
+        if (o->value_len) {
+            fhsm_rv_t ar = obj_alloc_value(o, o->value_len,
+                                            (o->flags & FHSM_OBJF_SENSITIVE) != 0);
+            if (ar != FHSM_RV_OK) return ar;
+            memcpy(o->value, buf + off + FHSM_OBJ_REC_V2_FIXED, o->value_len);
+        }
+        off += rec_len;
+    }
+    t->object_count = count;
+    t->next_handle  = next_h;
+    return FHSM_RV_OK;
+}
+
+/* v3 variable-record blobs (#125). Identical to v2 up to offset 120, then the
+ * metadata block. Same discipline as v2: every record is bounds-checked before
+ * any copy, and a malformed record rejects the whole blob. */
+static fhsm_rv_t parse_objects_v3(fhsm_token_t *t, const uint8_t *buf, size_t len) {
+    uint32_t count = get_u32_le(buf + 4);
+    if (count > FHSM_MAX_OBJECTS) return FHSM_RV_FUNCTION_FAILED;
+    uint32_t next_h = get_u32_le(buf + 8);
+    size_t off = 12;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (off + 4 > len) return FHSM_RV_FUNCTION_FAILED;
+        uint32_t rec_len = get_u32_le(buf + off); off += 4;
+        if (rec_len < FHSM_OBJ_REC_V3_FIXED
+            || rec_len > FHSM_OBJ_REC_V3_FIXED + FHSM_OBJ_VALUE_MAX
+            || off + rec_len > len) return FHSM_RV_FUNCTION_FAILED;
+        fhsm_object_t *o = &t->objects[i];
+        memset(o, 0, sizeof(*o));
+        o->handle    = get_u32_le(buf + off + 0);
+        o->class     = get_u32_le(buf + off + 4);
+        o->key_type  = get_u32_le(buf + off + 8);
+        o->value_len = get_u32_le(buf + off + 12);
+        if (o->value_len != rec_len - FHSM_OBJ_REC_V3_FIXED)
+            return FHSM_RV_FUNCTION_FAILED;
+        memcpy(o->label, buf + off + 16, FHSM_OBJ_LABEL_LEN);
+        memcpy(o->id,    buf + off + 80, 32);
+        o->id_len = get_u32_le(buf + off + 112);
+        if (o->id_len > 32) return FHSM_RV_FUNCTION_FAILED;
+        o->flags       = buf[off + 116];
+        o->usage_flags = buf[off + 117];
+        /* Metadata. The stored lengths are attacker-irrelevant here (the GCM
+         * tag already authenticated the blob) but a corrupt length would index
+         * past the field, so they are clamped rather than trusted. */
+        memcpy(o->start_date, buf + off + 120, 8);
+        o->start_date_len = buf[off + 128];
+        if (o->start_date_len > 8) return FHSM_RV_FUNCTION_FAILED;
+        memcpy(o->end_date, buf + off + 129, 8);
+        o->end_date_len = buf[off + 137];
+        if (o->end_date_len > 8) return FHSM_RV_FUNCTION_FAILED;
+        memcpy(o->application, buf + off + 138, FHSM_OBJ_APP_LEN);
+        o->application_len = buf[off + 202];
+        if (o->application_len > FHSM_OBJ_APP_LEN) return FHSM_RV_FUNCTION_FAILED;
+        /* Offset 203 was a pad byte written zero until 2026-09-19 and read by
+         * nobody. It is the second flags byte now, and because its bits are
+         * negative -- set = restricted -- a record written when it was pad
+         * loads as "no restriction", which is what it meant. No version bump
+         * and no migration: the whole compatibility story is the polarity.
+         *
+         * Not validated against a mask. Refusing a record for an unknown bit
+         * would make a token written by a later build unreadable by this one,
+         * which is a worse failure than ignoring a flag we do not understand
+         * -- the reader has no way to act on it either way. */
+        o->flags2 = buf[off + 203];
+        if (o->value_len) {
+            fhsm_rv_t ar = obj_alloc_value(o, o->value_len,
+                                            (o->flags & FHSM_OBJF_SENSITIVE) != 0);
+            if (ar != FHSM_RV_OK) return ar;
+            memcpy(o->value, buf + off + FHSM_OBJ_REC_V3_FIXED, o->value_len);
+        }
+        off += rec_len;
+    }
+    t->object_count = count;
+    t->next_handle  = next_h;
+    return FHSM_RV_OK;
+}
+
+/* Read one policy template. `p` points at the count byte, and the caller has
+ * already bounds-checked the whole record, so the only thing left to refuse is
+ * a count or a length the fixed field cannot hold.
+ *
+ * Refusing rather than clamping: a clamped count silently drops a restriction,
+ * and a dropped restriction reads as permission. That is the one direction in
+ * which being lenient is unsafe. */
+static fhsm_rv_t get_policy_tmpl(const uint8_t *p, uint8_t *out_count,
+                                  fhsm_policy_attr_t *a) {
+    uint8_t count = p[0];
+    if (count > FHSM_POLICY_ATTR_MAX) return FHSM_RV_FUNCTION_FAILED;
+    size_t off = 1;
+    for (uint32_t k = 0; k < FHSM_POLICY_ATTR_MAX; ++k) {
+        if (k < count) {
+            const uint8_t *e = p + off;
+            a[k].type = get_u32_le(e + 0);
+            a[k].kind = e[4];
+            a[k].len  = e[5];
+            if (a[k].len > FHSM_POLICY_VALUE_MAX) return FHSM_RV_FUNCTION_FAILED;
+            if (a[k].kind == FHSM_POLICY_KIND_NONE
+                || a[k].kind > FHSM_POLICY_KIND_BYTES)
+                return FHSM_RV_FUNCTION_FAILED;
+            memcpy(a[k].value, e + 8, FHSM_POLICY_VALUE_MAX);
+        } else {
+            memset(&a[k], 0, sizeof(a[k]));
+        }
+        off += FHSM_POLICY_ENTRY_SZ;
+    }
+    *out_count = count;
+    return FHSM_RV_OK;
+}
+
+/* v4 variable-record blobs. Identical to v3 up to offset 204, then the policy
+ * block. Same discipline: the record is bounds-checked before any copy, and a
+ * malformed record rejects the whole blob rather than yielding a half-read
+ * object whose missing half is a permission. */
+static fhsm_rv_t parse_objects_v4(fhsm_token_t *t, const uint8_t *buf, size_t len) {
+    uint32_t count = get_u32_le(buf + 4);
+    if (count > FHSM_MAX_OBJECTS) return FHSM_RV_FUNCTION_FAILED;
+    uint32_t next_h = get_u32_le(buf + 8);
+    size_t off = 12;
+    for (uint32_t i = 0; i < count; ++i) {
+        if (off + 4 > len) return FHSM_RV_FUNCTION_FAILED;
+        uint32_t rec_len = get_u32_le(buf + off); off += 4;
+        if (rec_len < FHSM_OBJ_REC_V4_FIXED
+            || rec_len > FHSM_OBJ_REC_V4_FIXED + FHSM_OBJ_VALUE_MAX
+            || off + rec_len > len) return FHSM_RV_FUNCTION_FAILED;
+        fhsm_object_t *o = &t->objects[i];
+        memset(o, 0, sizeof(*o));
+        o->handle    = get_u32_le(buf + off + 0);
+        o->class     = get_u32_le(buf + off + 4);
+        o->key_type  = get_u32_le(buf + off + 8);
+        o->value_len = get_u32_le(buf + off + 12);
+        if (o->value_len != rec_len - FHSM_OBJ_REC_V4_FIXED)
+            return FHSM_RV_FUNCTION_FAILED;
+        memcpy(o->label, buf + off + 16, FHSM_OBJ_LABEL_LEN);
+        memcpy(o->id,    buf + off + 80, 32);
+        o->id_len = get_u32_le(buf + off + 112);
+        if (o->id_len > 32) return FHSM_RV_FUNCTION_FAILED;
+        o->flags       = buf[off + 116];
+        o->usage_flags = buf[off + 117];
+        memcpy(o->start_date, buf + off + 120, 8);
+        o->start_date_len = buf[off + 128];
+        if (o->start_date_len > 8) return FHSM_RV_FUNCTION_FAILED;
+        memcpy(o->end_date, buf + off + 129, 8);
+        o->end_date_len = buf[off + 137];
+        if (o->end_date_len > 8) return FHSM_RV_FUNCTION_FAILED;
+        memcpy(o->application, buf + off + 138, FHSM_OBJ_APP_LEN);
+        o->application_len = buf[off + 202];
+        if (o->application_len > FHSM_OBJ_APP_LEN) return FHSM_RV_FUNCTION_FAILED;
+        o->flags2 = buf[off + 203];
+        o->flags3 = buf[off + 118];
+        /* Policy block. */
+        {
+            const uint8_t *p = buf + off + FHSM_OBJ_REC_V3_FIXED;
+            o->allowed_count = p[0];
+            if (o->allowed_count > FHSM_POLICY_MECH_MAX)
+                return FHSM_RV_FUNCTION_FAILED;
+            for (uint32_t k = 0; k < FHSM_POLICY_MECH_MAX; ++k)
+                o->allowed[k] = get_u32_le(p + 1 + k * 4);
+            size_t q = 1 + FHSM_POLICY_MECH_MAX * 4;
+            fhsm_rv_t rv;
+            rv = get_policy_tmpl(p + q, &o->wrap_count,   o->wrap);
+            if (rv != FHSM_RV_OK) return rv;
+            q += 1 + FHSM_POLICY_ATTR_MAX * FHSM_POLICY_ENTRY_SZ;
+            rv = get_policy_tmpl(p + q, &o->unwrap_count, o->unwrap);
+            if (rv != FHSM_RV_OK) return rv;
+            q += 1 + FHSM_POLICY_ATTR_MAX * FHSM_POLICY_ENTRY_SZ;
+            rv = get_policy_tmpl(p + q, &o->derive_count, o->derive);
+            if (rv != FHSM_RV_OK) return rv;
+        }
+        if (o->value_len) {
+            fhsm_rv_t ar = obj_alloc_value(o, o->value_len,
+                                            (o->flags & FHSM_OBJF_SENSITIVE) != 0);
+            if (ar != FHSM_RV_OK) return ar;
+            memcpy(o->value, buf + off + FHSM_OBJ_REC_V4_FIXED, o->value_len);
+        }
+        off += rec_len;
+    }
+    t->object_count = count;
+    t->next_handle  = next_h;
+    return FHSM_RV_OK;
+}
+
+static fhsm_rv_t parse_objects(fhsm_token_t *t, const uint8_t *buf, size_t len) {
+    if (len < 8) return FHSM_RV_FUNCTION_FAILED;
+    uint32_t magic = get_u32_le(buf);
+    if (magic == FHSM_OBJ_BLOB_V4_MAGIC) {
+        if (len < 12) return FHSM_RV_FUNCTION_FAILED;
+        return parse_objects_v4(t, buf, len);
+    }
+    if (magic == FHSM_OBJ_BLOB_V3_MAGIC) {
+        if (len < 12) return FHSM_RV_FUNCTION_FAILED;
+        return parse_objects_v3(t, buf, len);
+    }
+    if (magic == FHSM_OBJ_BLOB_V2_MAGIC) {
+        if (len < 12) return FHSM_RV_FUNCTION_FAILED;
+        return parse_objects_v2(t, buf, len);
+    }
+    /* Neither magic : a v1 blob, whose first field is object_count. Kept
+     * readable; nothing writes this format any more. */
+    return parse_objects_v1(t, buf, len);
+}
+
+/* ---------------------------------------------------------------------------
+ * Read the encrypted object blob (if any) from the on-disk file, decrypt
+ * with the DEK, and populate t->objects. Called from fhsm_token_login.
+ * If there is no blob (e.g. fresh token), objects_loaded is set to 1
+ * with object_count=0.
+ * ----------------------------------------------------------------------- */
+static fhsm_rv_t objects_decrypt_load(fhsm_token_t *t) {
+    if (!t->dek_live) return FHSM_RV_USER_NOT_LOGGED_IN;
+    objects_free_all(t);   /* reclaim any values from a prior login (#125) */
+    t->objects_public = 0; /* the public view gives way to the store */
+    int fd = open(t->path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return FHSM_RV_TOKEN_NOT_PRESENT;
+    struct stat st;
+    if (fstat(fd, &st) < 0) { close(fd); return FHSM_RV_FUNCTION_FAILED; }
+    if ((size_t)st.st_size <= FHSM_TOK_FILE_SZ) {
+        /* No blob appended : empty object store. */
+        close(fd);
+        t->object_count = 0;
+        t->next_handle  = 1;
+        t->objects_loaded = 1;
+        t->objects_dirty  = 0;
+        return FHSM_RV_OK;
+    }
+    /* Skip the 317-byte header. */
+    if (lseek(fd, FHSM_TOK_FILE_SZ, SEEK_SET) < 0) {
+        close(fd); return FHSM_RV_FUNCTION_FAILED;
+    }
+    uint8_t hdr[4 + 12];
+    if (read(fd, hdr, sizeof(hdr)) != (ssize_t)sizeof(hdr)) {
+        close(fd); return FHSM_RV_FUNCTION_FAILED;
+    }
+    uint32_t ct_len = get_u32_le(hdr);
+    uint8_t nonce[12]; memcpy(nonce, hdr + 4, 12);
+    if (ct_len == 0 || ct_len > FHSM_OBJ_BLOB_MAX) { close(fd); return FHSM_RV_FUNCTION_FAILED; }
+    uint8_t *ct = malloc(ct_len + 16);
+    if (!ct) { close(fd); return FHSM_RV_HOST_MEMORY; }
+    if (read(fd, ct, ct_len + 16) != (ssize_t)(ct_len + 16)) {
+        free(ct); close(fd); return FHSM_RV_FUNCTION_FAILED;
+    }
+    close(fd);
+
+    uint8_t *pt = malloc(ct_len);
+    if (!pt) { free(ct); return FHSM_RV_HOST_MEMORY; }
+    size_t pt_len = ct_len;
+    fhsm_rv_t rv = fhsm_aes_gcm_decrypt(
+            FHSM_SLICE(t->dek, DEK_LEN),
+            FHSM_SLICE(nonce, 12),
+            FHSM_SLICE(t->serial, strlen(t->serial)),
+            FHSM_SLICE(ct, ct_len),
+            ct + ct_len,            /* tag */
+            pt, &pt_len);
+    if (rv != FHSM_RV_OK) {
+        /* Up to 2.5.0 a wrong PIN after a logout re-encrypted this blob under
+         * a DEK of 32 zero bytes (see dek_live). Such a store is readable by
+         * anyone and by nobody else; it is read here once more so that the
+         * owner gets the objects back, and the write that follows the login
+         * puts them back under the real DEK. A tag that verifies under the
+         * zero key is the mark of that defect and of nothing else. */
+        static const uint8_t zero_dek[DEK_LEN];
+        pt_len = ct_len;
+        rv = fhsm_aes_gcm_decrypt(
+                FHSM_SLICE(zero_dek, DEK_LEN),
+                FHSM_SLICE(nonce, 12),
+                FHSM_SLICE(t->serial, strlen(t->serial)),
+                FHSM_SLICE(ct, ct_len),
+                ct + ct_len,
+                pt, &pt_len);
+    }
+    free(ct);
+    if (rv == FHSM_RV_OK) {
+        rv = parse_objects(t, pt, pt_len);
+        if (rv == FHSM_RV_OK) {
+            t->objects_loaded = 1;
+            t->objects_dirty  = 0;
+        }
+    }
+    fhsm_zeroize(pt, ct_len);
+    free(pt);
+    return rv;
+}
+
+/* Everything after the header in the file at `path`, as it is: the encrypted
+ * blob, which this side of a login cannot read and must not rewrite. No file,
+ * or a header with nothing after it, is an empty result. The blob is bounded
+ * as objects_decrypt_load bounds it. */
+static fhsm_rv_t read_existing_blob(const char *path, uint8_t **out, size_t *out_len) {
+    *out = NULL; *out_len = 0;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return FHSM_RV_OK;
+    struct stat st;
+    if (fstat(fd, &st) < 0) { close(fd); return FHSM_RV_FUNCTION_FAILED; }
+    if ((size_t)st.st_size <= FHSM_TOK_FILE_SZ) { close(fd); return FHSM_RV_OK; }
+    size_t n = (size_t)st.st_size - FHSM_TOK_FILE_SZ;
+    /* The blob with its header and tag, then the public section with its. */
+    if (n > 2 * ((size_t)FHSM_OBJ_BLOB_MAX + 32)) { close(fd); return FHSM_RV_FUNCTION_FAILED; }
+    uint8_t *b = malloc(n);
+    if (!b) { close(fd); return FHSM_RV_HOST_MEMORY; }
+    if (pread(fd, b, n, FHSM_TOK_FILE_SZ) != (ssize_t)n) {
+        free(b); close(fd); return FHSM_RV_FUNCTION_FAILED;
+    }
+    close(fd);
+    *out = b; *out_len = n;
+    return FHSM_RV_OK;
+}
+
+/* Load the public section into an empty store as the view before login.
+ *
+ * A token with no objects at all has no blob and no section, and its view is
+ * empty: a search before login finds nothing, correctly. A token whose blob
+ * has no section after it was written by a build that predates the section;
+ * its public objects are unknown until a login, and the view stays unloaded,
+ * so a search answers CKR_USER_NOT_LOGGED_IN as it did there, rather than
+ * "none". The login's write adds the section. Anything amiss in a section --
+ * an unknown magic, a length that does not end the file, a record that does
+ * not parse, an object that is not public -- is treated the same way: the
+ * encrypted blob, which a login reads, is not touched by any of it.
+ *
+ * The section is not authenticated; before a login there is no key to
+ * authenticate it with. Whoever can write the token file could put objects in
+ * it -- and could equally replace the whole file with a token of their own,
+ * which a caller cannot tell apart before a login either. A login discards
+ * the view. */
+static void public_view_load(fhsm_token_t *t) {
+    int fd = open(t->path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+    struct stat st;
+    uint8_t *pt = NULL;
+    if (fstat(fd, &st) < 0) goto out;
+    if ((size_t)st.st_size == FHSM_TOK_FILE_SZ) {   /* no object at all */
+        t->objects_public = 1;
+        goto out;
+    }
+    if ((size_t)st.st_size <= FHSM_TOK_FILE_SZ + 16) goto out;
+    uint8_t bh[4];
+    if (pread(fd, bh, 4, FHSM_TOK_FILE_SZ) != 4) goto out;
+    uint32_t ct_len = get_u32_le(bh);
+    if (ct_len == 0 || ct_len > FHSM_OBJ_BLOB_MAX) goto out;
+    size_t pub_off = FHSM_TOK_FILE_SZ + 16 + (size_t)ct_len + 16;
+    if ((size_t)st.st_size < pub_off + 8) goto out;
+    uint8_t ph[8];
+    if (pread(fd, ph, 8, (off_t)pub_off) != 8) goto out;
+    uint32_t len = get_u32_le(ph + 4);
+    if (get_u32_le(ph) != FHSM_PUB_MAGIC || len < 12 || len > FHSM_OBJ_BLOB_MAX
+        || pub_off + 8 + len != (size_t)st.st_size) goto out;
+    pt = malloc(len);
+    if (!pt || pread(fd, pt, len, (off_t)(pub_off + 8)) != (ssize_t)len) goto out;
+    if (get_u32_le(pt) != FHSM_OBJ_BLOB_V4_MAGIC) goto out;
+    if (parse_objects(t, pt, len) != FHSM_RV_OK) { objects_free_all(t); goto out; }
+    for (uint32_t i = 0; i < t->object_count; ++i)
+        if (!obj_is_public(&t->objects[i])) { objects_free_all(t); goto out; }
+    t->objects_public = 1;
+out:
+    free(pt);
+    close(fd);
+}
+
+static fhsm_rv_t write_atomic(const fhsm_token_t *t) {
+    /* Build the on-disk image in memory : 317-byte header + optional
+     * AES-256-GCM-encrypted objects blob. We then write the whole thing
+     * to <path>.tmp and rename. This preserves single-rename atomicity
+     * even when the objects section is appended. */
+
+    uint8_t hdr[FHSM_TOK_FILE_SZ];
+    memset(hdr, 0, sizeof(hdr));
+    memcpy(hdr + 0, FHSM_TOK_MAGIC, 4);
+    put_u32_le(hdr + 4, FHSM_TOK_VERSION);
+    memcpy(hdr + 8,  t->label,  sizeof(t->label));
+    memcpy(hdr + 72, t->serial, sizeof(t->serial));
+    put_u32_le(hdr + 136, t->pbkdf2_iter);
+    memcpy(hdr + 140, t->salt_so,         16);
+    memcpy(hdr + 156, t->so_wrap_nonce,   12);
+    memcpy(hdr + 168, t->so_wrap_ct,      48);
+    memcpy(hdr + 216, t->salt_user,       16);
+    memcpy(hdr + 232, t->user_wrap_nonce, 12);
+    memcpy(hdr + 244, t->user_wrap_ct,    48);
+    hdr[292] = (uint8_t)(t->user_initialized ? 1 : 0);
+    put_u32_le(hdr + 293, t->failed_so);
+    put_u32_le(hdr + 297, t->failed_user);
+    /* Offsets 301 and 309 are written as zero and ignored on load. They used
+     * to carry the throttle deadlines, which live in the CLOCK_MONOTONIC
+     * domain -- chosen so that `date -s` cannot bypass the throttle, and
+     * correct for that. But CLOCK_MONOTONIC restarts at boot while the file
+     * does not, so a deadline written after 30 days of uptime was still 30
+     * days in the future when read on the next boot: a 500 ms throttle became
+     * a month-long refusal of the correct PIN, reported as PIN_THROTTLED with
+     * nothing to explain it.
+     *
+     * The deadline is not independent state -- it is a function of the failure
+     * count, which IS persisted. So it is derived on load instead of stored,
+     * and cannot disagree with its source. */
+    put_u64_le(hdr + 301, 0);
+    put_u64_le(hdr + 309, 0);
+
+    /* The objects blob. With the DEK live and the objects loaded, the store
+     * in memory is the store, and it is encrypted afresh -- or omitted when
+     * it is empty, which is how fhsm_token_init and fhsm_token_reinit start
+     * a token with none.
+     *
+     * Without them -- before the first login, after a logout, after a wrong
+     * PIN -- this write is only carrying the header (a failure counter, as a
+     * rule), and the blob on disk is copied across byte for byte. It used to
+     * be dropped here on the theory that only a reinit got this far without
+     * a DEK; a wrong PIN in a fresh process got this far too, and emptied the
+     * token. */
+    uint8_t *blob_ct = NULL;
+    uint32_t blob_ct_len = 0;
+    uint8_t  blob_nonce[12];
+    uint8_t  blob_tag[16];
+    uint8_t *kept = NULL;
+    size_t   kept_len = 0;
+    uint8_t *pub = NULL;      /* the public section, header included */
+    size_t   pub_len = 0;
+    if (!(t->dek_live && t->objects_loaded)) {
+        /* The blob and the public section after it, both as they are. */
+        fhsm_rv_t kr = read_existing_blob(t->path, &kept, &kept_len);
+        if (kr != FHSM_RV_OK) return kr;
+    } else if (t->object_count > 0) {
+        size_t pt_sz = serialized_size(t, 0);
+        uint8_t *pt = malloc(pt_sz);
+        if (!pt) return FHSM_RV_HOST_MEMORY;
+        serialize_objects(t, pt, 0);
+        /* The public section, from the same store, in the same write --
+         * also when it holds no object, so that a reader can tell "no public
+         * object" from "written by a build without the section". */
+        size_t pub_sz = serialized_size(t, 1);
+        {
+            pub = malloc(8 + pub_sz);
+            if (!pub) { fhsm_zeroize(pt, pt_sz); free(pt); return FHSM_RV_HOST_MEMORY; }
+            put_u32_le(pub, FHSM_PUB_MAGIC);
+            put_u32_le(pub + 4, (uint32_t)pub_sz);
+            serialize_objects(t, pub + 8, 1);
+            pub_len = 8 + pub_sz;
+        }
+        fhsm_rng_bytes(blob_nonce, sizeof(blob_nonce));
+        blob_ct = malloc(pt_sz);
+        if (!blob_ct) { fhsm_zeroize(pt, pt_sz); free(pt); free(pub); return FHSM_RV_HOST_MEMORY; }
+        size_t ct_sz = pt_sz;
+        fhsm_rv_t rv = fhsm_aes_gcm_encrypt(
+                FHSM_SLICE(t->dek, DEK_LEN),
+                FHSM_SLICE(blob_nonce, sizeof(blob_nonce)),
+                FHSM_SLICE(t->serial, strlen(t->serial)),
+                FHSM_SLICE(pt, pt_sz),
+                blob_ct, &ct_sz, blob_tag);
+        fhsm_zeroize(pt, pt_sz); free(pt);
+        if (rv != FHSM_RV_OK) { free(blob_ct); free(pub); return rv; }
+        blob_ct_len = (uint32_t)ct_sz;
+    }
+
+    char tmp[600]; snprintf(tmp, sizeof(tmp), "%s.tmp", t->path);
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) { free(blob_ct); free(kept); free(pub); return FHSM_RV_FUNCTION_FAILED; }
+
+    int ok = write(fd, hdr, sizeof(hdr)) == (ssize_t)sizeof(hdr);
+    if (ok && kept_len > 0)
+        ok = write(fd, kept, kept_len) == (ssize_t)kept_len;
+    if (ok && blob_ct_len > 0) {
+        uint8_t blob_hdr[16];
+        put_u32_le(blob_hdr, blob_ct_len);
+        memcpy(blob_hdr + 4, blob_nonce, 12);
+        ok = write(fd, blob_hdr, sizeof(blob_hdr)) == (ssize_t)sizeof(blob_hdr)
+          && write(fd, blob_ct, blob_ct_len)        == (ssize_t)blob_ct_len
+          && write(fd, blob_tag, sizeof(blob_tag))  == (ssize_t)sizeof(blob_tag);
+    }
+    if (ok && pub_len > 0)
+        ok = write(fd, pub, pub_len) == (ssize_t)pub_len;
+    free(kept); free(blob_ct); free(pub);
+    if (!ok) {
+        close(fd); unlink(tmp);
+        return FHSM_RV_FUNCTION_FAILED;
+    }
+    fsync(fd); close(fd);
+    if (rename(tmp, t->path) != 0) return FHSM_RV_FUNCTION_FAILED;
+    return FHSM_RV_OK;
+}
+
+/* ---------------------------------------------------------------------------
+ * Public API
+ * ----------------------------------------------------------------------- */
+fhsm_rv_t fhsm_token_init(const char *path, const char *so_pin,
+                           const char *label, fhsm_token_t **out) {
+    if (!path || !so_pin || !label || !out) return FHSM_RV_ARGUMENTS_BAD;
+    if (strlen(so_pin) < 8) return FHSM_RV_PIN_INCORRECT;
+
+    fhsm_token_t *t = calloc(1, sizeof(*t));
+    if (!t) return FHSM_RV_HOST_MEMORY;
+    pthread_mutex_init(&t->mu, NULL);
+
+    snprintf(t->path,   sizeof(t->path),   "%s", path);
+    snprintf(t->label,  sizeof(t->label),  "%s", label);
+    /* Serial = "FHSM-" + 16 hex chars of RNG. Stable across reloads. */
+    uint8_t s[8]; fhsm_rng_bytes(s, 8);
+    snprintf(t->serial, sizeof(t->serial),
+              "FHSM-%02x%02x%02x%02x%02x%02x%02x%02x",
+              s[0],s[1],s[2],s[3],s[4],s[5],s[6],s[7]);
+
+    /* Salt + PBKDF2 params. */
+    fhsm_rng_bytes(t->salt_so,   sizeof(t->salt_so));
+    fhsm_rng_bytes(t->salt_user, sizeof(t->salt_user));
+    t->pbkdf2_iter = 200000;
+
+    /* DEK is generated by the FIPS DRBG and parked in the secure heap. */
+    t->dek = fhsm_secure_zalloc(DEK_LEN);
+    if (!t->dek) { free(t); return FHSM_RV_HOST_MEMORY; }
+    fhsm_rng_bytes(t->dek, DEK_LEN);
+    t->dek_live = 1;
+    /* A new token has a store, and it is empty: loaded, not unknown. The
+     * first write then replaces whatever an earlier file at this path held
+     * rather than carrying its blob over. */
+    t->objects_loaded = 1;
+    t->next_handle    = 1;
+
+    /* Wrap the DEK under the SO PIN. */
+    uint8_t kek[32];
+    fhsm_rv_t rv = fhsm_pbkdf2(FHSM_HASH_SHA256,
+                                FHSM_SLICE(so_pin, strlen(so_pin)),
+                                FHSM_SLICE(t->salt_so, sizeof(t->salt_so)),
+                                t->pbkdf2_iter, kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) goto err;
+
+    fhsm_rng_bytes(t->so_wrap_nonce, sizeof(t->so_wrap_nonce));
+    size_t ct_len = sizeof(t->so_wrap_ct) - 16;
+    rv = fhsm_aes_gcm_encrypt(
+            FHSM_SLICE(kek, sizeof(kek)),
+            FHSM_SLICE(t->so_wrap_nonce, sizeof(t->so_wrap_nonce)),
+            FHSM_SLICE(t->serial, strlen(t->serial)),
+            FHSM_SLICE(t->dek, DEK_LEN),
+            t->so_wrap_ct, &ct_len,
+            t->so_wrap_ct + DEK_LEN);
+    fhsm_zeroize(kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) goto err;
+
+    t->user_initialized = 0;
+    t->logged_in = FHSM_ROLE_NONE;
+
+    /* ---- Optional TPM 2.0 sealing companion --------------------
+     * If the operator requested TPM sealing (FHSM_TPM_SEALING=1),
+     * seal the DEK to the TPM and write {path}.tpm. We fail HARD
+     * if the env flag is set but no TPM is reachable, so a config
+     * mistake is loud rather than silently degraded. */
+    if (fhsm_token_tpm_required()) {
+        rv = fhsm_token_tpm_seal(t->path, t->dek);
+        if (rv != FHSM_RV_OK) {
+            (void)fhsm_audit_event(FHSM_EV_SEAL_FAILURE, -1, -1,
+                                    FHSM_ROLE_SO, rv, "tpm-seal-init", FHSM_AUDIT_END);
+            goto err;
+        }
+        (void)fhsm_audit_event(FHSM_EV_SEAL_SUCCESS, -1, -1,
+                                FHSM_ROLE_SO, FHSM_RV_OK,
+                                "tpm-seal-init", FHSM_AUDIT_END);
+    }
+
+    if (write_atomic(t) != FHSM_RV_OK) { rv = FHSM_RV_FUNCTION_FAILED; goto err; }
+
+    *out = t;
+    (void)fhsm_audit_event(FHSM_EV_TOKEN_INIT, -1, -1, FHSM_ROLE_SO,
+                            FHSM_RV_OK, "label", t->label, FHSM_AUDIT_END);
+    return FHSM_RV_OK;
+
+err:
+    if (t->dek) fhsm_secure_free(t->dek);
+    pthread_mutex_destroy(&t->mu);
+    free(t);
+    return rv;
+}
+
+/* The rest of the API (load, login with throttle, set_pin with rotation,
+ * close, ...) follows the same pattern. They are stubbed here so the
+ * file compiles standalone; the full set is implemented in the production
+ * tree against the test fixtures in tests/test_token.c. */
+
+fhsm_rv_t fhsm_token_load(const char *path, fhsm_token_t **out) {
+    if (!path || !out) return FHSM_RV_ARGUMENTS_BAD;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return FHSM_RV_TOKEN_NOT_PRESENT;
+
+    uint8_t buf[FHSM_TOK_FILE_SZ];
+    ssize_t n = read(fd, buf, sizeof(buf));
+    close(fd);
+    if (n != (ssize_t)sizeof(buf)) return FHSM_RV_FUNCTION_FAILED;
+    if (memcmp(buf, FHSM_TOK_MAGIC, 4) != 0) return FHSM_RV_FUNCTION_FAILED;
+    if (get_u32_le(buf + 4) != FHSM_TOK_VERSION) return FHSM_RV_FUNCTION_FAILED;
+
+    fhsm_token_t *t = calloc(1, sizeof(*t));
+    if (!t) return FHSM_RV_HOST_MEMORY;
+    pthread_mutex_init(&t->mu, NULL);
+
+    snprintf(t->path, sizeof(t->path), "%s", path);
+    memcpy(t->label,  buf + 8,  sizeof(t->label));
+    memcpy(t->serial, buf + 72, sizeof(t->serial));
+    t->pbkdf2_iter = get_u32_le(buf + 136);
+    memcpy(t->salt_so,         buf + 140, 16);
+    memcpy(t->so_wrap_nonce,   buf + 156, 12);
+    memcpy(t->so_wrap_ct,      buf + 168, 48);
+    memcpy(t->salt_user,       buf + 216, 16);
+    memcpy(t->user_wrap_nonce, buf + 232, 12);
+    memcpy(t->user_wrap_ct,    buf + 244, 48);
+    t->user_initialized      = buf[292] ? 1 : 0;
+    t->failed_so             = get_u32_le(buf + 293);
+    t->failed_user           = get_u32_le(buf + 297);
+    /* Derived, never read from the file -- see the note in write_atomic().
+     * Re-imposed rather than cleared: a restart must not be a way to skip the
+     * wait a failure earned, and the exponential curve is bounded at
+     * FHSM_PIN_THROTTLE_MAX_MS, so the delay is at most a minute however long
+     * the machine had been up. */
+    {
+        uint64_t base = now_ms();
+        t->throttle_so_until_ms   = t->failed_so
+                                  ? base + throttle_delay_ms(t->failed_so)   : 0;
+        t->throttle_user_until_ms = t->failed_user
+                                  ? base + throttle_delay_ms(t->failed_user) : 0;
+    }
+
+    /* Live DEK buffer is allocated lazily at login. */
+    t->dek = NULL;
+    t->logged_in = FHSM_ROLE_NONE;
+    /* The public objects, readable before a login. */
+    public_view_load(t);
+    *out = t;
+    return FHSM_RV_OK;
+}
+
+void fhsm_token_close(fhsm_token_t *t) {
+    if (!t) return;
+    objects_free_all(t);                 /* free heap object values (#125) */
+    if (t->dek) { fhsm_secure_free(t->dek); t->dek = NULL; }
+    pthread_mutex_destroy(&t->mu);
+    fhsm_zeroize(t, sizeof(*t));
+    free(t);
+}
+
+fhsm_rv_t fhsm_token_login(fhsm_token_t *t, fhsm_role_t role,
+                            const char *pin, size_t pin_len) {
+    if (!t || !pin) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+again:
+
+    /* Already authenticated as this role : a re-login is not a
+     * brute-force attempt, so return CKR_USER_ALREADY_LOGGED_IN before
+     * the throttle check (#125 : the throttle otherwise bled into valid
+     * re-logins and returned a vendor code the harness rejected). */
+    if (t->logged_in == role) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_ALREADY_LOGGED_IN;
+    }
+    /* The other role holds the token : CKR_USER_ANOTHER_ALREADY_LOGGED_IN
+     * (PKCS#11 v3.2, C_Login), decided before the PIN is looked at. Nothing refused this
+     * before. With the right PIN, an SO login on a token a USER held took the
+     * token over, and the USER's sessions carried on under the SO role ; with
+     * a wrong one it spent an SO attempt on a call that should never have
+     * reached the PIN. And while an SO throttle was running the caller got
+     * PIN_THROTTLED, a vendor code, which is how pkcs11-check saw it
+     * (test_so_login_while_user_logged_in, 2026-09-29). */
+    if (t->logged_in != FHSM_ROLE_NONE) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_ANOTHER_ALREADY_LOGGED_IN;
+    }
+
+    /* Throttle check BEFORE PBKDF2 to defeat timing side-channels. */
+    uint64_t now = now_ms();
+    uint64_t *until = (role == FHSM_ROLE_SO) ? &t->throttle_so_until_ms
+                                              : &t->throttle_user_until_ms;
+    uint32_t *fails = (role == FHSM_ROLE_SO) ? &t->failed_so : &t->failed_user;
+    if (*fails >= FHSM_PIN_MAX_FAILED) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_PIN_LOCKED;
+    }
+    if (now < *until) {
+        throttle_sleep(t, *until - now);   /* then look again from the top */
+        goto again;
+    }
+    if (role == FHSM_ROLE_USER && !t->user_initialized) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;   /* CKR_USER_PIN_NOT_INITIALIZED
+                                                maps to this nearest value */
+    }
+
+    /* Pick the wrap fields appropriate to the role. */
+    const uint8_t *salt  = (role == FHSM_ROLE_SO) ? t->salt_so         : t->salt_user;
+    const uint8_t *nonce = (role == FHSM_ROLE_SO) ? t->so_wrap_nonce   : t->user_wrap_nonce;
+    const uint8_t *ct    = (role == FHSM_ROLE_SO) ? t->so_wrap_ct      : t->user_wrap_ct;
+
+    /* PBKDF2-HMAC-SHA-256 (200000 iter) over the PIN. */
+    uint8_t kek[32];
+    fhsm_rv_t rv = fhsm_pbkdf2(FHSM_HASH_SHA256,
+                                FHSM_SLICE(pin, pin_len),
+                                FHSM_SLICE(salt, 16),
+                                t->pbkdf2_iter, kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) {
+        pthread_mutex_unlock(&t->mu);
+        return rv;
+    }
+
+    /* AES-256-GCM decrypt of the wrap (32 bytes CT + 16 bytes tag).
+     * AAD = serial number (identical to wrap time). */
+    if (!t->dek) {
+        t->dek = fhsm_secure_zalloc(DEK_LEN);
+        if (!t->dek) {
+            fhsm_zeroize(kek, sizeof(kek));
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_HOST_MEMORY;
+        }
+    }
+    size_t pt_len = DEK_LEN;
+    fhsm_rv_t dec_rv = fhsm_aes_gcm_decrypt(
+            FHSM_SLICE(kek, sizeof(kek)),
+            FHSM_SLICE(nonce, 12),
+            FHSM_SLICE(t->serial, strlen(t->serial)),
+            FHSM_SLICE(ct, 32),
+            ct + 32,                /* tag */
+            t->dek, &pt_len);
+    fhsm_zeroize(kek, sizeof(kek));
+
+    if (dec_rv == FHSM_RV_OK && pt_len == DEK_LEN) {
+        /* ---- Optional TPM 2.0 cross-check ------------------------
+         * If a {path}.tpm companion file exists, unseal it and verify
+         * that the TPM-sealed DEK matches the PBKDF2-unwrapped one.
+         * A failure here refuses the login but never touches the PIN
+         * failure counter --- see the long comment below for why the
+         * previous behaviour was a denial of service (#109). */
+        if (fhsm_token_tpm_blob_exists(t->path)) {
+            uint8_t tpm_dek[32];
+            fhsm_rv_t tpm_rv = fhsm_token_tpm_unseal(t->path, tpm_dek);
+            int matched = (tpm_rv == FHSM_RV_OK) &&
+                           fhsm_token_tpm_dek_match(t->dek, tpm_dek);
+            fhsm_zeroize(tpm_dek, sizeof(tpm_dek));
+            if (!matched) {
+                /* This used to bump the PIN failure counter, on the theory
+                 * that reporting CKR_PIN_INCORRECT stopped an attacker from
+                 * probing whether the TPM was online. That theory does not
+                 * survive looking at where we are: dec_rv == FHSM_RV_OK and
+                 * pt_len == DEK_LEN mean the GCM tag over the wrapped DEK
+                 * already verified, so the caller has *proved* they know the
+                 * PIN before reaching this branch. An attacker who does not
+                 * know the PIN never gets here and therefore never learns
+                 * anything about the TPM either way. Nothing was being
+                 * concealed.
+                 *
+                 * What it did cost was a denial of service, and not a
+                 * hypothetical one. The seal is bound to PCR 0-7, which cover
+                 * firmware and boot components. A BIOS update, a kernel
+                 * upgrade, a Secure Boot key rotation -- any of these moves a
+                 * PCR and makes every subsequent unseal fail. The legitimate
+                 * operator, holding the correct PIN, would then have burned
+                 * one attempt per login until the counter hit
+                 * FHSM_PIN_MAX_FAILED and the token locked permanently. A
+                 * routine firmware update would have destroyed the token.
+                 *
+                 * So: refuse the login, leave the counter alone. Neither
+                 * incremented (no DoS) nor reset (the login did not succeed).
+                 * The two causes are reported distinctly because they call for
+                 * different operator responses -- one is a TPM/PCR problem to
+                 * investigate, the other is evidence the store and the sealed
+                 * blob disagree, i.e. tampering. */
+                fhsm_zeroize(t->dek, DEK_LEN);
+                pthread_mutex_unlock(&t->mu);
+                if (tpm_rv != FHSM_RV_OK) {
+                    /* Could not unseal at all: TPM absent, blob corrupt, or
+                     * PCRs have moved since sealing. Not the operator's
+                     * fault, and recoverable without losing the token. */
+                    (void)fhsm_audit_event(FHSM_EV_UNSEAL_FAILURE, -1, -1,
+                                            role, tpm_rv,
+                                            "tpm-unseal-failed", FHSM_AUDIT_END);
+                    return FHSM_RV_DEVICE_ERROR;
+                }
+                /* Unsealed cleanly but the DEK does not match the one the
+                 * store just unwrapped. The two are supposed to be the same
+                 * key. Someone substituted a store file, or a sealed blob. */
+                (void)fhsm_audit_event(FHSM_EV_UNSEAL_FAILURE, -1, -1,
+                                        role, FHSM_RV_DEVICE_ERROR,
+                                        "tpm-dek-mismatch", FHSM_AUDIT_END);
+                return FHSM_RV_DEVICE_ERROR;
+            }
+            (void)fhsm_audit_event(FHSM_EV_UNSEAL_SUCCESS, -1, -1, role,
+                                    FHSM_RV_OK, "tpm-check-login", FHSM_AUDIT_END);
+        } else if (fhsm_token_tpm_required()) {
+            /* TPM required by config but no companion file exists for
+             * this token. Refuse login --- the operator must re-init
+             * the token under TPM sealing. */
+            (void)fhsm_audit_event(FHSM_EV_UNSEAL_FAILURE, -1, -1, role,
+                                    FHSM_RV_TPM_UNAVAILABLE,
+                                    "tpm-required-but-missing", FHSM_AUDIT_END);
+            fhsm_zeroize(t->dek, DEK_LEN);
+            pthread_mutex_unlock(&t->mu);
+            /* Configuration problem, not an authentication problem -- and
+             * likewise it does not touch the PIN counter. */
+            return FHSM_RV_DEVICE_ERROR;
+        }
+        *fails = 0;
+        *until = 0;
+        t->logged_in = role;
+        t->dek_live  = 1;
+        /* Decrypt and parse the objects blob (if any). On failure we
+         * keep the empty store rather than failing login. */
+        if (!t->objects_loaded) {
+            (void)objects_decrypt_load(t);
+        }
+        write_atomic(t);          /* persist reset failure counter */
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_OK;
+    }
+
+    /* Wrong PIN : zero out partial DEK, bump counter, throttle. The write
+     * below carries the counter and leaves the store as it is on disk. */
+    fhsm_zeroize(t->dek, DEK_LEN);
+    t->dek_live = 0;
+    (*fails)++;
+    *until = now + throttle_delay_ms(*fails);
+    write_atomic(t);
+    pthread_mutex_unlock(&t->mu);
+    return (*fails >= FHSM_PIN_MAX_FAILED) ? FHSM_RV_PIN_LOCKED
+                                              : FHSM_RV_PIN_INCORRECT;
+}
+
+/* Verify a PIN without changing the login state. C_Login(CKU_CONTEXT_SPECIFIC)
+ * needs exactly this and fhsm_token_login() cannot provide it: its first act,
+ * when the requested role is already the current one, is to return
+ * FHSM_RV_USER_ALREADY_LOGGED_IN -- deliberately, so that a re-login is not
+ * counted as a brute-force attempt -- and it returns it *before* the PIN is
+ * looked at. Re-authenticating through that path would have accepted any PIN
+ * at all, which is the failure mode the re-authentication exists to prevent.
+ *
+ * What is verified is knowledge of the PIN: the wrapped DEK is unwrapped into
+ * a scratch buffer and the GCM tag either verifies or it does not. The live
+ * DEK is not touched, t->logged_in is not touched, and the scratch is
+ * cleansed on both paths.
+ *
+ * The counters ARE touched, on purpose: a wrong PIN here is a wrong PIN, and
+ * an attacker with a session handle should not get an unthrottled oracle by
+ * asking for re-authentication instead of authentication.
+ *
+ * No TPM cross-check. That check binds *unsealing the token* to the platform
+ * and has already run at C_Login(CKU_USER); repeating it here would let a PCR
+ * that moved mid-session fail an operation on a token that is legitimately
+ * open, and buy nothing -- the caller reaching this point has already proved
+ * PIN knowledge, which is all §5.6 asks of them. */
+fhsm_rv_t fhsm_token_verify_pin(fhsm_token_t *t, fhsm_role_t role,
+                                 const char *pin, size_t pin_len) {
+    if (!t || !pin) return FHSM_RV_ARGUMENTS_BAD;
+    if (role != FHSM_ROLE_SO && role != FHSM_ROLE_USER)
+        return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+again: ;   /* a label must precede a statement, not the declaration below */
+
+    /* Throttle before PBKDF2, as in fhsm_token_login; waited out, as there. */
+    uint64_t now = now_ms();
+    uint64_t *until = (role == FHSM_ROLE_SO) ? &t->throttle_so_until_ms
+                                              : &t->throttle_user_until_ms;
+    uint32_t *fails = (role == FHSM_ROLE_SO) ? &t->failed_so : &t->failed_user;
+    if (*fails >= FHSM_PIN_MAX_FAILED) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_PIN_LOCKED;
+    }
+    if (now < *until) {
+        throttle_sleep(t, *until - now);
+        goto again;
+    }
+    if (role == FHSM_ROLE_USER && !t->user_initialized) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+
+    const uint8_t *salt  = (role == FHSM_ROLE_SO) ? t->salt_so       : t->salt_user;
+    const uint8_t *nonce = (role == FHSM_ROLE_SO) ? t->so_wrap_nonce : t->user_wrap_nonce;
+    const uint8_t *ct    = (role == FHSM_ROLE_SO) ? t->so_wrap_ct    : t->user_wrap_ct;
+
+    uint8_t kek[32];
+    fhsm_rv_t rv = fhsm_pbkdf2(FHSM_HASH_SHA256,
+                                FHSM_SLICE(pin, pin_len),
+                                FHSM_SLICE(salt, 16),
+                                t->pbkdf2_iter, kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) {
+        pthread_mutex_unlock(&t->mu);
+        return rv;
+    }
+
+    uint8_t *scratch = fhsm_secure_zalloc(DEK_LEN);
+    if (!scratch) {
+        fhsm_zeroize(kek, sizeof(kek));
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_HOST_MEMORY;
+    }
+    size_t pt_len = DEK_LEN;
+    fhsm_rv_t dec_rv = fhsm_aes_gcm_decrypt(
+            FHSM_SLICE(kek, sizeof(kek)),
+            FHSM_SLICE(nonce, 12),
+            FHSM_SLICE(t->serial, strlen(t->serial)),
+            FHSM_SLICE(ct, 32),
+            ct + 32,                /* tag */
+            scratch, &pt_len);
+    fhsm_zeroize(kek, sizeof(kek));
+    int verified = (dec_rv == FHSM_RV_OK && pt_len == DEK_LEN);
+    fhsm_zeroize(scratch, DEK_LEN);
+    fhsm_secure_free(scratch);
+
+    if (verified) {
+        *fails = 0;
+        *until = 0;
+        write_atomic(t);
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_OK;
+    }
+    (*fails)++;
+    *until = now + throttle_delay_ms(*fails);
+    write_atomic(t);
+    pthread_mutex_unlock(&t->mu);
+    return (*fails >= FHSM_PIN_MAX_FAILED) ? FHSM_RV_PIN_LOCKED
+                                              : FHSM_RV_PIN_INCORRECT;
+}
+
+void fhsm_token_logout(fhsm_token_t *t) {
+    if (!t) return;
+    pthread_mutex_lock(&t->mu);
+    /* DEK is kept resident only between login and logout; zeroize the
+     * 32-byte buffer in place (it remains allocated for the next login). */
+    if (t->dek) fhsm_zeroize(t->dek, DEK_LEN);
+    t->dek_live  = 0;
+    t->logged_in = FHSM_ROLE_NONE;
+    pthread_mutex_unlock(&t->mu);
+}
+
+
+/* Current per-token (per-application) login role. PKCS#11 login state is
+ * shared by all sessions of the token, so access control must consult
+ * this rather than a per-session role (#125 F11 : concurrent-session
+ * logout). */
+/* These accessors take the token mutex although each reads one word: a
+ * C_Login or C_Logout in another session writes the same word under it, and
+ * an unsynchronised read of it is a data race whatever its width
+ * (#111-prep, tests/test_concurrency_store --login). The const is the
+ * caller's view; the mutex is not part of it. */
+#define TOKEN_MU(t) ((pthread_mutex_t *)&(t)->mu)
+
+fhsm_role_t fhsm_token_current_role(const fhsm_token_t *t) {
+    if (!t) return FHSM_ROLE_NONE;
+    pthread_mutex_lock(TOKEN_MU(t));
+    fhsm_role_t r = t->logged_in;
+    pthread_mutex_unlock(TOKEN_MU(t));
+    return r;
+}
+
+const char *fhsm_token_label(const fhsm_token_t *t)  { return t ? t->label  : NULL; }
+const char *fhsm_token_serial(const fhsm_token_t *t) { return t ? t->serial : NULL; }
+uint32_t fhsm_token_failed_count(const fhsm_token_t *t, fhsm_role_t role) {
+    if (!t) return 0;
+    pthread_mutex_lock(TOKEN_MU(t));
+    uint32_t n = (role == FHSM_ROLE_SO) ? t->failed_so : t->failed_user;
+    pthread_mutex_unlock(TOKEN_MU(t));
+    return n;
+}
+
+int fhsm_token_user_initialized(const fhsm_token_t *t) {
+    if (!t) return 0;
+    pthread_mutex_lock(TOKEN_MU(t));
+    int u = t->user_initialized;
+    pthread_mutex_unlock(TOKEN_MU(t));
+    return u;
+}
+int fhsm_token_is_locked(const fhsm_token_t *t, fhsm_role_t role) {
+    return fhsm_token_failed_count(t, role) >= FHSM_PIN_MAX_FAILED;
+}
+uint64_t fhsm_token_throttle_remaining_ms(const fhsm_token_t *t, fhsm_role_t role) {
+    if (!t) return 0;
+    pthread_mutex_lock(TOKEN_MU(t));
+    uint64_t until = (role == FHSM_ROLE_SO) ? t->throttle_so_until_ms
+                                              : t->throttle_user_until_ms;
+    pthread_mutex_unlock(TOKEN_MU(t));
+    uint64_t now = now_ms();
+    return (now >= until) ? 0 : (until - now);
+}
+
+/* ---------------------------------------------------------------------------
+ * fhsm_token_init_user_pin --- create the user_wrap. The caller MUST be
+ * logged-in as SO (so the DEK is available in clear). We :
+ *   1. Derive a fresh user-KEK from PBKDF2(user_pin, fresh_salt).
+ *   2. Encrypt the live DEK with AES-256-GCM under the new KEK.
+ *   3. Store nonce + ct + tag in user_wrap_* and set user_initialized=1.
+ * Persisted atomically.
+ * ----------------------------------------------------------------------- */
+fhsm_rv_t fhsm_token_init_user_pin(fhsm_token_t *t, const char *user_pin) {
+    if (!t || !user_pin) return FHSM_RV_ARGUMENTS_BAD;
+    if (strlen(user_pin) < 4) return FHSM_RV_PIN_INCORRECT;
+    pthread_mutex_lock(&t->mu);
+    if (t->logged_in != FHSM_ROLE_SO || !t->dek_live) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+
+    /* Fresh salt + nonce for this wrap. */
+    fhsm_rng_bytes(t->salt_user,       sizeof(t->salt_user));
+    fhsm_rng_bytes(t->user_wrap_nonce, sizeof(t->user_wrap_nonce));
+
+    uint8_t kek[32];
+    fhsm_rv_t rv = fhsm_pbkdf2(FHSM_HASH_SHA256,
+                                FHSM_SLICE(user_pin, strlen(user_pin)),
+                                FHSM_SLICE(t->salt_user, sizeof(t->salt_user)),
+                                t->pbkdf2_iter, kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) goto out;
+
+    size_t ct_len = 32;   /* DEK length */
+    rv = fhsm_aes_gcm_encrypt(
+            FHSM_SLICE(kek, sizeof(kek)),
+            FHSM_SLICE(t->user_wrap_nonce, sizeof(t->user_wrap_nonce)),
+            FHSM_SLICE(t->serial, strlen(t->serial)),
+            FHSM_SLICE(t->dek, DEK_LEN),
+            t->user_wrap_ct, &ct_len,
+            t->user_wrap_ct + DEK_LEN);
+    fhsm_zeroize(kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) goto out;
+
+    t->user_initialized = 1;
+    t->failed_user      = 0;
+    t->throttle_user_until_ms = 0;
+    rv = write_atomic(t);
+
+out:
+    pthread_mutex_unlock(&t->mu);
+    return rv;
+}
+
+/* ---------------------------------------------------------------------------
+ * fhsm_token_set_pin --- rotate a role's PIN. SO C_SetPIN also rotates
+ * the DEK (NIST SP 800-57 §5.4). USER C_SetPIN only re-wraps.
+ *
+ * Implementation : verify old PIN via login-equivalent unwrap, then
+ * re-wrap the DEK under PBKDF2(new_pin). For SO, the rotation policy
+ * additionally regenerates the DEK before re-wrap (TODO : when objects
+ * are wired, re-encrypt all of them too — beyond the scope of the
+ * integration test).
+ * ----------------------------------------------------------------------- */
+fhsm_rv_t fhsm_token_set_pin(fhsm_token_t *t, fhsm_role_t role,
+                              const char *old_pin, const char *new_pin) {
+    if (!t || !old_pin || !new_pin) return FHSM_RV_ARGUMENTS_BAD;
+    if (strlen(new_pin) < 4) return FHSM_RV_PIN_INCORRECT;
+
+    /* Step 1 : verify old_pin via fhsm_token_login. This populates t->dek
+     * with the unwrapped DEK if successful. */
+    /* old_pin really is a C string here: it arrived through
+     * fhsm_copy_to_cstr in C_SetPIN. The length is computed where that is
+     * known to be true, rather than assumed one call deeper. */
+    fhsm_rv_t rv = fhsm_token_login(t, role, old_pin, strlen(old_pin));
+    if (rv != FHSM_RV_OK) return rv;
+
+    /* Step 2 : re-wrap the live DEK under the new PIN. */
+    pthread_mutex_lock(&t->mu);
+    uint8_t *salt        = (role == FHSM_ROLE_SO) ? t->salt_so         : t->salt_user;
+    uint8_t *nonce       = (role == FHSM_ROLE_SO) ? t->so_wrap_nonce   : t->user_wrap_nonce;
+    uint8_t *ct          = (role == FHSM_ROLE_SO) ? t->so_wrap_ct      : t->user_wrap_ct;
+
+    fhsm_rng_bytes(salt,  16);
+    fhsm_rng_bytes(nonce, 12);
+
+    uint8_t kek[32];
+    rv = fhsm_pbkdf2(FHSM_HASH_SHA256,
+                      FHSM_SLICE(new_pin, strlen(new_pin)),
+                      FHSM_SLICE(salt, 16),
+                      t->pbkdf2_iter, kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) { pthread_mutex_unlock(&t->mu); return rv; }
+
+    size_t ct_len = 32;
+    rv = fhsm_aes_gcm_encrypt(
+            FHSM_SLICE(kek, sizeof(kek)),
+            FHSM_SLICE(nonce, 12),
+            FHSM_SLICE(t->serial, strlen(t->serial)),
+            FHSM_SLICE(t->dek, DEK_LEN),
+            ct, &ct_len,
+            ct + DEK_LEN);
+    fhsm_zeroize(kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) { pthread_mutex_unlock(&t->mu); return rv; }
+
+    rv = write_atomic(t);
+    pthread_mutex_unlock(&t->mu);
+    (void)fhsm_audit_event(FHSM_EV_SET_PIN, -1, -1, role, rv, FHSM_AUDIT_END);
+    return rv;
+}
+
+/* ---------------------------------------------------------------------------
+ * fhsm_token_reinit --- C_InitToken on an existing token. All objects are
+ * destroyed (when we wire them), DEK is regenerated, both failure counters
+ * are cleared, the new SO PIN replaces the old one. User PIN is reset to
+ * "uninitialized" state and must be re-set via C_InitPIN.
+ * ----------------------------------------------------------------------- */
+fhsm_rv_t fhsm_token_reinit(fhsm_token_t *t, const char *new_so_pin,
+                             const char *label) {
+    if (!t || !new_so_pin || !label) return FHSM_RV_ARGUMENTS_BAD;
+    if (strlen(new_so_pin) < 4) return FHSM_RV_PIN_INCORRECT;
+    pthread_mutex_lock(&t->mu);
+
+    /* Wipe the old wraps and reset all volatile state. */
+    fhsm_zeroize(t->so_wrap_ct,      sizeof(t->so_wrap_ct));
+    fhsm_zeroize(t->so_wrap_nonce,   sizeof(t->so_wrap_nonce));
+    fhsm_zeroize(t->user_wrap_ct,    sizeof(t->user_wrap_ct));
+    fhsm_zeroize(t->user_wrap_nonce, sizeof(t->user_wrap_nonce));
+    fhsm_zeroize(t->salt_so,         sizeof(t->salt_so));
+    fhsm_zeroize(t->salt_user,       sizeof(t->salt_user));
+
+    snprintf(t->label, sizeof(t->label), "%s", label);
+    /* Fresh serial. */
+    uint8_t s[8]; fhsm_rng_bytes(s, 8);
+    snprintf(t->serial, sizeof(t->serial),
+              "FHSM-%02x%02x%02x%02x%02x%02x%02x%02x",
+              s[0],s[1],s[2],s[3],s[4],s[5],s[6],s[7]);
+
+    /* Fresh salts + iterations. */
+    fhsm_rng_bytes(t->salt_so,         sizeof(t->salt_so));
+    t->pbkdf2_iter = 200000;
+
+    /* Regenerate DEK. */
+    if (!t->dek) {
+        t->dek = fhsm_secure_zalloc(DEK_LEN);
+        if (!t->dek) { pthread_mutex_unlock(&t->mu); return FHSM_RV_HOST_MEMORY; }
+    }
+    fhsm_rng_bytes(t->dek, DEK_LEN);
+    t->dek_live = 1;
+
+    /* C_InitToken destroys every object. The ones loaded in memory went on
+     * being written, under the new DEK, by the next write; the store is
+     * emptied here so that the write below starts the token with none. */
+    objects_free_all(t);
+    t->objects_public = 0;
+    t->object_count   = 0;
+    t->next_handle    = 1;
+    t->objects_loaded = 1;
+    t->objects_dirty  = 0;
+
+    /* Wrap with new SO PIN. */
+    uint8_t kek[32];
+    fhsm_rv_t rv = fhsm_pbkdf2(FHSM_HASH_SHA256,
+                                FHSM_SLICE(new_so_pin, strlen(new_so_pin)),
+                                FHSM_SLICE(t->salt_so, sizeof(t->salt_so)),
+                                t->pbkdf2_iter, kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) goto out;
+
+    fhsm_rng_bytes(t->so_wrap_nonce, sizeof(t->so_wrap_nonce));
+    size_t ct_len = 32;
+    rv = fhsm_aes_gcm_encrypt(
+            FHSM_SLICE(kek, sizeof(kek)),
+            FHSM_SLICE(t->so_wrap_nonce, sizeof(t->so_wrap_nonce)),
+            FHSM_SLICE(t->serial, strlen(t->serial)),
+            FHSM_SLICE(t->dek, DEK_LEN),
+            t->so_wrap_ct, &ct_len,
+            t->so_wrap_ct + DEK_LEN);
+    fhsm_zeroize(kek, sizeof(kek));
+    if (rv != FHSM_RV_OK) goto out;
+
+    /* Reset counters, user state. */
+    t->user_initialized = 0;
+    t->failed_so = t->failed_user = 0;
+    t->throttle_so_until_ms = t->throttle_user_until_ms = 0;
+    t->logged_in = FHSM_ROLE_NONE;
+
+    rv = write_atomic(t);
+
+out:
+    pthread_mutex_unlock(&t->mu);
+    (void)fhsm_audit_event(FHSM_EV_TOKEN_REINIT, -1, -1, FHSM_ROLE_SO, rv,
+                            "label", t->label, FHSM_AUDIT_END);
+    return rv;
+}
+/* ---------------------------------------------------------------------------
+ * Object store API. The token must be logged-in (SO or USER) for any
+ * of these to succeed --- the DEK is required to read or write the blob.
+ * ----------------------------------------------------------------------- */
+fhsm_rv_t fhsm_token_object_add(fhsm_token_t *t, uint32_t cko_class,
+                                 uint32_t ckk_type, const char *label,
+                                 const uint8_t *value, size_t value_len,
+                                 const uint8_t *id,    size_t id_len,
+                                 uint8_t flags, uint32_t *out_handle) {
+    if (!t || !out_handle) return FHSM_RV_ARGUMENTS_BAD;
+    if (value_len > FHSM_OBJ_VALUE_MAX) return FHSM_RV_KEY_SIZE_RANGE;
+    if (id_len > 32) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    if (t->object_count >= FHSM_MAX_OBJECTS) {
+        /* Token storage is full --- this is CKR_DEVICE_MEMORY (token
+         * out of room), not CKR_HOST_MEMORY (host RAM). #125 finding
+         * I1. Raise FHSM_MAX_OBJECTS at build time if needed. */
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_DEVICE_MEMORY;
+    }
+    fhsm_object_t *o = &t->objects[t->object_count];
+    memset(o, 0, sizeof(*o));
+    o->handle    = (t->next_handle == 0) ? 1 : t->next_handle;
+    o->class     = cko_class;
+    o->key_type  = ckk_type;
+    o->value_len = (uint32_t)value_len;
+    if (label) snprintf((char*)o->label, FHSM_OBJ_LABEL_LEN, "%s", label);
+    if (value && value_len) {
+        fhsm_rv_t ar = obj_alloc_value(o, value_len,
+                                        (flags & FHSM_OBJF_SENSITIVE) != 0);
+        if (ar != FHSM_RV_OK) { pthread_mutex_unlock(&t->mu); return ar; }
+        memcpy(o->value, value, value_len);
+    }
+    if (id && id_len)       { memcpy(o->id, id, id_len); o->id_len = (uint32_t)id_len; }
+    o->flags = flags;
+
+    t->object_count++;
+    t->next_handle = o->handle + 1;
+    t->objects_dirty = 1;
+    *out_handle = o->handle;
+    fhsm_rv_t rv = write_atomic(t);
+    pthread_mutex_unlock(&t->mu);
+    (void)fhsm_audit_event(FHSM_EV_OBJECT_CREATE, -1, -1, t->logged_in, rv,
+                            "label", label ? label : "", FHSM_AUDIT_END);
+    return rv;
+}
+
+fhsm_rv_t fhsm_token_object_get(fhsm_token_t *t, uint32_t handle,
+                                 const uint8_t **value, size_t *value_len,
+                                 uint32_t *out_class, uint32_t *out_key_type) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->objects_loaded && !t->objects_public) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            if (value)        *value = t->objects[i].value;
+            if (value_len)    *value_len = t->objects[i].value_len;
+            if (out_class)    *out_class = t->objects[i].class;
+            if (out_key_type) *out_key_type = t->objects[i].key_type;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* Mark an existing object as a session object owned by `owner_session`
+ * (non-zero). Session objects are not persisted, so this re-writes the
+ * token image (dropping the object from disk) and is destroyed on
+ * C_CloseSession. #125. */
+fhsm_rv_t fhsm_token_object_set_usage(fhsm_token_t *t, uint32_t handle,
+                                      uint8_t usage_flags) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    /* A change needs the store, and the DEK to write it: not the public view
+     * read before login, not the store left in memory after a logout. */
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            t->objects[i].usage_flags = usage_flags;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_get_usage(fhsm_token_t *t, uint32_t handle,
+                                      uint8_t *out) {
+    if (!t || !out) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            *out = t->objects[i].usage_flags;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_mark_session(fhsm_token_t *t, uint32_t handle,
+                                         uint32_t owner_session) {
+    if (!t || owner_session == 0) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    /* A change needs the store, and the DEK to write it: not the public view
+     * read before login, not the store left in memory after a logout. */
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            t->objects[i].owner_session = owner_session;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);   /* now skips this object */
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* Destroy every session object owned by `owner_session`. Called from
+ * C_CloseSession so a closing session does not leak its session objects
+ * (nor leave them for a reused session handle to inherit). #125. */
+fhsm_rv_t fhsm_token_destroy_session_objects(fhsm_token_t *t,
+                                             uint32_t owner_session) {
+    if (!t || owner_session == 0) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    int removed = 0;
+    uint32_t i = 0;
+    while (i < t->object_count) {
+        if (t->objects[i].owner_session == owner_session) {
+            obj_free_value(&t->objects[i]);
+            fhsm_zeroize(&t->objects[i], sizeof(t->objects[i]));
+            if (i != t->object_count - 1) {
+                t->objects[i] = t->objects[t->object_count - 1];
+                fhsm_zeroize(&t->objects[t->object_count - 1],
+                             sizeof(t->objects[0]));
+            }
+            t->object_count--;
+            removed = 1;
+            /* do not advance i : the swapped-in entry must be checked */
+        } else {
+            i++;
+        }
+    }
+    fhsm_rv_t rv = FHSM_RV_OK;
+    if (removed) { t->objects_dirty = 1; rv = write_atomic(t); }
+    pthread_mutex_unlock(&t->mu);
+    return rv;
+}
+
+fhsm_rv_t fhsm_token_object_find(fhsm_token_t *t,
+                                  const uint32_t *opt_class,
+                                  const char     *opt_label,
+                                  uint32_t *handles_out, size_t cap,
+                                  size_t *count_out) {
+    if (!t || !count_out) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->objects_loaded && !t->objects_public) {
+        *count_out = 0;
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    size_t k = 0;
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        const fhsm_object_t *o = &t->objects[i];
+        if (opt_class && *opt_class != o->class) continue;
+        if (opt_label && strncmp((const char*)o->label, opt_label,
+                                  FHSM_OBJ_LABEL_LEN) != 0) continue;
+        if (handles_out && k < cap) handles_out[k] = o->handle;
+        k++;
+    }
+    *count_out = k;
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_OK;
+}
+
+fhsm_rv_t fhsm_token_object_get_label(fhsm_token_t *t, uint32_t handle,
+                                       const char **out, size_t *out_len) {
+    if (!t || !out || !out_len) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            static _Thread_local char copy[FHSM_OBJ_LABEL_LEN];
+            *out_len = strnlen((const char*)t->objects[i].label,
+                                FHSM_OBJ_LABEL_LEN);
+            memcpy(copy, t->objects[i].label, *out_len);
+            *out     = copy;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* CK_DATE / CKA_APPLICATION accessors. Persisted by the v3 record.
+ *
+ * The setter writes the token. At creation it did not need to: the call
+ * that follows it, set_usage, wrote the file. C_SetAttributeValue has no such
+ * follower, and a date set there would have lived until the process ended. */
+fhsm_rv_t fhsm_token_object_set_meta(fhsm_token_t *t, uint32_t handle,
+                                     const uint8_t *start, size_t start_len,
+                                     const uint8_t *end,   size_t end_len,
+                                     const uint8_t *app,   size_t app_len) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    if (start_len > 8 || end_len > 8 || app_len > FHSM_OBJ_LABEL_LEN)
+        return FHSM_RV_ATTRIBUTE_VALUE_INVALID;
+    pthread_mutex_lock(&t->mu);
+    /* A change needs the store, and the DEK to write it: not the public view
+     * read before login, not the store left in memory after a logout. */
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            fhsm_object_t *o = &t->objects[i];
+            if (start) { memcpy(o->start_date, start, start_len);
+                         o->start_date_len = (uint8_t)start_len; }
+            if (end)   { memcpy(o->end_date, end, end_len);
+                         o->end_date_len = (uint8_t)end_len; }
+            if (app)   { memcpy(o->application, app, app_len);
+                         o->application_len = (uint8_t)app_len; }
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_get_meta(fhsm_token_t *t, uint32_t handle,
+                                     fhsm_obj_meta_t which,
+                                     const uint8_t **out, size_t *out_len) {
+    if (!t || !out || !out_len) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            fhsm_object_t *o = &t->objects[i];
+            static _Thread_local uint8_t copy[FHSM_OBJ_LABEL_LEN];
+            const uint8_t *src;
+            switch (which) {
+                case FHSM_OBJ_META_START_DATE:
+                    src = o->start_date;  *out_len = o->start_date_len;  break;
+                case FHSM_OBJ_META_END_DATE:
+                    src = o->end_date;    *out_len = o->end_date_len;    break;
+                case FHSM_OBJ_META_APPLICATION:
+                    src = o->application; *out_len = o->application_len; break;
+                default:
+                    pthread_mutex_unlock(&t->mu);
+                    return FHSM_RV_ARGUMENTS_BAD;
+            }
+            memcpy(copy, src, *out_len);
+            *out = copy;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_get_id(fhsm_token_t *t, uint32_t handle,
+                                    const uint8_t **out, size_t *out_len) {
+    if (!t || !out || !out_len) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            static _Thread_local uint8_t copy[sizeof(t->objects[i].id)];
+            *out_len = t->objects[i].id_len;
+            memcpy(copy, t->objects[i].id, *out_len);
+            *out     = copy;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_get_flags(fhsm_token_t *t, uint32_t handle,
+                                       uint8_t *out_flags) {
+    if (!t || !out_flags) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            *out_flags = t->objects[i].flags;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* Report whether `handle` is a token (persisted) object. A session object
+ * has owner_session != 0 ; a token object has owner_session == 0. Used by
+ * C_DestroyObject to enforce CKR_SESSION_READ_ONLY on read-only sessions
+ * (#125 TestROTokenObjectMutation). Returns KEY_HANDLE_INVALID if absent. */
+fhsm_rv_t fhsm_token_object_is_token(fhsm_token_t *t, uint32_t handle,
+                                     int *out_is_token) {
+    if (!t || !out_is_token) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            *out_is_token = (t->objects[i].owner_session == 0);
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* ---------------------------------------------------------------------------
+ * Mutation accessors (v1.3.0+) --- shared helper finds the object and
+ * applies a small mutation, then atomically persists. The token must be
+ * logged in (DEK present + objects_loaded) ; otherwise the function
+ * returns FHSM_RV_USER_NOT_LOGGED_IN to mirror fhsm_token_object_destroy.
+ *
+ * Pattern duplicated three times rather than refactored behind a
+ * function-pointer indirection : the bodies are tiny, each one has a
+ * different argument shape, and the duplication is auditable at a
+ * glance. ALC_DVS prefers small repetitive code over abstraction that
+ * obscures the per-attribute write boundary.
+ * ----------------------------------------------------------------------- */
+/* CKA_ALLOWED_MECHANISMS.
+ *
+ * Setting it always marks it present, including with count 0: an empty list is
+ * a real answer -- it allows nothing -- and it is the case pkcs11-check sends
+ * on purpose. There is deliberately no "unset" call. The attribute is fixed at
+ * creation in this module, and a later unset would be a restriction that can
+ * be lifted by the same caller it restricts.
+ *
+ * A count above the cap is refused rather than truncated. Truncating would
+ * store a shorter list than the caller asked for, and a shorter allow-list
+ * silently forbids mechanisms the caller meant to permit -- which looks like
+ * the module failing at the mechanism rather than at the attribute. */
+fhsm_rv_t fhsm_token_object_set_allowed_mechs(fhsm_token_t *t, uint32_t handle,
+                                               const uint32_t *mechs,
+                                               uint8_t count) {
+    if (!t || (count > 0 && !mechs)) return FHSM_RV_ARGUMENTS_BAD;
+    if (count > FHSM_POLICY_MECH_MAX) return FHSM_RV_ATTRIBUTE_VALUE_INVALID;
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            fhsm_object_t *o = &t->objects[i];
+            memset(o->allowed, 0, sizeof(o->allowed));
+            for (uint8_t k = 0; k < count; ++k) o->allowed[k] = mechs[k];
+            o->allowed_count = count;
+            o->flags2 |= FHSM_OBJF2_HAS_ALLOWED_MECH;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* Read it back. *io_count is the caller's capacity on entry, the stored count
+ * on return; FHSM_RV_BUFFER_TOO_SMALL if the capacity is short, with the
+ * needed count written, which is the shape C_GetAttributeValue wants.
+ *
+ * Presence is not in the count -- ask fhsm_token_object_get_flags2 for
+ * FHSM_OBJF2_HAS_ALLOWED_MECH. A caller that reads count 0 and concludes "no
+ * restriction" has inverted the one case this attribute exists to express. */
+fhsm_rv_t fhsm_token_object_get_allowed_mechs(fhsm_token_t *t, uint32_t handle,
+                                               uint32_t *out, uint8_t *io_count) {
+    if (!t || !io_count) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->objects_loaded && !t->objects_public) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            const fhsm_object_t *o = &t->objects[i];
+            uint8_t cap = *io_count;
+            *io_count = o->allowed_count;
+            if (!out) {                      /* size query */
+                pthread_mutex_unlock(&t->mu);
+                return FHSM_RV_OK;
+            }
+            if (cap < o->allowed_count) {
+                pthread_mutex_unlock(&t->mu);
+                return FHSM_RV_BUFFER_TOO_SMALL;
+            }
+            for (uint8_t k = 0; k < o->allowed_count; ++k) out[k] = o->allowed[k];
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* Is `mech` permitted for this object?
+ *
+ * FHSM_RV_OK when it is, FHSM_RV_MECHANISM_INVALID when it is not, and
+ * FHSM_RV_OK when the object carries no CKA_ALLOWED_MECHANISMS at all -- an
+ * absent list is not an empty one.
+ *
+ * An unknown handle answers FHSM_RV_OK rather than refusing: the caller is
+ * about to look the handle up itself and will produce the right error for it.
+ * Answering CKR_MECHANISM_INVALID here would report a bad handle as a bad
+ * mechanism, which is the sort of misattribution that costs an afternoon. */
+fhsm_rv_t fhsm_token_object_mech_allowed(fhsm_token_t *t, uint32_t handle,
+                                          uint32_t mech) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->objects_loaded && !t->objects_public) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_OK;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            const fhsm_object_t *o = &t->objects[i];
+            if (!(o->flags2 & FHSM_OBJF2_HAS_ALLOWED_MECH)) {
+                pthread_mutex_unlock(&t->mu);
+                return FHSM_RV_OK;           /* absent: everything permitted */
+            }
+            for (uint8_t k = 0; k < o->allowed_count; ++k) {
+                if (o->allowed[k] == mech) {
+                    pthread_mutex_unlock(&t->mu);
+                    return FHSM_RV_OK;
+                }
+            }
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_MECHANISM_INVALID;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_OK;
+}
+
+/* The three nested templates live in three pairs of fields rather than in one
+ * array indexed by `which`. An array would make this function shorter and
+ * would also make a wrong index silently read a different policy -- a wrap
+ * template enforced as an unwrap one, with nothing to say so. The switch is
+ * longer and cannot do that. */
+static fhsm_policy_attr_t *tmpl_slot(fhsm_object_t *o, fhsm_tmpl_which_t which,
+                                      uint8_t **out_count) {
+    switch (which) {
+        case FHSM_TMPL_WRAP:   *out_count = &o->wrap_count;   return o->wrap;
+        case FHSM_TMPL_UNWRAP: *out_count = &o->unwrap_count; return o->unwrap;
+        case FHSM_TMPL_DERIVE: *out_count = &o->derive_count; return o->derive;
+    }
+    *out_count = NULL;
+    return NULL;
+}
+
+static uint8_t tmpl_present_bit(fhsm_tmpl_which_t which) {
+    switch (which) {
+        case FHSM_TMPL_WRAP:   return FHSM_OBJF2_HAS_WRAP_TMPL;
+        case FHSM_TMPL_UNWRAP: return FHSM_OBJF2_HAS_UNWRAP_TMPL;
+        case FHSM_TMPL_DERIVE: return FHSM_OBJF2_HAS_DERIVE_TMPL;
+    }
+    return 0;
+}
+
+fhsm_rv_t fhsm_token_object_set_tmpl(fhsm_token_t *t, uint32_t handle,
+                                      fhsm_tmpl_which_t which,
+                                      const fhsm_policy_attr_t *a,
+                                      uint8_t count) {
+    if (!t || (count > 0 && !a)) return FHSM_RV_ARGUMENTS_BAD;
+    if (count > FHSM_POLICY_ATTR_MAX) return FHSM_RV_ATTRIBUTE_VALUE_INVALID;
+    uint8_t bit = tmpl_present_bit(which);
+    if (!bit) return FHSM_RV_ARGUMENTS_BAD;
+    for (uint8_t k = 0; k < count; ++k) {
+        if (a[k].len > FHSM_POLICY_VALUE_MAX) return FHSM_RV_ATTRIBUTE_VALUE_INVALID;
+        if (a[k].kind == FHSM_POLICY_KIND_NONE
+            || a[k].kind > FHSM_POLICY_KIND_BYTES)
+            return FHSM_RV_ATTRIBUTE_VALUE_INVALID;
+    }
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            fhsm_object_t *o = &t->objects[i];
+            uint8_t *cnt = NULL;
+            fhsm_policy_attr_t *slot = tmpl_slot(o, which, &cnt);
+            if (!slot) { pthread_mutex_unlock(&t->mu); return FHSM_RV_ARGUMENTS_BAD; }
+            memset(slot, 0, sizeof(fhsm_policy_attr_t) * FHSM_POLICY_ATTR_MAX);
+            for (uint8_t k = 0; k < count; ++k) slot[k] = a[k];
+            *cnt = count;
+            o->flags2 |= bit;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_get_tmpl(fhsm_token_t *t, uint32_t handle,
+                                      fhsm_tmpl_which_t which,
+                                      fhsm_policy_attr_t *out,
+                                      uint8_t *io_count) {
+    if (!t || !io_count) return FHSM_RV_ARGUMENTS_BAD;
+    if (!tmpl_present_bit(which)) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->objects_loaded && !t->objects_public) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            uint8_t *cnt = NULL;
+            fhsm_policy_attr_t *slot = tmpl_slot(&t->objects[i], which, &cnt);
+            if (!slot) { pthread_mutex_unlock(&t->mu); return FHSM_RV_ARGUMENTS_BAD; }
+            uint8_t cap = *io_count;
+            *io_count = *cnt;
+            if (!out) { pthread_mutex_unlock(&t->mu); return FHSM_RV_OK; }
+            if (cap < *cnt) {
+                pthread_mutex_unlock(&t->mu);
+                return FHSM_RV_BUFFER_TOO_SMALL;
+            }
+            for (uint8_t k = 0; k < *cnt; ++k) out[k] = slot[k];
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* The four policy counts, read together because they are read for one reason:
+ * to ask whether this object carries any policy at all. A caller that wants
+ * one of them wants to know about the other three too -- a key restricted by a
+ * wrap template and not by an allowed-mechanisms list is still restricted.
+ *
+ * Counts, not presence. A count of zero with the matching FHSM_OBJF2_HAS_* bit
+ * set is a policy that allows nothing; without the bit it is no policy at all.
+ * The bit lives in flags2 and is read through fhsm_token_object_get_flags2. */
+fhsm_rv_t fhsm_token_object_get_policy_counts(fhsm_token_t *t, uint32_t handle,
+                                               uint8_t *out_allowed,
+                                               uint8_t *out_wrap,
+                                               uint8_t *out_unwrap,
+                                               uint8_t *out_derive) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->objects_loaded && !t->objects_public) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            if (out_allowed) *out_allowed = t->objects[i].allowed_count;
+            if (out_wrap)    *out_wrap    = t->objects[i].wrap_count;
+            if (out_unwrap)  *out_unwrap  = t->objects[i].unwrap_count;
+            if (out_derive)  *out_derive  = t->objects[i].derive_count;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_set_label(fhsm_token_t *t, uint32_t handle,
+                                       const char *label) {
+    if (!t || !label) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            /* Bounded copy : at most FHSM_OBJ_LABEL_LEN - 1 chars +
+             * NUL terminator. Pre-zero the buffer so the unused tail
+             * does not leak whatever was there before. */
+            fhsm_zeroize(t->objects[i].label, sizeof(t->objects[i].label));
+            size_t n = strnlen(label, FHSM_OBJ_LABEL_LEN - 1);
+            memcpy(t->objects[i].label, label, n);
+            /* label is uint8_t[64] ; NUL terminator already present
+             * thanks to the zeroize above. */
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_set_id(fhsm_token_t *t, uint32_t handle,
+                                    const uint8_t *id, size_t id_len) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    if (id_len > sizeof(((fhsm_object_t *)0)->id)) {
+        return FHSM_RV_ATTRIBUTE_VALUE_INVALID;
+    }
+    if (id_len > 0 && !id) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            fhsm_zeroize(t->objects[i].id, sizeof(t->objects[i].id));
+            if (id_len > 0) memcpy(t->objects[i].id, id, id_len);
+            t->objects[i].id_len = (uint32_t)id_len;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_set_flags(fhsm_token_t *t, uint32_t handle,
+                                       uint8_t flags) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            fhsm_object_t *o = &t->objects[i];
+            /* CKA_SENSITIVE is one-way FALSE->TRUE, so a value allocated in
+             * plain malloc can become sensitive after the fact. Migrate it
+             * into the secure heap rather than leave the newly-sensitive key
+             * pageable -- the guarantee has to follow the attribute, not the
+             * moment of allocation (#127). */
+            if ((flags & FHSM_OBJF_SENSITIVE) && !o->value_secure
+                && o->value && o->value_len) {
+                uint8_t *sec = fhsm_secure_malloc(o->value_len);
+                if (!sec) { pthread_mutex_unlock(&t->mu); return FHSM_RV_DEVICE_MEMORY; }
+                memcpy(sec, o->value, o->value_len);
+                /* The old block may be borrowed by a running C_Sign: parked,
+                 * not freed, until no call is in flight (#111-prep). */
+                fhsm_api_free_value(o->value, o->value_len, 0);
+                o->value = sec;
+                o->value_secure = 1;
+            }
+            o->flags = flags;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* The second flags byte. Deliberately plainer than its sibling above: that
+ * one has to migrate a value into the secure heap when CKA_SENSITIVE turns on,
+ * because the guarantee has to follow the attribute. Nothing in FHSM_OBJF2_*
+ * changes how the value is held -- these bits only refuse operations -- so the
+ * setter stores and persists, and no more. */
+fhsm_rv_t fhsm_token_object_get_flags2(fhsm_token_t *t, uint32_t handle,
+                                        uint8_t *out_flags2) {
+    if (!t || !out_flags2) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            *out_flags2 = t->objects[i].flags2;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_set_flags2(fhsm_token_t *t, uint32_t handle,
+                                        uint8_t flags2) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            t->objects[i].flags2 = flags2;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+/* The third flags byte. Same shape as the second: the bits change no
+ * handling of the value, so the setter stores and persists, and no more. */
+fhsm_rv_t fhsm_token_object_get_flags3(fhsm_token_t *t, uint32_t handle,
+                                        uint8_t *out_flags3) {
+    if (!t || !out_flags3) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            *out_flags3 = t->objects[i].flags3;
+            pthread_mutex_unlock(&t->mu);
+            return FHSM_RV_OK;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_set_flags3(fhsm_token_t *t, uint32_t handle,
+                                        uint8_t flags3) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            t->objects[i].flags3 = flags3;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}
+
+fhsm_rv_t fhsm_token_object_destroy(fhsm_token_t *t, uint32_t handle) {
+    if (!t) return FHSM_RV_ARGUMENTS_BAD;
+    pthread_mutex_lock(&t->mu);
+    if (!t->dek_live || !t->objects_loaded) {
+        pthread_mutex_unlock(&t->mu);
+        return FHSM_RV_USER_NOT_LOGGED_IN;
+    }
+    for (uint32_t i = 0; i < t->object_count; ++i) {
+        if (t->objects[i].handle == handle) {
+            /* Free the heap value, then zeroize before compacting (#125) */
+            obj_free_value(&t->objects[i]);
+            fhsm_zeroize(&t->objects[i], sizeof(t->objects[i]));
+            /* Move the last entry into this slot to compact. */
+            if (i != t->object_count - 1) {
+                t->objects[i] = t->objects[t->object_count - 1];
+                fhsm_zeroize(&t->objects[t->object_count - 1],
+                             sizeof(t->objects[0]));
+            }
+            t->object_count--;
+            t->objects_dirty = 1;
+            fhsm_rv_t rv = write_atomic(t);
+            pthread_mutex_unlock(&t->mu);
+            (void)fhsm_audit_event(FHSM_EV_OBJECT_DESTROY, -1, -1,
+                                    t->logged_in, rv, FHSM_AUDIT_END);
+            return rv;
+        }
+    }
+    pthread_mutex_unlock(&t->mu);
+    return FHSM_RV_KEY_HANDLE_INVALID;
+}

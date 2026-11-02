@@ -1,0 +1,3 @@
+line 3 : HMAC mismatch (record altered)
+line 3 : seq is not 3 (records missing)
+verify: 2/6 records FAILED

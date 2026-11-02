@@ -1,0 +1,204 @@
+<!--
+SPDX-FileCopyrightText: 2026 Afchine Madjlessi <afchine.mad@gmail.com>
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Acknowledgements
+
+FreeHSM is maintained by one person. Most of what has been fixed since v1.4.0
+was found by people outside the project, and several of those things could not
+have been found inside it: a distribution's compiler flags, a documented step
+requiring a tool the maintainer does not have, a release tarball rather than a
+checkout, the first fifteen minutes of a stranger's evening.
+
+This file records who found what. It is not a courtesy list — the entries name
+specific defects, because a vague thank-you is worth less than an accurate one.
+
+---
+
+## Denis Mingulov — [`pkcs11-check`](https://github.com/mingulov/pkcs11-check)
+
+The largest external contribution to this project is a tool its author did not
+write for us. `pkcs11-check` is a vendor-neutral behavioural harness of some
+100 000 PKCS#11 assertions; running it against FreeHSM opened at **517 failures
+and 7 crashes** on 2026-07-10 and drove the entire #125 campaign — SIGSEGV
+guards, operation-state hygiene, session-object lifecycle, private-object access
+control, mechanism advertisement, attribute coverage. `docs/PKCS11_CHECK_FINDINGS.md`
+is a hundred pages long because of it.
+
+Three findings went back the other way: a padding-oracle probe that fails one
+run in three for statistical reasons, an output-length probe whose success
+condition could never be met, and a `BufferError` at a typed `ctypes` boundary.
+The v0.1.9 error-attribution fix closed three FreeHSM "failures" that were never
+FreeHSM's.
+
+The tool's own conformance report — `pkcs11-check-report`, which this project
+had never generated in two months of using the harness — is what made the
+September findings visible: severity classification, mechanisms advertised but
+not operational, honest deviations separated from spec violations. Our summary
+script counted tests; his report says what they mean.
+
+In v2.2.0 the harness found a second out-of-bounds write.
+`aes_cbc_pad_decrypt_final_buffer_too_small` reached a `C_DecryptFinal` that had
+no output-size check at all — [GHSA-c634-gqj6-4p2f](https://github.com/afchine1337/freehsm/security/advisories/GHSA-c634-gqj6-4p2f),
+present in every release since v1.1.0. It had never fired, across four
+full-corpus runs, because a different defect of ours refused the probe's setup
+step before it could arrive.
+
+The same run's `test_sign_final_buffer_too_small_then_correct` turned out not to
+be a buffer question at all: it could not reach one, because multipart signing
+was unimplemented for every asymmetric mechanism while `C_SignInit` accepted
+them. A test that fails for a reason other than the one it was written for is
+worth more than a test that passes.
+
+In v2.3.0, the first full run of the `all-mechanisms` profile against a signed
+module found that an SO login could take over a token a user was logged into,
+with three neighbouring session rules missing; that EC keys could be made on
+curves weaker than the module advertised; that 3DES ignored the key length it
+was asked for; and that X25519 and X448 were advertised where the FIPS provider
+could not serve them. Two questions raised from here — an implicit-rejection
+case (#37) and operations left active between tests sharing a session (#38) —
+are resolved, #37 in most of its tests, in the harness's own 0.2.3. That
+release then found three more: a `CKA_VALUE_LEN` beyond 32 bits cut down to a
+valid AES length, an empty `CK_EDDSA_PARAMS` on Ed25519 answered with a pure
+Ed25519 signature, and `C_EncryptFinal` refusing to finish an operation that
+had received no data.
+
+## Simon Josefsson (`jas4711`)
+
+Preparing Debian packages, and reporting what that exposed:
+
+* **#7** — the build fails under his compiler on
+  `snprintf(cipher_name, sizeof cipher_name, "AES-%zu-GCM", key_len * 8)`. The
+  fix replaced both call sites with a lookup table and closed what the format
+  string hid: neither caller validated `key_len`, so a 7-byte key produced
+  `"AES-56-GCM"` and failed three layers down instead of answering
+  `CKR_KEY_SIZE_RANGE`.
+* **PR #9** — `LOCAL_CFLAGS` / `LOCAL_LDFLAGS`, appended after the project's own
+  groups so a packager can add a distribution's hardening without being able to
+  drop ours. Merged in v2.0.2, and it is what lets CI build under
+  `dpkg-buildflags` instead of guessing.
+* **#1** — "Normally PKCS#11 modules are usable as any user." They are, and this
+  one is; AGD_PRE said otherwise by implication for months.
+* **#2** — 32-bit build failures, which turned out to be correct rejections of
+  code that is 64-bit by construction. Now documented as unsupported instead of
+  discovered by a build.
+* **#8** — an ELF binary committed to git. Already removed eleven days before he
+  filed it, and nobody had told him.
+
+## `seb128`
+
+**PR #18** — building the module on arm64, ppc64el, riscv64 and s390x, from
+Debian #1144631 and #1149536. Two changes, each with its compiler error
+quoted: `-fcf-protection=full` probed rather than assumed, since it exists on
+x86 only, and the integrity check's ELF reader moved from pointer casts to
+`memcpy`, which strict-alignment targets require. Measured on amd64 with
+`make test-integrity`, and in the Ubuntu archive on all five architectures;
+the PR said plainly that it could not run the suite on non-x86 hardware.
+Merged for v2.3.1. Reading the function again for the review found three
+older weaknesses in it, fixed beside it.
+
+## Govardhan Yadava — [`acvp-assay`](https://github.com/Govardhan527/acvp-assay)
+
+Planning a PKCS#11 harness for his ACVP tool, he asked for two things this
+module did not do. **HashML-DSA**, so that the preHash ML-DSA cases would
+have a token to be measured on: the eleven mechanisms of PKCS#11 v3.2
+§6.67.6-6.67.7 are in v2.4.0, checked against NIST's signatures byte for
+byte. And **`CKA_PARAMETER_SET`**, which v3.2 requires on a PQC key import
+and which the module had been inferring from the key's length — accepting a
+template another token may refuse, so a caller tested only here would not
+learn it was wrong. Required since v2.4.0.
+
+## Petr (`petrn`)
+
+Followed `AGD_PRE.md` as written, on a clean machine, repeatedly:
+
+* **#4** — `make dist-verify` could not run. Four defects stacked behind one
+  another; he found three of them, one per round trip, over two weeks. He then
+  produced the **first independent verification of the reproducibility claim**
+  (`docs/REPRODUCIBLE_BUILD.md` §8) — the row §7 has asked an evaluator for
+  since the document was written, and which nobody, including the maintainer,
+  had ever produced.
+* **#5** — five failures in `tests/full_crypto_pkcs11.sh`. Four were real and
+  are fixed; the fifth was an assertion that could never pass, comparing a raw
+  `r‖s` signature against what OpenSSL wants in DER. He then isolated a
+  genuine defect across three days and seven test cycles — RSA-2048 keygen
+  failing through the module on OpenSSL 3.5.6 — with a clean single-variable
+  attribution that none of the maintainer's four hypotheses achieved.
+* **#6** — three Wycheproof RSA-PSS violations on v1.5.0.
+* **#10 — the single most consequential remark anyone has made to this
+  project.** Asking why his pkcs11-check figures did not match ours, he pointed
+  out that `pkcs11-check fetch-data` had never been run here. Every measurement
+  published since July — the 517 failures, the 7,392 Wycheproof assertions, the
+  "zero crashes" — covered **4,014 vectors of 111,739**. Nothing in the report,
+  the summary or our findings document said which.
+
+  The first run with the data present found a **stack buffer overflow in
+  `C_UnwrapKey`** (GHSA-833h-crp9-f378), nine forged blobs accepted by the same
+  missing bound, **267 valid RSA-PSS signatures rejected** because the caller's
+  MGF was read and never used, and four invalid EdDSA public keys imported as
+  valid — none of which any earlier run could reach.
+
+* **#11** — the `dev mode active (no FIPS provider)` notice, which told him his
+  OpenSSL had no FIPS provider when his configuration was correct and *our own
+  harness* had set the bypass. He also asked whether "dev mode" and "legacy
+  mode" were the same thing. They are not, and nothing said so: three
+  orthogonal axes with colliding names.
+* **#12** — the Wycheproof harness hard-coded `/tmp/freehsm-wycheproof` at mode
+  0700, so the first user to run it locked out everyone else on the machine. He
+  proposed both candidate fixes; the per-run directory was taken because cleanup
+  alone survives neither an interrupted run nor two concurrent users.
+* **#14** — reading the conformance report he had generated and we never had,
+  he identified why `CKM_AES_KEY_WRAP` was reported as "advertised but not
+  operational": the harness drives it through `C_Encrypt`, which we refused.
+  PKCS#11 v3.2 §6.16.3 gives the mechanism that half too. Implementing it made
+  **7,219 NIST ACVP vectors** runnable that never had been.
+* **#15** — the CCM AAD ceiling. A fixed 4096-byte array in the operation state
+  refused every ACVP vector with a longer AAD, at a number inherited from a
+  stack frame rather than chosen. It is allocated at the announced length now,
+  with a stated 1 MiB limit documented as a deviation instead of discovered.
+
+  He also split his own report in two and resolved the second group himself:
+  the nonce-length group was a mismatch between the ACVP vectors and PKCS#11
+  v3.2 §6.13, and he took it upstream rather than filing it here. That is more
+  work than filing it, and it is what kept us from "fixing" conformance to the
+  specification.
+* **#16** — CNSA 2.0. The integrity digest and the entropy conditioner both
+  moved to SHA-384. The observation that mattered was underneath: reading the
+  RNG path to answer him turned up `SHA256(pool, off, cond)` — the one-shot
+  legacy API, which computes in libcrypto and never reaches a provider. In a
+  FIPS build the entropy conditioning was not being done by the validated
+  implementation, and no self-test could have said so, because self-tests
+  exercise advertised mechanisms and this is internal plumbing.
+
+  His stated reason was half of it. Checking the reason is what found the rest.
+
+## `fencepost-error`
+
+**#3** — tried FreeHSM with their own PKCS#11 test code, hit
+`C_Initialize` returning `0x80000002`, read the source, and correctly diagnosed
+an unsigned module. They were right: **v1.4.0 was published without its
+integrity digest** (`SECURITY.md`). The report also noted that an empty slot
+before provisioning reads as a fault, which it does, and which the guide did not
+say. Both are fixed in v2.0.2.
+
+The workaround they found — `FHSM_INTEGRITY_ALLOW_UNSIGNED=1` — starts the
+module by turning its integrity check off. That a broken release pushed a user
+to disable a security control is the most useful single thing anyone has told
+this project.
+
+---
+
+## How this project treats reports
+
+Learned the hard way, in the week of 2026-09-01, when three of eight open
+issues turned out to be already fixed with nobody told, one had gone ten weeks
+unanswered, and one was closed on a reporter while he was still testing.
+
+* An issue closes when a **released** version carries the fix and the **reporter
+  says so** — not when a commit does.
+* When a release carries someone's fix, they are told, by name, in the issue.
+* A fix that cannot be verified locally says so in the commit message, and is
+  not claimed as verified.
+* Reports are answered even when the answer is "already fixed, and we should
+  have told you".

@@ -1,0 +1,218 @@
+#!/bin/sh
+# Runs inside the pqhsm-rust image: /work = repo copy, /c = pure-C build, /out = results.
+set -u
+cd /work
+M="make -f modernized/pqHSM/hybrid.mk"
+{ $M all 2>&1 | tail -5; echo "build rc=$?"
+  $M test-bins tools/fhsm-token tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign tools/fhsm-crypt 2>&1 | tail -3; } > /out/build.log 2>&1
+
+# 1. The legacy test list, one command at a time, exactly as the baseline ran it. Each command
+#    gets its own TMPDIR so its token dirs, and so its audit logs, can be found for step 6.
+$M -n tests 2>/dev/null | awk '/\\$/{sub(/\\$/,""); buf=buf $0; next} {print buf $0; buf=""}' \
+    | grep -vE '^(cc|gcc|echo|:|make|cargo)' > /out/commands.txt
+n=0; : > /out/results.tsv
+while IFS= read -r cmd; do
+  n=$((n+1)); name=$(printf '%s' "$cmd" | grep -oE '(\./tests/[A-Za-z0-9_]+|tests/[A-Za-z0-9_.]+\.sh( [a-z]+)?|\./tools/[a-z-]+)' | head -1)
+  mkdir -p /tmp/corpus/hybrid/$n; TMPDIR=/tmp/corpus/hybrid/$n sh -c "$cmd" > /out/log_$n.txt 2>&1; printf '%s\t%s\t%s\n' "$n" "${name:-cmd$n}" "$?" >> /out/results.tsv
+done < /out/commands.txt
+
+# 2. Same module surface: exported symbols and NEEDED libraries.
+syms() { nm -D --defined-only "$1" | awk '{print $3}' | sort; }
+need() { readelf -d "$1" | awk '/NEEDED/{print $5}' | sort; }
+syms /c/libfreehsm.so > /out/nm_c.txt; syms libfreehsm.so > /out/nm_hybrid.txt
+need /c/libfreehsm.so > /out/needed_c.txt; need libfreehsm.so > /out/needed_hybrid.txt
+nm libfreehsm.so | grep -cE ' [tT] pqhsm_audit_event_v$' > /out/rust_linked.txt
+# Phase 2 slice 1: the C TPM objects are empty, and the FHSM_TPM_CMD seam is only in test_tpm
+# (review H6: the shipped module must never be the hooks build).
+{ printf 'C objects with code: %s; ' "$(nm --defined-only .obj/src/fhsm_tpm.o .obj/src/fhsm_token_tpm.o .obj/tests/fhsm_tpm_testhooks.o 2>/dev/null | grep -c ' [TtDdBb] ')"
+  printf 'FHSM_TPM_CMD in module: %s, in test_tpm: %s' "$(strings libfreehsm.so | grep -c FHSM_TPM_CMD)" "$(strings tests/test_tpm | grep -c FHSM_TPM_CMD)"
+} > /out/tpm_swap.txt
+# Phase 2 slice 2: the C revocation object is empty; the tools get the Rust code, and the module
+# neither carries nor imports it (PHASE2_PLAN.md §3(c)).
+{ printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_revocation.o | grep -c ' [TtDdBb] ')"
+  printf 'module fhsm_rev_*/OCSP_*: %s; ' "$(nm libfreehsm.so | grep -cE ' (fhsm_rev_|fhsm_ocsp_|OCSP_)')"
+  printf 'fhsm-ca rust db_load: %s' "$(nm tools/fhsm-ca | grep -c ' [Tt] fhsm_rev_db_load$')"
+} > /out/rev_swap.txt
+# Phase 2 slice 3: the C token store object is empty and the module's fhsm_token_* are Rust.
+{ printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_token.o | grep -c ' [TtDdBb] ')"
+  printf 'module fhsm_token_login: %s; rust token code in module: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_token_login$')" "$(nm libfreehsm.so | grep -c 'pqhsm_token5token5Token')"
+} > /out/token_swap.txt
+# Phase 3 slice 1: the secure heap and the conf reader.
+{ printf 'C objects with code: %s; ' "$(nm --defined-only .obj/src/fhsm_memory.o .obj/src/fhsm_conf.o | grep -c ' [TtDdBb] ')"
+  printf 'module fhsm_secure_malloc: %s; rust heap code in module: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_secure_malloc$')" "$(nm libfreehsm.so | grep -c 'pqhsm_crypto3mem')"
+} > /out/crypto_swap.txt
+# Phase 3 slice 2: the DRBG.
+{ printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_drbg.o | grep -c ' [TtDdBb] ')"
+  printf 'module fhsm_drbg_bytes: %s; rust drbg code in module: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_drbg_bytes$')" "$(nm libfreehsm.so | grep -c 'pqhsm_crypto4drbg')"
+} > /out/drbg_swap.txt
+# fhsm-ca end to end over the revocation DB (not in `make tests`). ocsp-delegated is left out:
+# it runs `make clean` and rebuilds the tree under another PROFILE.
+$M revocation-db > /out/revocation_db.txt 2>&1; echo "rc=$?" >> /out/revocation_db.txt
+
+# 3. Cross-verification, both ways. Keys never leave the container.
+cargo build -q --release --locked -p pqhsm-audit-verify --manifest-path modernized/pqHSM/Cargo.toml
+RTOOL=modernized/pqHSM/target/release/pqhsm-audit
+$RTOOL verify /fixture/audit.log.000001 "$(cat /fixture/TEST_KEY_HEX)" > /out/x_rust_tool_on_c_fixture.txt 2>&1
+echo "rc=$?" >> /out/x_rust_tool_on_c_fixture.txt
+tok=$(mktemp -d)
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$tok FHSM_AUDIT_LOG=$tok/audit.log LD_LIBRARY_PATH=. \
+    ./tests/test_smoke > /out/smoke.txt 2>&1; echo "smoke rc=$?" >> /out/smoke.txt
+key=$(od -An -tx1 -v "$tok/audit.key" 2>/dev/null | tr -d ' \n')
+: > /out/x_on_rust_written_logs.txt
+for f in "$tok"/audit.log.*; do
+  [ -f "$f" ] || continue
+  echo "== $(basename "$f"): $(wc -l < "$f") lines" >> /out/x_on_rust_written_logs.txt
+  ./tools/freehsm-audit verify "$f" "$key" >> /out/x_on_rust_written_logs.txt 2>&1; echo "C tool rc=$?" >> /out/x_on_rust_written_logs.txt
+  $RTOOL verify "$f" "$key" >> /out/x_on_rust_written_logs.txt 2>&1; echo "Rust tool rc=$?" >> /out/x_on_rust_written_logs.txt
+done
+FHSM_C_AUDIT_TOOL=/work/tools/freehsm-audit cargo test -q --locked --manifest-path modernized/pqHSM/Cargo.toml \
+    -p pqhsm-audit --test cross_impl -- --ignored > /out/x_cross_impl.txt 2>&1; echo "rc=$?" >> /out/x_cross_impl.txt
+
+# 4. Regressions from the architecture review: HMAC must come from the system libcrypto (one
+#    OpenSSL state, its FIPS provider), and C_Finalize at exit must not abort (finding 1).
+if nm -D libfreehsm.so | grep -qE ' U EVP_Q_mac(@|$)'; then echo yes; else echo no; fi > /out/evp_q_mac_dynamic.txt
+cc -o /tmp/atexit_finalize modernized/pqHSM/tests-support/hybrid/atexit_finalize.c -ldl
+for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+  t=$(mktemp -d)
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$t FHSM_AUDIT_LOG=$t/audit.log /tmp/atexit_finalize "$lib" > /tmp/ax.txt 2>&1
+  echo "$lib rc=$? $(grep -o 'C_Finalize at exit: 0x[0-9a-f]*' /tmp/ax.txt)" >> /out/atexit_finalize.txt
+done
+
+# 4b. Phase 3 slice 1: test_secure_heap and probe_secure_heap are built but not in `make tests`
+#     (Makefile:640, :764); the brief's exit criterion names the first. Run both on C and hybrid.
+LDP=$(grep -oE 'LD_LIBRARY_PATH=[^ ]+' /out/commands.txt | head -1)
+# The legacy test logs in as USER while SO is still logged in, which the token refuses (0x104)
+# before any heap check runs, on C and hybrid alike. Both copies get the missing logout.
+fix_heap_test() { sed -i '/fhsm_token_login(t, FHSM_ROLE_USER/i\    fhsm_token_logout(t);' "$1/tests/test_secure_heap.c"; }
+cp -a /c /tmp/cb && fix_heap_test /tmp/cb && fix_heap_test /work
+make -s -C /tmp/cb tests/test_secure_heap tests/probe_secure_heap > /out/heap_build.log 2>&1
+$M tests/test_secure_heap tests/probe_secure_heap >> /out/heap_build.log 2>&1
+for d in /tmp/cb /work; do
+  tag=$([ "$d" = /work ] && echo hybrid || echo c); t=$(mktemp -d)
+  (cd $d && env $LDP FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$t FHSM_AUDIT_LOG=$t/audit.log ./tests/test_secure_heap > /out/heap_test_$tag.txt 2>&1; echo "rc=$?" >> /out/heap_test_$tag.txt
+   env $LDP FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$t FHSM_AUDIT_LOG=$t/audit.log ./tests/probe_secure_heap ./libfreehsm.so > /out/heap_probe_$tag.txt 2>&1; echo "rc=$?" >> /out/heap_probe_$tag.txt)
+done
+{ for f in test probe; do
+    printf '%s: C %s, hybrid %s, output %s; ' "$f" "$(tail -1 /out/heap_${f}_c.txt)" "$(tail -1 /out/heap_${f}_hybrid.txt)" \
+      "$(cmp -s /out/heap_${f}_c.txt /out/heap_${f}_hybrid.txt && echo same || echo DIFF)"
+  done; } > /out/heap_tests.txt
+
+# 4c. Phase 3 slice 2: probe_keygen_drbg reads fhsm_drbg_get_stats around key generation and has
+#     no Makefile rule; it links like test_secure_heap. C and hybrid must draw the same counts.
+#     PINs are invented for the harness.
+PROBE_RULE='tests/probe_keygen_drbg: tests/probe_keygen_drbg.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)'
+make -s -C /tmp/cb --eval "$PROBE_RULE" tests/probe_keygen_drbg > /out/drbg_build.log 2>&1
+$M --eval "$PROBE_RULE" tests/probe_keygen_drbg >> /out/drbg_build.log 2>&1
+for d in /tmp/cb /work; do
+  tag=$([ "$d" = /work ] && echo hybrid || echo c); t=$(mktemp -d)
+  # the probe opens a session before C_InitToken, so the token must exist already
+  (cd $d && export $LDP FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$t FHSM_AUDIT_LOG=$t/audit.log FHSM_SO_PIN=pq-probe-so-7319 FHSM_PIN=pq-probe-usr-4826 \
+     && ./tools/fhsm-token init --slot 0 --module ./libfreehsm.so > /out/drbg_token_$tag.txt 2>&1 \
+     && ./tests/probe_keygen_drbg > /out/drbg_probe_$tag.txt 2>&1; echo "rc=$?" >> /out/drbg_probe_$tag.txt)
+done
+printf 'probe_keygen_drbg: C %s, hybrid %s, output %s' "$(tail -1 /out/drbg_probe_c.txt)" "$(tail -1 /out/drbg_probe_hybrid.txt)" \
+  "$(cmp -s /out/drbg_probe_c.txt /out/drbg_probe_hybrid.txt && echo same || echo DIFF)" > /out/drbg_tests.txt
+
+# 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
+cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
+for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+  t=$(mktemp -d); bad=0
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$t FHSM_AUDIT_LOG=$t/audit.log /tmp/fork_parent_log "$lib" > /dev/null 2>&1
+  key=$(od -An -tx1 -v "$t/audit.key" | tr -d ' \n')
+  for f in "$t"/audit.log.*; do
+    ./tools/freehsm-audit verify "$f" "$key" > /dev/null 2>&1 || bad=$((bad+1))
+    $RTOOL verify "$f" "$key" > /dev/null 2>&1 || bad=$((bad+1))
+  done
+  echo "$lib: $(ls "$t"/audit.log.* | wc -l) logs, $bad failed verifications" >> /out/fork_parent_log.txt
+done
+
+# 6. Corpus diff: the same commands on the pure-C tree, then every audit log of each command
+#    compared, ts and MACs normalised (brief, Phase 1 exit criterion 2).
+cp -a /c /tmp/cwork
+n=0; : > /out/corpus.tsv
+while IFS= read -r cmd; do
+  n=$((n+1)); mkdir -p /tmp/corpus/c/$n
+  (cd /tmp/cwork && TMPDIR=/tmp/corpus/c/$n sh -c "$cmd" > /dev/null 2>&1)
+  N=modernized/pqHSM/tests-support/hybrid/corpus_norm.py
+  python3 $N /tmp/corpus/c/$n > /tmp/c.txt; python3 $N /tmp/corpus/hybrid/$n > /tmp/h.txt
+  logs=$(grep -c '^=== log' /tmp/c.txt); recs=$(grep -vc '^=== log' /tmp/c.txt)
+  if cmp -s /tmp/c.txt /tmp/h.txt; then v=same
+  elif [ "$(python3 $N /tmp/corpus/c/$n --lines)" = "$(python3 $N /tmp/corpus/hybrid/$n --lines)" ]; then v=order-only
+  else v=DIFF; mkdir -p /out/corpus_diff; diff /tmp/c.txt /tmp/h.txt > /out/corpus_diff/$n.diff; fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$(awk -F'\t' -v n=$n '$1==n{print $2}' /out/results.tsv)" "$logs" "$recs" "$v" >> /out/corpus.tsv
+done < /out/commands.txt
+
+# 7. TSan (brief, Phase 1 risk 2): the concurrency and fork tests on a TSan build of the hybrid
+#    module, in a copy. The Rust staticlib itself is not instrumented (stable toolchain). TSan
+#    aborts under this kernel's mmap ASLR ("unexpected memory mapping"), so tests run under
+#    `setarch -R`, which needs the container's seccomp relaxed (run.sh). The binaries are removed
+#    first: make thinks a plain-built test binary is up to date.
+cp -a /work /tmp/tsan && cd /tmp/tsan
+rm -f tests/test_apilock tests/test_concurrency tests/test_concurrency_store tests/test_fork_child
+{ $M TSAN=1 all && $M TSAN=1 tests/test_apilock tests/test_concurrency tests/test_concurrency_store tests/test_fork_child; } > /out/tsan_build.log 2>&1
+echo "tsan build rc=$?" >> /out/tsan_build.log
+: > /out/tsan.tsv
+grep -E 'tests/test_(apilock|concurrency|concurrency_store|fork_child)( |$)' /out/commands.txt | while IFS= read -r cmd; do
+  name=$(printf '%s' "$cmd" | grep -oE 'tests/test_[a-z_]+' | head -1)
+  setarch -R sh -c "$cmd" > /out/tsan_$(basename $name).txt 2>&1; rc=$?
+  printf '%s\t%s\t%s\n' "$name" "$rc" "$(grep -c 'WARNING: ThreadSanitizer' /out/tsan_$(basename $name).txt)" >> /out/tsan.tsv
+done
+cd /work
+
+# 8. Token files both ways (brief Phase 2 exit criteria 2 and 3, PHASE2_PLAN.md §5.1 and §5.4).
+#    gen_token is built on the pure-C tree (CG) and on the hybrid tree (RG, the Rust token store).
+#    a) RG writes the golden corpus, CG describes it: C's reading of Rust-written tokens must equal
+#       testdata/manifest.tsv (C's reading of C-written ones), serials masked.
+#    b) The token files every test command left, from both runs, through both readers.
+G=/work/modernized/pqHSM/tests-support/golden
+{ (cd /tmp/cwork && make -f $G/gen_token.mk GEN_DIR=$G gen_token) && \
+  make -f $G/gen_token.mk GEN_BASE=modernized/pqHSM/hybrid.mk GEN_DIR=$G gen_token; } > /out/gen_token_build.log 2>&1
+echo "gen_token build rc=$?" >> /out/gen_token_build.log
+CG=/tmp/cwork/gen_token RG=/work/gen_token
+: > /tmp/fake_tpmrm0
+tenv() { d=$1; shift; FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$d FHSM_TPM_CMD="sh tests/tpm2-stub.sh" \
+         FHSM_TPM_DEVICE=/tmp/fake_tpmrm0 FHSM_TPM_FAKE_PCR=golden-pcr "$@"; }
+mask() { sed -E 's/serial=FHSM-[0-9a-f]+/serial=*/' "$1"; }
+rt=$(mktemp -d)
+(cd /work && tenv $rt $RG make $rt) > /out/rust_corpus.log 2>&1
+cp $rt/manifest.tsv /out/manifest_rust_reads_rust.tsv 2>/dev/null
+(cd /tmp/cwork && tenv $rt $CG describe $rt) >> /out/rust_corpus.log 2>&1
+mask $rt/manifest.tsv > /tmp/m_cr.txt; mask modernized/pqHSM/testdata/manifest.tsv > /tmp/m_cc.txt
+if [ -s /tmp/m_cr.txt ] && cmp -s /tmp/m_cc.txt /tmp/m_cr.txt; then echo same; else echo DIFF; diff /tmp/m_cc.txt /tmp/m_cr.txt; fi > /out/tok_rust_written_corpus.txt
+pub() {  # reader, run dir: one sorted line per token file, keyed by command number and file name
+  find /tmp/corpus/$2 -name '*.tok' | sort | while IFS= read -r f; do
+    rel=${f#/tmp/corpus/$2/}; key="${rel%%/*}/$(basename "$f")"
+    $1 public "$f" | sed "s#^$f#$key#"
+  done | sort
+}
+(cd /tmp/cwork && pub $CG c) > /out/tok_c_reads_c.txt
+(cd /tmp/cwork && pub $CG hybrid) > /out/tok_c_reads_rust.txt
+(cd /work && pub $RG c) > /out/tok_rust_reads_c.txt
+
+{ echo "build: $(grep -c 'build rc=0' /out/build.log) ok"
+  echo "tests: $(awk -F'\t' '$3==0' /out/results.tsv | wc -l)/$(wc -l < /out/results.tsv) pass"
+  awk -F'\t' '$3!=0{print "  FAIL " $2 " (rc " $3 ", log_" $1 ".txt)"}' /out/results.tsv
+  if cmp -s /out/nm_c.txt /out/nm_hybrid.txt; then echo "nm -D: identical ($(wc -l < /out/nm_c.txt) symbols)"; else echo "nm -D: DIFFERS"; diff /out/nm_c.txt /out/nm_hybrid.txt | head; fi
+  if cmp -s /out/needed_c.txt /out/needed_hybrid.txt; then echo "NEEDED: identical ($(tr '\n' ' ' < /out/needed_c.txt))"; else echo "NEEDED: DIFFERS"; diff /out/needed_c.txt /out/needed_hybrid.txt; fi
+  echo "rust code linked into module: $(cat /out/rust_linked.txt)"
+  echo "tpm swap: $(cat /out/tpm_swap.txt)"
+  echo "revocation swap: $(cat /out/rev_swap.txt)"
+  echo "token swap: $(cat /out/token_swap.txt)"
+  echo "crypto swap (heap, conf): $(cat /out/crypto_swap.txt)"
+  echo "drbg swap: $(cat /out/drbg_swap.txt)"
+  echo "secure heap: $(cat /out/heap_tests.txt)"
+  echo "drbg: $(cat /out/drbg_tests.txt)"
+  echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
+  same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
+  echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"
+  echo "revocation-db: $(grep -c " OK$" /out/revocation_db.txt) OK, $(grep -c " FAIL$" /out/revocation_db.txt) FAIL, $(tail -1 /out/revocation_db.txt)"
+  echo "rust tool on C fixture: $(tail -2 /out/x_rust_tool_on_c_fixture.txt | tr '\n' ' ')"
+  echo "rust-written logs: $(grep -c '^==' /out/x_on_rust_written_logs.txt) file(s); C tool fails: $(grep -c 'C tool rc=[^0]' /out/x_on_rust_written_logs.txt); Rust tool fails: $(grep -c 'Rust tool rc=[^0]' /out/x_on_rust_written_logs.txt)"
+  echo "EVP_Q_mac imported from libcrypto: $(cat /out/evp_q_mac_dynamic.txt)"
+  echo "C_Finalize at exit: $(tr '\n' ';' < /out/atexit_finalize.txt)"
+  echo "fork, parent log: $(tr '\n' ';' < /out/fork_parent_log.txt)"
+  echo "corpus: $(awk -F'\t' '$3>0' /out/corpus.tsv | wc -l) commands wrote audit logs ($(awk -F'\t' '{r+=$4} END{print r}' /out/corpus.tsv) records); same $(awk -F'\t' '$5=="same" && $3>0' /out/corpus.tsv | wc -l), order-only $(grep -c 'order-only$' /out/corpus.tsv), DIFF $(grep -c 'DIFF$' /out/corpus.tsv)"
+  echo "tsan: $(grep -c 'rc=0' /out/tsan_build.log) build ok; $(awk -F'\t' '{printf "%s rc=%s races=%s; ", $1, $2, $3}' /out/tsan.tsv)"
+  echo "cross_impl (C tool on Rust logs): $(grep -E 'test result|rc=' /out/x_cross_impl.txt | tr '\n' ' ')"
+} > /out/summary.txt

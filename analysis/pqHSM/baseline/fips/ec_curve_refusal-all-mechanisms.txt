@@ -1,0 +1,19 @@
+EC curves the module does not take: CKR_CURVE_NOT_SUPPORTED
+
+  (1) private key, secp224r1 (224 bits): CKR_CURVE_NOT_SUPPORTED (rv 0x140) OK
+  (2) public key, secp224r1 (224 bits): CKR_CURVE_NOT_SUPPORTED (rv 0x140) OK
+  (3) key pair, secp224r1 (224 bits): CKR_CURVE_NOT_SUPPORTED (rv 0x140) OK
+  (1) private key, sect283k1 (binary): CKR_CURVE_NOT_SUPPORTED (rv 0x140) OK
+  (2) public key, sect283k1 (binary): CKR_CURVE_NOT_SUPPORTED (rv 0x140) OK
+  (3) key pair, sect283k1 (binary): CKR_CURVE_NOT_SUPPORTED (rv 0x140)   OK
+  (4) private key, the OID of SHA-256: CKR_ATTRIBUTE_VALUE_INVALID (rv 0x13) OK
+  (4) public key, the OID of SHA-256: CKR_ATTRIBUTE_VALUE_INVALID (rv 0x13) OK
+  (4) key pair, the OID of SHA-256: CKR_ATTRIBUTE_VALUE_INVALID (rv 0x13) OK
+  (4) private key, bytes that are not DER: CKR_ATTRIBUTE_VALUE_INVALID (rv 0x13) OK
+  (4) public key, bytes that are not DER: CKR_ATTRIBUTE_VALUE_INVALID (rv 0x13) OK
+  (4) key pair, bytes that are not DER: CKR_ATTRIBUTE_VALUE_INVALID (rv 0x13) OK
+  (5) P-256 private key imports (rv 0x0)                                 OK
+  (5) P-256 public key imports (rv 0x0)                                  OK
+  (5) P-256 key pair generates (rv 0x0)                                  OK
+
+PASS: 0 failures

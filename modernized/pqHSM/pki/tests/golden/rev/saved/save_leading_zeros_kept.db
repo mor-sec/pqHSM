@@ -1,0 +1,4 @@
+# fhsm-ca revocation database v1
+# SERIAL(hex)  DATE(YYYYMMDDHHMMSSZ)  REASON  ('-' for none)
+crlNumber 0
+0000A1 20260101000000Z -

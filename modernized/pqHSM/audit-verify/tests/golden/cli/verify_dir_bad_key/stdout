@@ -1,0 +1,4 @@
+== tests/golden/dirs/contiguous/audit.log.000001
+== tests/golden/dirs/contiguous/audit.log.000002
+
+verify: 2 log(s), sequence 000001..000002

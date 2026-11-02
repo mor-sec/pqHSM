@@ -1,0 +1,3 @@
+freehsm-audit
+dump
+tests/golden/logs/missing.log

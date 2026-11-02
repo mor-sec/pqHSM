@@ -1,0 +1,10 @@
+open	0x0
+current_path	/tmp/audit.fifo
+event1	0x6
+event2	0x6
+event3	0x6
+stats_events	1
+stats_barriers	1
+state_error	1
+drained1	sign
+drained_lines	1

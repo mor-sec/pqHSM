@@ -1,0 +1,5 @@
+line 1 : missing hmac, prev_hmac or seq field
+line 2 : missing hmac, prev_hmac or seq field
+line 3 : prev_hmac does not follow line 2 (record deleted, inserted or reordered)
+line 3 : seq is not 3 (records missing)
+verify: 4/3 records FAILED

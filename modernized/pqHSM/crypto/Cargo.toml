@@ -1,0 +1,37 @@
+[package]
+name = "pqhsm-crypto"
+description = "pqHSM crypto core (replaces src/fhsm_conf.c and src/fhsm_memory.c; Phase 3 adds the DRBG and primitives)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# The C ABI of include/fhsm_conf.h and the secure-heap part of include/fhsm_common.h. Off for
+# `cargo test`, on for the hybrid build.
+ffi = []
+
+[dependencies]
+libc.workspace = true
+# Links libcrypto: the secure heap is OpenSSL's, one per process, as in C.
+openssl-sys.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+# Replays the C goldens through the C ABI. Its own harness: the arena is created once per
+# process, so each heap scenario runs in a child process.
+[[test]]
+name = "golden"
+harness = false
+required-features = ["ffi"]
+
+# Review M1: a fork while another thread is inside first-use init. Its own harness: it forks.
+[[test]]
+name = "fork_init"
+harness = false
+required-features = ["ffi"]

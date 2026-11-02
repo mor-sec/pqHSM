@@ -1,0 +1,2870 @@
+# pkcs11-check Findings Triage (#125)
+
+*First external-harness run, 2026-07-10, against libfreehsm.so
+(v1.4.0 line + #108/#110). pkcs11-check by Denis Mingulov.*
+
+Headline counts: **162 passed · 691 xfailed · 517 failed · 7 crashed · 5 error**.
+
+Per the harness's own guidance, large xfail/fail counts are expected:
+PKCS#11 cannot express many capability constraints, so one gap fans out
+across thousands of vectors. Counts are evidence to triage, not defects
+in the harness. This document records the triage.
+
+## Fixed
+
+### F1 — C_Decrypt NULL-pointer dereference (SIGSEGV) — FIXED
+* **Finding**: `test_operation_termination::test_null_argument_rejection_terminates_encrypt_decrypt_operation[decrypt-*]` crashed the run with SIGSEGV.
+* **Root cause**: `C_Decrypt` dereferenced `pulDataLen` on every path
+  (size-query and copy) with no NULL check, unlike `C_Encrypt` which
+  guarded `pulEncLen`. A caller (or the harness's NULL-argument probe)
+  passing `pulDataLen = NULL` triggered a NULL-pointer dereference.
+* **Fix**: reject `pulDataLen == NULL` (and `pEncryptedData == NULL`
+  with a non-zero length) with `CKR_ARGUMENTS_BAD`, terminating the
+  operation so the session is not stranded. The symmetric
+  `pData`-with-length guard was added to `C_Encrypt`.
+* **Confirmed** in the sandbox: negative control (guard removed) exits
+  139/SIGSEGV; with the fix, `CKR_ARGUMENTS_BAD` (0x7).
+* **Regression test**: `tests/test_decrypt_null_args.c`, wired into
+  `make tests` (drives the public API via `dlopen`).
+* **Follow-up (2026-07-10)**: the re-run (crashes 7 → 4) showed the same
+  NULL-deref class in the multi-part update entry points.
+  `C_EncryptUpdate` and `C_DecryptUpdate` dereferenced their length
+  out-parameter without a NULL check ; both now guarded, negative-
+  control confirmed, and covered by the same regression test (GCM
+  `C_EncryptUpdate` probe).
+* Threat-model note: a NULL-deref in a TSFI entry point is an
+  availability/robustness defect (AVA_VAN class). No key material is
+  exposed; no CVE requested (same informational-disclosure posture as
+  the v1.2.x GHSA line).
+
+### F2 — Mechanism advertisement drifted from the dispatch table — FIXED
+* **Finding**: pkcs11-check reported several implemented mechanisms as
+  "missing" (EdDSA, HKDF_DERIVE, ML-DSA, ML-DSA/SLH-DSA key-pair-gen).
+* **Root cause**: `C_GetMechanismList` / `C_GetMechanismInfo` were a
+  hand-maintained list + `switch` that had drifted from the generated
+  dispatch table. Concretely: PQ mechanisms advertised under stale
+  values (ML-DSA `0x403F` instead of the dispatched `0x4024`), phantom
+  `FALCON`/`KYBER` entries with no handler, and ~40 dispatched
+  mechanisms (all SHA-3/SHAKE, KMAC, HKDF, EdDSA, X25519/X448, ML-KEM/
+  ML-DSA/SLH-DSA at correct values) never advertised. PQ signatures
+  were therefore undiscoverable.
+* **Fix**: both functions now derive from `fhsm_mechanism_table[]` (the
+  generated single source of truth). Advertise iff a mechanism resolves
+  to a real handler in the active profile. Coherence guard
+  `tests/test_mech_advertise.c`.
+* **General-purpose / FIPS-by-config note**: the module is intended as a
+  general-purpose PKCS#11 provider that switches to FIPS by profile.
+  The advertisement machinery is now profile-correct (interop advertises
+  every real handler; fips-strict only approved). However, the 12
+  currently-declared non-FIPS mechanisms (MD5, SHA-1, DES, RC4, DSA, DH,
+  ...) have `dispatch_reject_fips` hardcoded in the Mech table, so they
+  are rejected in *both* profiles today — i.e. general-purpose support
+  for those is scaffolded but not yet implemented. Realizing it is a
+  separate item: implement their real handlers and set the Mech
+  `handler` to the real symbol (interop keeps it, fips-strict rejects),
+  after which they will be advertised in interop automatically.
+
+### F3 — TSFI robustness: NULL pointers & integer-overflow counts (SIGSEGV/SIGBUS) — FIXED
+* **Finding**: 21 subprocess-isolated crashes (reported `failed`, not
+  `crashed`, because the harness runs each raw probe in a child):
+  `security/test_api_boundary` (NULL template + non-zero count),
+  `security/test_arithmetic_overflow` (`template_count` = `ULONG_MAX`,
+  `sizeof`-overflow, `0x100000000`), and `security/test_ffi_null_pointer`
+  (NULL data pointer + non-zero length) on `C_FindObjectsInit`,
+  `C_GenerateKey`, `C_GenerateKeyPair`, and `C_Sign`/`C_Verify`/`C_Digest`
+  (one-shot and `*Update`).
+* **Root cause**: template-consuming entry points iterated the caller
+  array (`find_attr`, the `C_FindObjectsInit` loop) with no guard, so a
+  NULL pointer dereferenced and an absurd count walked far out of bounds
+  (SIGBUS on the `ULONG_MAX` case). The data entry points passed the
+  caller pointer straight to the digest/HMAC/EVP path, dereferencing NULL
+  when the length was non-zero.
+* **Fix**: a shared `fhsm_check_template()` guard rejects
+  `pTemplate == NULL && ulCount != 0` and any `ulCount` above a generous
+  ceiling (`FHSM_MAX_TEMPLATE_ATTRS`, default 1024) with
+  `CKR_ARGUMENTS_BAD`, before any iteration; the data entry points reject
+  `pData == NULL && ulDataLen != 0` (terminating the active operation).
+  An empty template / zero-length NULL buffer stays legal.
+* **Confirmed** in the sandbox: a fork-per-probe negative control shows
+  all four representative probes crash (signal 11 / signal 7) before the
+  fix and return `CKR_ARGUMENTS_BAD` after.
+* **Regression test**: `tests/test_robustness_args.c`, wired into
+  `make tests` (in-process via `dlopen`, so a regression faults the
+  test). The full `security/*` subset re-run is done via `make
+  pkcs11-check` (needs opensc + pkcs11-check).
+* Threat-model note: same AVA_VAN availability/robustness class as F1; no
+  key material exposed, no CVE requested.
+
+### F4 — Operation-state hygiene: session reuse & buffer-too-small — FIXED
+* **Finding**: ~18 `CKR_OPERATION_ACTIVE` failures where a param/handle
+  error was expected (`ckr/test_ckr_{sign,encrypt,decrypt}Init`,
+  `TestOperationActive`), plus `TestBufferTooSmall::test_sign_buffer_too_small`
+  returning `CKR_FUNCTION_FAILED` (0x6) instead of `CKR_BUFFER_TOO_SMALL`.
+* **Root cause (state bleed)**: PKCS#11 session handles come from a
+  reusable pool, but neither `C_OpenSession` nor `C_CloseSession` reset
+  the per-session operation slots. A session closed mid-operation left
+  `active == 1`, and the next `C_OpenSession` handed the same handle back
+  dirty, so the first `C_*Init` returned `CKR_OPERATION_ACTIVE` before it
+  could validate its own arguments. Secondary: `C_EncryptUpdate` /
+  `C_DecryptUpdate` did not clear `active` on their error paths.
+* **Root cause (buffer)**: `C_Sign`'s asymmetric path signed straight
+  into the caller buffer, so an undersized buffer made OpenSSL fail with
+  `CKR_FUNCTION_FAILED` rather than the spec's `CKR_BUFFER_TOO_SMALL`.
+* **Fix**: `fhsm_session_ops_reset()` frees the EVP contexts and zeroes
+  every per-session slot (encrypt/decrypt/sign/verify/digest, object
+  search, OAEP); called on both `C_OpenSession` and `C_CloseSession`.
+  The `*Update` error paths now clear `active`. `C_Sign` signs into a
+  scratch buffer sized to the mechanism, returns `CKR_BUFFER_TOO_SMALL`
+  with the required length when the caller buffer is short, and keeps the
+  operation active for retry.
+* **Regression test**: `tests/test_op_state.c` (session-reuse no-bleed +
+  `C_Sign` buffer-too-small + retry), wired into `make tests`.
+* **Residual**: the 3 raw `TestOperationActive` double-init probes and
+  the AES-CBC-PAD / AES-CTR `terminates_after_multipart` cases exercise
+  non-GCM multipart, which is a separate feature gap (multipart is
+  currently GCM-centric) tracked apart from this state-hygiene fix.
+
+### F5 — Object-store exhaustion under the harness (CKR_DEVICE_MEMORY) — MITIGATED + follow-up
+* **Finding**: ~119 `CKR_DEVICE_MEMORY` (0x131) failures fanned out
+  across dozens of unrelated classes (TestObjectSearch, TestECDSASignature,
+  TestRSAOAEPRoundtrip, TestSessionObjectLifecycle, RO-session suites, ...).
+* **Root cause**: two layers.
+  1. *Immediate (masking)*: the token object store is a fixed
+     `FHSM_MAX_OBJECTS` array (default 64). A full pkcs11-check run creates
+     far more objects than that, so once the store fills every later test
+     that creates an object fails with `CKR_DEVICE_MEMORY`, regardless of
+     what it was actually testing.
+  2. *Deeper (real defect)*: `CKA_TOKEN` is not honoured — every created
+     object is treated as a persistent token object and written to the
+     `.tok` file, and **session objects are never destroyed when their
+     session closes**. So the store only ever grows within a run. This
+     also fails the object-lifecycle suites directly
+     (TestSessionObjectLifecycle, TestROSessionObjectsAllowed,
+     TestROTokenObjectCreation).
+* **Mitigation (this change)**: `make pkcs11-check` and the CI workflow
+  build the module under test with `FHSM_MAX_OBJECTS=4096` (an
+  `#ifndef`-guarded, `-D`-overridable cap), so store exhaustion no longer
+  masks unrelated findings. The default shipped build is unchanged (64).
+* **Follow-up (tracked)**: implement PKCS#11 session-object semantics —
+  parse `CKA_TOKEN`, keep session objects (`CKA_TOKEN=FALSE`) in memory
+  only (not persisted), and destroy them in `C_CloseSession`. That is the
+  correct fix and additionally clears the object-lifecycle failures. It
+  touches the object struct + creation paths and is scoped as its own
+  item.
+
+### F6 — FIPS-approved digests/HMACs advertised but not callable — FIXED (partial tranche)
+* **Finding**: ~70 `CKR_MECHANISM_INVALID` failures. Triage:
+  - **~32 real gaps** — SHA-224, SHA-512/224, SHA-512/256, SHA3-256/384/512
+    digests and the SHA-224 / SHA-3 HMACs were advertised by the dispatch
+    table but the hand-written `C_DigestInit` / `C_SignInit` /
+    `C_VerifyInit` switches only handled SHA-256/384/512 (and `C_Verify`
+    only SHA-256-HMAC). Callers got `CKR_MECHANISM_INVALID`.
+  - **~18 legitimate** — AES-ECB / SHA-1 etc. are non-FIPS and correctly
+    rejected under the `fips-strict` profile the harness builds against;
+    these are harness-vs-profile expectation mismatches, not defects.
+    (Running the harness against the `interop` build would reclassify
+    them; tracked separately.)
+  - **~8 phantom advertisements** — XEDDSA / X3DH / X2RATCHET (Signal
+    protocol) are advertised with sign flags but not implemented; they
+    should be de-advertised from the dispatch generator (follow-up).
+* **Fix (this tranche)**: wired the FIPS-approved digests (FIPS 180-4 /
+  202) into `C_DigestInit` and added `fhsm_hmac_hash_of()` so
+  `C_SignInit` / `C_Sign` / `C_VerifyInit` / `C_Verify` accept the
+  SHA-224 and SHA-3 HMAC families (and fixed SHA-384/512 HMAC *verify*,
+  which previously only handled SHA-256). New enum values
+  `FHSM_HASH_SHA224 / SHA512_224 / SHA512_256` + EVP names.
+* **Verified**: digest "abc" KATs match FIPS published vectors for
+  SHA-224, SHA-512/224, SHA-512/256, SHA3-256, SHA3-512 ; HMAC
+  sign->verify round-trips for SHA-224/384/512 and SHA3-256/512.
+  Regression: `tests/test_fips_digests.c`, wired into `make tests`.
+* **Follow-up**: de-advertise the phantom Signal mechanisms; optionally
+  run the harness against `interop` to clear the non-FIPS rejections.
+
+### F7 — C_GetAttributeValue missing standard attributes (KeyError) — FIXED (partial)
+* **Finding**: 30 pkcs11-check failures surfaced as Python `KeyError` on
+  a `CKA_*` type: the harness queried a standard attribute and the module
+  returned `CK_UNAVAILABLE_INFORMATION`, which it reads as "attribute
+  absent". Affected: boolean policy/usage flags (CKA_TOKEN, CKA_PRIVATE,
+  CKA_ENCRYPT/DECRYPT/SIGN/VERIFY/WRAP/UNWRAP/DERIVE, CKA_LOCAL,
+  CKA_ALWAYS_SENSITIVE, CKA_NEVER_EXTRACTABLE, CKA_MODIFIABLE,
+  CKA_COPYABLE, CKA_ALWAYS_AUTHENTICATE, ...), date attributes
+  (CKA_START_DATE / CKA_END_DATE), certificate fields (CKA_SUBJECT,
+  CKA_ISSUER, CKA_SERIAL_NUMBER), and public-key material on private
+  keys (CKA_MODULUS / CKA_PUBLIC_EXPONENT / CKA_EC_PARAMS).
+* **Fix**: `C_GetAttributeValue` now returns the boolean flags (PKCS#11
+  defaults, or derived from the object's stored sensitive/extractable
+  flags and class), empty date attributes, and X.509 subject/issuer/
+  serial (via a new `extract_cert_attr()` that DER-parses the stored
+  certificate). Regression: `tests/test_attributes.c`.
+* **Residual (follow-up)**: (a) per-object usage restrictions are not
+  stored, so CKA_ENCRYPT/etc. reflect the class default rather than a
+  per-key override -- the two TestKeyUsageRestrictions cases need a
+  stored usage-flag byte; (b) CKA_MODULUS/PUBLIC_EXPONENT/EC_PARAMS on
+  *private* keys (extract_pubkey_attr only handles public keys).
+
+### F8 — Input/parameter validation hardening (AVA_VAN) — FIXED (partial)
+* **Finding**: ~30 pkcs11-check security probes had invalid inputs
+  *accepted* (CKR_OK) instead of rejected.
+* **Fixed this tranche**:
+  - **AES-CBC IV** : a wrong-size or missing IV is now rejected at
+    C_EncryptInit / C_DecryptInit with CKR_MECHANISM_PARAM_INVALID
+    (was deferred / accepted). test_mechanism_param_invalid,
+    TestBadParameters.
+  - **AES-GCM weak IV** : an IV shorter than 96 bits (NIST SP 800-38D)
+    is rejected at init. TestGcmIvWeakness (0/1/4-byte IVs).
+  - **RSA public exponent** : C_GenerateKeyPair validates
+    CKA_PUBLIC_EXPONENT (must be odd and >= 3 per FIPS 186-5) ;
+    e = 0/1/2/4 rejected with CKR_ATTRIBUTE_VALUE_INVALID.
+    TestRsaExponent.
+  - **Over-long boolean attributes** : a CK_BBOOL attribute supplied
+    with a length != 1 (e.g. CK_ULONG-sized) is rejected in
+    C_GenerateKey / C_GenerateKeyPair / C_DeriveKey / C_UnwrapKey via a
+    shared `fhsm_check_bool_attr_lengths()`.
+    test_scalar_attr_length_extended.
+* Regression: `tests/test_input_validation.c`.
+* **Fixed in the second half of this tranche**: RSA-PSS salt-length and
+  RSA-OAEP source-length boundaries (absurd/negative lengths rejected at
+  Init with CKR_MECHANISM_PARAM_INVALID); NULL inner IV/AAD/source
+  pointers with non-zero lengths (GCM/OAEP) rejected; EC private key
+  created without CKA_EC_PARAMS rejected (CKR_TEMPLATE_INCONSISTENT).
+* **Remaining in this cluster (follow-up)**: AES-KW/KWP corrupted-blob
+  integrity on unwrap, AES-CCM null-nonce, C_SeedRandom isize length,
+  and wrong-key-type rejection for several mechanisms.
+
+### F9 — PKCS#11 session-object lifecycle (CKA_TOKEN) — IMPLEMENTED (F5 follow-up)
+* The deeper fix promised in F5 is now in place. `fhsm_object_t` carries
+  an in-memory `owner_session` (0 = persistent token object ; non-zero =
+  session object). Creation paths (C_GenerateKey, C_GenerateKeyPair,
+  C_CreateObject, C_DeriveKey, C_UnwrapKey) read CKA_TOKEN (default
+  FALSE) and mark session objects owned by the creating session. Session
+  objects are never serialised to the `.tok` file, and
+  `C_CloseSession` destroys the closing session's session objects via
+  `fhsm_token_destroy_session_objects()`.
+* Creating a token object (CKA_TOKEN=TRUE) on a read-only session now
+  returns CKR_SESSION_READ_ONLY.
+* This resolves the object-lifecycle failures (TestSessionObjectLifecycle,
+  TestROSessionObjectsAllowed, TestROTokenObjectCreation) and removes the
+  underlying store-exhaustion cause behind F5 (session objects are now
+  freed on close rather than accumulating). Regression:
+  `tests/test_session_objects.c` (session destroyed on close, token
+  persists, RO token rejected). The large-store harness build (F5) is
+  kept as belt-and-braces.
+
+### F10 — Key-handle validation at Init + C_GetAttributeValue buffer-too-small — FIXED
+* **Finding (use-after-destroy)**: C_EncryptInit / C_DecryptInit /
+  C_SignInit / C_VerifyInit did not check the key handle, so a call on a
+  destroyed or never-created handle *succeeded* (the failure only
+  surfaced later, or not at all). pkcs11-check use-after-destroy probes.
+* **Finding (buffer)**: C_GetAttributeValue returned CKR_OK when a
+  requested attribute did not fit the supplied buffer (it set
+  ulValueLen = CK_UNAVAILABLE_INFORMATION but did not signal the caller).
+  TestGetAttrUndersizedBuffer.
+* **Fix**: a shared `fhsm_require_key()` validates the key handle in all
+  four keyed *Init entry points (CKR_KEY_HANDLE_INVALID otherwise);
+  C_GetAttributeValue now returns CKR_BUFFER_TOO_SMALL if any attribute
+  was truncated. Regression added to `tests/test_op_state.c`.
+* **Note**: this investigation (the 63 unclassified failures) also
+  surfaced further real items now tracked as follow-ups: private-object
+  visibility in public/post-logout sessions (access control),
+  key-type-vs-mechanism mismatch at Init, AES-KW/KWP key-type confusion
+  on unwrap (Tookan), CKA_VALUE on a sensitive key should return
+  CKR_ATTRIBUTE_SENSITIVE, and a few computed-value cross-verifies.
+
+### F11 — Private-object access control in C_FindObjects — FIXED
+* **Finding**: objects with CKA_PRIVATE=TRUE were visible to sessions
+  that were not logged in as the normal user -- a public session saw
+  private objects, and a session still saw them after C_Logout
+  (pkcs11-check access-control probes).
+* **Fix**: `C_FindObjectsInit` now filters out private objects when the
+  session role is not `FHSM_ROLE_USER`. CKA_PRIVATE is derived from the
+  object class (secret and private keys are private ; public keys,
+  certificates and data objects are public), matching the value
+  C_GetAttributeValue reports. Regression added to
+  `tests/test_session_objects.c` (private object hidden after logout).
+* **Direct-handle access** is gated too: `C_GetAttributeValue` and
+  `C_GetObjectSize` return CKR_OBJECT_HANDLE_INVALID for a private object
+  when the session is not logged in as the user, so a handle kept from a
+  prior authenticated session cannot read the object after C_Logout.
+* **Note**: CKA_PRIVATE is derived from class rather than an explicit
+  stored flag ; an object explicitly created with CKA_PRIVATE=FALSE is
+  still treated as private if it is a secret/private key. Storing an
+  explicit CKA_PRIVATE bit, and per-token (per-application) login state
+  so C_Logout in one session affects the others, are small follow-ups.
+
+### F12 — PQC mechanism values collided with official Signal mechanisms — FIXED (ABI change)
+* **Finding**: pkcs11-check reported ML-DSA / SLH-DSA / HASH-ML-DSA
+  advertised with sign/verify flags as XEDDSA / X3DH / X2RATCHET
+  (test_mech_flags). Root cause: the module assigned its PQC mechanisms
+  to values in 0x4021-0x4029, a range **already allocated** by
+  PKCS#11 v3.2 to the Signal-protocol mechanisms (CKM_X3DH_RESPOND
+  0x4024, CKM_X2RATCHET_* 0x4025-0x4027, CKM_XEDDSA 0x4029). The harness
+  maps advertised values through the official registry, so it read the
+  module's ML-DSA (0x4024) as X3DH_RESPOND, etc. The advertised value
+  also differed from the operation-path value (ML-DSA advertised 0x4024
+  but C_SignInit expected 0x403F), an internal inconsistency.
+* **Fix**: reassigned the PQC mechanisms to their official PKCS#11 v3.2
+  values and unified advertisement with the operation path:
+  ML-KEM keygen 0x0F / op 0x17, ML-DSA keygen 0x1C / sign 0x1D,
+  HASH-ML-DSA-SHA256 0x24 / SHA512 0x26, SLH-DSA keygen 0x2D / sign 0x2E.
+  Regenerated the dispatch table + `MECHANISMS.md`, updated the operation
+  #defines, the e2e tests and the Wycheproof adapter.
+* **ABI note**: this changes the advertised PQC mechanism identifiers.
+  The module is pre-1.0 (v1.5.0 line); the old values were non-standard
+  and colliding, so this is a conformance correction. Verified: smoke
+  KATs (ML-DSA-65, SLH-DSA, ML-KEM-768) pass, advertisement is at the
+  official values, and the old colliding values are gone
+  (tests/test_mech_advertise.c updated to enforce this).
+
+## Expected gaps (xfail-class, not defects)
+
+### G1 — CKO_DATA data objects unsupported
+* `test_data_objects::*`, `test_attribute_defaults::TestDataObjectDefaults`
+  return `CKR_TEMPLATE_INCONSISTENT`. `C_CreateObject` supports keys and
+  (since #110) X.509 certificates, not generic `CKO_DATA` objects. This
+  is a deliberate scope boundary for the current profile. Candidate for
+  a future item if a consumer needs opaque data objects.
+
+## To investigate (follow-up items)
+
+### I1 — Certificate import reports CKR_HOST_MEMORY under load — RESOLVED
+* `x509::test_core_ops::TestCertificateImport::test_import_der_certificate`
+  returned `CKR_HOST_MEMORY`. `fhsm_token_object_add` returned this when
+  the store is full (`FHSM_MAX_OBJECTS = 64`), because the harness had
+  already filled the token with prior objects.
+* **Resolution (2026-07-10)**: the return code was wrong — a full token
+  is `CKR_DEVICE_MEMORY` (token storage exhausted), not `CKR_HOST_MEMORY`
+  (host RAM). Fixed in `fhsm_token_object_add`. `FHSM_MAX_OBJECTS` is now
+  overridable at build time (`-DFHSM_MAX_OBJECTS=N`, default 64) for
+  general-purpose deployments that need a larger store. Regression:
+  `tests/test_token_capacity.c` asserts the 65th object is rejected with
+  `CKR_DEVICE_MEMORY`. The residual harness-ordering noise (filling the
+  token before the cert-import case) is a run-script concern, tracked
+  with I2.
+
+### I2 — Login throttle bleeds across harness tests
+* `test_ckr_session::TestLoginErrors::test_already_logged_in` and
+  `test_ckr_codes::...test_ckr_mechanism_invalid` observed
+  `0x80000004` (`FHSM_RV_PIN_THROTTLED`) where a standard CKR was
+  expected. The exponential login throttle (a security feature) is
+  persistent and cross-session by design, so the harness's many
+  negative-login probes trip it for later tests. **Action**: not a
+  module defect, but two options — (a) document that the harness needs
+  a fresh token or throttle reset between login-negative suites, or
+  (b) provide a dev-only env knob to relax the throttle for testing
+  (mirroring FHSM_INTEGRITY_ALLOW_UNSIGNED). Prefer (a).
+
+## General-purpose non-FIPS mechanisms (#125 tranche A/B)
+
+The module is a general-purpose PKCS#11 provider that switches to FIPS by
+build profile (`FHSM_BUILD_FIPS_STRICT`). The following non-FIPS
+mechanisms are executable in the `interop` build and rejected under
+`fips-strict` (advertised iff executable), each gated in the relevant
+operation function (not `op_init`, which is shared with signing):
+
+* **Digests**: SHA-1, MD5.
+* **Ciphers**: AES-ECB, 3DES-CBC, 3DES key generation.
+* **RSA**: PKCS#1 v1.5 encryption, X.509 raw encryption, SHA1-RSA-PKCS
+  signature.
+
+### Deferred: DSA / DH key generation (#22)
+
+DSA and DH key-pair generation were scoped for tranche B but
+**deferred**: the module has **no consuming operation** for them — there
+is no DSA signature mechanism and no DH `C_DeriveKey` wired anywhere. A
+`CKM_DSA_KEY_PAIR_GEN` / `CKM_DH_PKCS_KEY_PAIR_GEN` would therefore
+produce keys that nothing in the module can use, which is a poorer
+general-purpose experience than not offering them. When a consumer
+actually needs them, they should be added as a *bundle*: keygen +
+paramgen + the consuming operation (DSA `C_Sign` / DH `C_DeriveKey`) +
+the corresponding `FHSM_PAIRWISE_*` family — not keygen alone.
+
+RC4 and single-DES (tranche C) remain deferred as well: they require the
+OpenSSL **legacy** provider, which is a separate provider-loading policy
+decision for the interop build.
+
+## Method
+
+Run: `make pkcs11-check` (local) 
+## F13 — Advertised-but-unimplemented online cipher paths (CCM/CTS)
+
+`CKM_AES_CCM` (and `CKM_AES_CTS`) are advertised by `C_GetMechanismList` and
+carry a KAT vector, but the interactive `C_Encrypt`/`C_Decrypt` data path is not
+wired. `C_EncryptInit`/`C_DecryptInit` now return `CKR_MECHANISM_INVALID` for
+them via `fhsm_cipher_mech_valid`, which satisfies the pkcs11-check CCM
+"must-reject" tests (null nonce, missing params). Follow-up: either implement the
+online CCM/CTS path or de-advertise these mechanisms in the fips-strict profile so
+the advertised list and the online behaviour stay consistent.
+
+## F13 update — CCM/CTS de-advertised (was: advertised-but-unimplemented)
+
+AES-CCM was de-advertised (like the non-standard SHAKE128/256 digests) because
+its online C_Encrypt/C_Decrypt path is not wired, so advertising CKF_ENCRYPT was
+inconsistent with C_EncryptInit returning CKR_MECHANISM_INVALID. Follow-up:
+implement the CCM two-pass EVP path (CK_CCM_PARAMS: nonce 7-13B, MAC 4-16B,
+AAD, ulDataLen), validate a NIST SP 800-38C vector, then re-advertise
+fips=approved. The dispatch_aes_ccm KAT handler is retained for that work.
+
+## F13 — RESOLVED (AES-CCM online implemented)
+
+The AES-CCM online C_Encrypt/C_Decrypt path is now wired (CK_CCM_PARAMS parsing,
+two-pass EVP, NIST SP 800-38C Example 1 byte-exact). CCM is re-advertised
+fips=approved; the flag<->behaviour inconsistency that motivated the earlier
+de-advertisement is gone. The KAT handler dispatch_aes_ccm is back in the table.
+
+---
+
+# Closing triage — 2026-07-21 : 361 → 5 (updated 2026-08-01 : → 4)
+
+Final run against `main` (`ac52ec7`) :
+
+```
+failed 5 · passed 1689 · skipped 2099 · crashed 0
+```
+
+The campaign opened at **517 failed / 7 crashed** on 2026-07-10 and, after the
+harness's own re-classification of capability gaps, tracked **361 → 5** on the
+failure count. Crashes reached 0 and stayed there.
+
+**The five remaining are positions, not backlog.** Each is listed with what
+would have to change for it to move. Anyone reading this in six months should
+be able to disagree with a decision, not discover an oversight.
+
+## Update 2026-08-01 — 4 failures, and two that stopped reproducing
+
+> **Superseded 2026-08-03 — re-measured against v0.1.8.** See the section
+> immediately below. The counts here were against v0.1.6.
+
+A later run on the v1.6.0 candidate reports **4 failed, 1689 passed, 0 crashed**:
+R1 (Tookan), R3 (GcmIvReuse), R4 and R5 (the two RSA harness gaps). R2 — the
+CBC-PAD padding oracle — did not reproduce, and neither did
+`TestTimingBasic::test_aes_cbc_pad_decrypt_timing_sanity`, which had appeared
+in an intermediate run at a 22.5x valid/invalid ratio.
+
+**This is recorded as a measurement problem, not as a fix.** Nothing in the
+v1.6.0 work touched the AES-CBC-PAD decrypt path. R2 is not a timing test, so
+machine load does not obviously explain it. The oracle is inherent to CBC-PAD
+without authentication — the reasoning in R2 below still holds — and a security
+finding that appears in some runs and not others has to be treated as present
+until something explains its absence. Do not quietly drop R2 from this list on
+the strength of one green run.
+
+**Explained 2026-08-03 — the test is a coin flip, and R2 never went away.**
+See the measurement under R2 below. The short version: that test detects the
+oracle with probability 1/255 per probe, runs 320 probes, and therefore finds
+nothing about 28% of the time. Its docstring claims 0.05%, a figure that only
+follows if the per-probe rate were 6/256 — six times the true value. The module
+never changed; one run in three or four simply misses. Measured over 105 600
+probes here, with `tests/test_cbc_pad_oracle` added as our own guard.
+
+Also fixed in the same window, and worth noting because it was not on any list:
+`C_Sign`, `C_Verify`, `C_Digest` and their three `*Update` variants had no
+upper bound on the input length, while `C_Encrypt` and `C_Decrypt` had carried
+one since the input-validation tranche. The harness maps a terabyte of
+demand-zero memory, passes `ulDataLen = ISIZE_MAX`, and the module started
+hashing until pytest killed it at 180 s — a denial of service reachable from a
+single argument, on 6 of 8 entry points. It surfaced only when three `isize`
+tests began timing out rather than being skipped; whether they had been
+silently skipped before (the honeypot `mmap` can fail, which the test treats as
+an xfail) was not established.
+
+## Re-measured against harness v0.1.8 (2026-08-03)
+
+**4 failed, 1697 passed, 2103 skipped, 0 crashed.** The same count as the v0.1.6
+run, and none of the same reasons — worth spelling out, because an unchanged
+number invites the assumption that nothing moved.
+
+| | v0.1.6 | v0.1.8 |
+|---|---|---|
+| R1 Tookan unwrap | fail | fail — unchanged, documented position below |
+| R2 CBC-PAD oracle | intermittent | **no longer a failure** — reclassified upstream as `inherent_channel` |
+| R3 GCM IV reuse | fail | fail — unchanged, documented position below |
+| R4/R5 RSA harness gaps | fail | **gone** — fixed upstream in v0.1.8 |
+| `TestEncryptOutputLengthTruncation` | (test did not exist) | **fail — harness defect, not ours** |
+| `TestDecryptOutputLengthTruncation` | (test did not exist) | **fail — harness defect, not ours** |
+| `TestECDH1CofactorDerive` | skipped | skipped |
+
+*A third run, same harness version, on 2026-09-02 before the v2.0.0 tag:*
+**5 failed, 1697 passed, 2102 skipped, 0 crashed.** Passed identical,
+skipped down by one, failed up by one — `TestECDH1CofactorDerive` moved from
+skipped to failed. See R6.
+
+**No new defect in the module.** Two of the four failures are our two standing
+positions; the other two are a bug in the probe's own teardown.
+
+### The two output-length failures
+
+These tests are new in v0.1.8 and descend from the output-length report we sent
+in July, so they were the first place to look for a real regression. They are not
+one.
+
+The probe drives `C_Encrypt`/`C_Decrypt` with `ulDataLen = 2**32 + 8` over two
+4 GiB demand-zero mappings, to catch a provider that casts the length to 32 bits
+and silently under-fills. It prints the module's answer, then raises in its own
+`finally`:
+
+```
+stdout: TARGET_RV:0x00000021
+        TARGET_RV_NAME:CKR_DATA_LEN_RANGE
+        subprocess failed with exit code 1
+```
+
+`CKR_DATA_LEN_RANGE` is in the harness's own `_OUTPUT_LENGTH_REJECT_RVS`, so the
+verdict would have been *pass*. It never ran: `ctypes.cast` on a `from_buffer`
+array leaves the mmap's buffer export outstanding, `del in_view` does not clear
+it, and `in_mm.close()` raises `BufferError: cannot close exported pointers
+exist`. Reproduced in isolation with no PKCS#11 module involved — same stdout,
+same exception, same exit code. Measured: `ctypes.byref` in place of
+`ctypes.cast` fixes it; `gc.collect()` before the close does not.
+
+The consequence upstream is worse than a red line in our report: a provider that
+*does* truncate would print `TARGET_RV:0x0`, `UNDERFILL:1`, and then die at the
+same place, so the finding would be reported as "subprocess failed" rather than
+`accepted_invalid`. The probe cannot currently deliver its verdict in either
+direction. Reported as `issue_pkcs11check_output_length_bufferror.md`.
+
+**Our side is correct and was verified without the harness.** A C program doing
+exactly what the probe does — same two 4 GiB `MAP_NORESERVE` mappings, same
+counter block, `ulDataLen = 0x100000008` — gets `CKR_DATA_LEN_RANGE` from
+`C_Encrypt`. The guard is `src/fhsm_pkcs11.c:5267` and its comment already named
+this test: it was added in July in response to the earlier report. The test did
+its job. It just cannot say so.
+
+### On the skip count
+
+2103 skipped is most of the suite, and capability gating explains most of it. It
+has not been audited. Worth remembering that a test which skips itself reports
+nothing — that is how the `isize` input-length bound stayed invisible until three
+of those tests started timing out instead of being skipped.
+
+## Re-measured against harness v0.1.9 (2026-09-03)
+
+**2 failed, 1700 passed, 2103 skipped, 0 crashed.** Against the same module,
+the same build, the same OpenSSL 3.5.6, on the unsigned path with the default
+provider — the only configuration `run_pkcs11_check.sh` could reach at the
+time. Nothing on our side changed between the two runs. Every difference below
+belongs to the harness.
+
+| | v0.1.8 (2026-09-02) | v0.1.9 (2026-09-03) |
+|---|---|---|
+| failed | 5 | **2** |
+| passed | 1697 | 1700 |
+| skipped | 2102 | 2103 |
+| total | 3804 | 3805 |
+
+Three failures closed and one test appeared. The counts alone do not say which:
+`failed −3, passed +3, skipped +1` is equally consistent with R6 passing and a
+new test skipping, or with R6 skipping again and a new test passing. Those two
+readings differ in the only way that matters — one resolves R6, the other
+returns it to the invisibility it came out of — so the outcomes were read from
+`report.jsonl` per node-id rather than inferred:
+
+| node-id | v0.1.8 | v0.1.9 |
+|---|---|---|
+| `TestECDH1CofactorDerive::test_cofactor_matches_standard_ecdh` | fail | **pass**, in all three isolation runs |
+| `TestEncryptOutputLengthTruncation` | fail | **pass** |
+| `TestDecryptOutputLengthTruncation` | fail | **pass** |
+| `TestTookanUnwrapAttrs::test_unwrapped_key_cannot_unset_sensitive` | fail | fail — R1, position below |
+| `TestGcmIvReuse::test_gcm_iv_reuse_same_key` | fail | fail — R3, position below |
+
+The one new test is the output-length family extended to AES-OFB, AES-CFB128,
+AES-CFB8 and ChaCha20; those pass where the mechanism is available and skip
+where it is not.
+
+### What this changes, and what it does not
+
+**R6 is closed by the harness, not by us.** See R6 below: the plan was to
+replay the single node-id with the audit log open, to learn which of the two
+derivations returned `CKR_FUNCTION_FAILED`. That work is now moot — the
+mechanism was never the problem. The upstream branch
+`fix/harness-error-attribution`, fetched with the v0.1.9 tag, is the likely
+cause, and it is the same correction that closed the two output-length tests.
+Those two were reported by us on 2026-08-03 as harness defects rather than
+module defects; that reading is now confirmed from outside.
+
+Worth stating plainly, because it cuts both ways: an evening of investigation
+into `dispatch_ecdh1_cofactor` would have found nothing, and the reason we did
+not spend it is that R6 was written down as *observed, not diagnosed* instead
+of being given a plausible cause.
+
+**R1 and R3 survive, and something about them is new.** Both fail in exactly
+one of the three isolation runs the harness performs, and pass in the other
+two:
+
+```
+passed  ·  failed  ·  passed     TestTookanUnwrapAttrs::test_unwrapped_key_cannot_unset_sensitive
+passed  ·  failed  ·  passed     TestGcmIvReuse::test_gcm_iv_reuse_same_key
+```
+
+The aggregate reports them as failures, correctly — a finding in any mode is a
+finding. But "fails under one isolation mode" is a different fact from "fails",
+and it is not the fact this document has been recording. Which mode, and why
+the other two pass, is **not established**. It may be that the mode reaching
+the failure is the only one that exercises the path, or that the other two skip
+a precondition. Recorded here as an open question rather than folded into the
+two positions below, which stand on their own reasoning and are not weakened by
+it.
+
+## The harness cannot see which provider is loaded (2026-09-03, negative result)
+
+Run twice, same tree, same harness v0.1.9, same OpenSSL 3.5.7, `fips-strict`:
+
+| | integrity bypassed, default provider | signed, **FIPS provider loaded** |
+|---|---|---|
+| failed | 2 | 2 |
+| passed | 1700 | 1700 |
+| skipped | 2103 | 2103 |
+
+Identical counts prove nothing on their own — that lesson is one section above,
+where `failed −3, passed +3, skipped +1` fitted two incompatible stories. So
+the reports were compared node by node: **3805 node-ids, none present in one
+run and absent from the other, and not one outcome different.**
+
+The provider was loaded. That is not an assumption: since 2026-09-03 a signed
+module whose provider will not load fails `C_Initialize` with
+`FHSM_RV_PROVIDER_UNAVAILABLE` and the harness aborts at `C_InitToken` before a
+single test runs. A run that completes is proof the provider came up.
+
+## Re-measured on v2.0.3 (2026-09-07)
+
+Harness v0.1.9, module v2.0.3, OpenSSL 3.5.7, unsigned path:
+
+| | 2026-09-03 | 2026-09-07 |
+|---|---|---|
+| failed | 2 | 2 |
+| passed | 1700 | **1706** |
+| skipped | 2103 | **2105** |
+| crashed | 0 | 0 |
+| total | 3805 | **3813** |
+
+Eight more tests collected, no additional failures. The two that remain are R1
+and R3, the documented positions below.
+
+### What the eight are, and what they are not
+
+Not attributable from these numbers alone. Two things changed between the runs
+— the module (v2.0.2 → v2.0.3) and, possibly, OpenSSL. "Possibly", because the
+two sections above disagree with each other: the v0.1.9 re-measurement says
+*"the same OpenSSL 3.5.6"* and the provider comparison, dated the same day,
+says *"same OpenSSL 3.5.7"*. One of them is wrong and nothing recorded at the
+time can say which.
+
+So the honest statement is: eight tests appeared, the module changed, and the
+OpenSSL version may or may not have. Anyone quoting the +8 should quote that
+uncertainty with it.
+
+Fixed for next time: `scripts/run_pkcs11_check.sh` now writes
+`provenance.txt` into the report directory, carrying the harness version, the
+OpenSSL version, the module path and **the module's SHA-256** — because
+"v2.0.3" names a version, not a build. A measurement that cannot state its own
+environment cannot be compared to another one later, and the disagreement two
+paragraphs above is what that costs.
+
+### Node-id check against 2026-09-03
+
+The counts are consistent with the previous run, but consistency is not
+identity — the section above records `failed −3, passed +3, skipped +1` fitting
+two incompatible stories. So the five node-ids that matter were read from both
+reports directly:
+
+| node-id | 2026-09-03 | 2026-09-07 |
+|---|---|---|
+| `TestECDH1CofactorDerive` | passed | passed |
+| `TestEncryptOutputLengthTruncation` | passed | passed |
+| `TestDecryptOutputLengthTruncation` | passed | passed |
+| `TestTookanUnwrapAttrs` | failed, passed | failed, passed |
+| `TestGcmIvReuse` | failed | failed |
+
+Unchanged, R1 and R3 included — the one-of-three-isolation-runs behaviour noted
+above still holds for `TestTookanUnwrapAttrs`. Nothing here revises the v0.1.9
+attribution recorded in the previous section.
+
+### A false alarm, recorded because the method failed before the conclusion did
+
+A first run this morning reported the same 2 / 1706 / 2105 while the installed
+package claimed to be **0.1.8**. Read against the 2026-09-02 v0.1.8 figures (5
+failed), that suggested the three closures had come from our own fixes rather
+than from the harness, and the v0.1.9 attribution above was briefly doubted.
+
+It was not a v0.1.8 run. The testcases were being collected from the working
+clone, already at `v0.1.9`, while only the installed distribution metadata
+still read 0.1.8 — `git pull` on the clone had not reinstalled into the venv.
+Both runs executed the same code, which is why the counts matched.
+
+Two things follow. The attribution stands. And the reason an hour went into
+doubting it is that nothing downstream of a run stated which harness produced
+it: `pkcs11-check` prints `provenance: pkcs11-check X.Y.Z` on every run, but
+that line lives in `run.log` and never reached `report.jsonl`, the summary, or
+this document. Fixed the same day.
+
+**Why the two are indistinguishable, by construction rather than by luck.** The
+profile is a compile-time constant. In `fips-strict`, `C_GetMechanismList`
+advertises only approved mechanisms and the dispatch guard rejects the rest —
+both *upstream* of any EVP fetch. So the harness gates its 2103 skips on the
+same list either way, and every mechanism it does exercise is one both
+providers serve identically. There is no path by which the provider's identity
+can reach an assertion.
+
+**Consequence: no dedicated CI job.** This was filed as work worth doing on the
+grounds that it was "roughly 1700 tests where `run_fips_tests.sh` has 37". The
+count was the wrong measure. What matters is whether any test can distinguish
+the configurations, and none can. A job costing an hour of CI per run to
+reproduce a number already known would be theatre.
+
+What does observe the delegation remains `tests/probe_fips_loaded` — which asks
+`OSSL_PROVIDER_available(NULL, "fips")` after `C_Initialize` — and the 37 tests
+`scripts/run_fips_tests.sh` runs against it. Thirty-seven tests that can tell
+the difference are worth more than 1700 that cannot.
+
+**What that comparison does not cover.** `report.jsonl` records test outcomes,
+not collection failures. `testcases/test_benchmark.py` (file 114 of 295) fails
+to import in every run we have made — see below — and appears nowhere in the
+report and nowhere in the summary line. The comparison above is therefore over
+what the report contains, and both runs were equally blind to the same file.
+That does not weaken the conclusion, since the absence is identical on both
+sides, but "3805 node-ids, nothing moved" covers less than it sounds like.
+
+---
+
+# The corpus was never downloaded (2026-09-07 / 08)
+
+Everything above this line — every count in this document, from the 517 failures
+of 2026-07-10 to the 3,813 assertions of yesterday — was measured against
+**4,014 vectors**. The corpus is **111,739**.
+
+`pkcs11-check` ships its harness and fetches the third-party vector sets
+separately, with `pkcs11-check fetch-data`. Neither `scripts/run_pkcs11_check.sh`
+nor either CI workflow ever called it. `fetch-data --status` showed all four
+sources absent: wycheproof, cctv, acvp, x509-limbo.
+
+Pointed out by @petrn in issue #10, in reply to our own question about why his
+figures did not match ours. He was reporting 35 failures and 3 crashes; we were
+reporting 2 and 0, and the difference was not the module.
+
+The header of `.github/workflows/pkcs11-check.yml` had described the harness as
+">100k vendor-neutral behavioral" tests since it was written. That was the
+harness's own description, not a statement about what ran.
+
+## What the full corpus found
+
+First run with the data present, against v2.0.3:
+
+| | |
+|---|---|
+| vectors | 111,098 |
+| passed | 34,052 |
+| failed | 300 (CRITICAL 299 · HIGH 1) |
+| crashed | **2** |
+
+Four defects, one of them a memory-safety fault, none of which any previous run
+could reach.
+
+### 1. Stack buffer overflow in `C_UnwrapKey` — GHSA-833h-crp9-f378
+
+Reported as `crash (signal1)` on `test_wycheproof_aes.py`. Reproducible in
+isolation, unlike the sibling `crash (timeout)` on `test_ccm.py`, which turned
+out to be load on a machine running a multi-hour job and passes on its own in
+113 seconds.
+
+`uint8_t pt[256]` on the stack; `EVP_DecryptUpdate` takes no output-capacity
+argument; `ulWrappedKeyLen` was never checked against it. Any blob over 264
+bytes wrote past the end, caught by the stack canary as
+`*** stack smashing detected ***`, exit 134.
+
+The same missing bound accepted nine forged blobs (`tc111-invalid` …
+`tc119-invalid`) — one defect, two symptoms.
+
+Written up in `SECURITY.md`. Fixed in `4586a34` with
+`tests/test_unwrap_len.c`, which exits 134 if the bound is removed.
+
+### 2. RSA-PSS ignored the caller's MGF — 267 vectors
+
+`op->pss_mgf` appeared three times in the tree: its declaration, its reset, its
+assignment. Never on the right-hand side of anything. OpenSSL therefore applied
+its default, MGF1 over the signature hash, and every vector asking for a
+different mask generation function had its **valid** signature rejected.
+
+The OAEP path has always called `EVP_PKEY_CTX_set_rsa_mgf1_md`. One branch
+handled the parameter, the other dropped it.
+
+Four call sites became one helper, `pss_apply_params()`, which returns an
+`fhsm_rv_t` so an unknown MGF is refused rather than ignored. One of the four
+had been discarding the return value of all three calls.
+
+Measured: fail 267 → 0, 1,423 passed.
+
+### 3. Invalid EdDSA public keys accepted — 4 vectors
+
+`EVP_PKEY_fromdata` takes the raw `pub` octet string as given: for Ed25519 and
+Ed448, any string of the right length is accepted, canonical or not, on the
+curve or not. Nothing downstream re-checks. `EVP_PKEY_public_check` added after
+`fromdata`; fail 4 → 0, 18 passed, and the signature vectors that already
+passed still do.
+
+### 4. Invalid EC public keys accepted — not measured, then measured
+
+The EdDSA fix deliberately stopped at the Ed path, with a comment saying so:
+adding a check to a branch carrying 15,057 passing ECDSA vectors on the
+strength of symmetry is how one trades four failures for many more.
+
+Measured the next morning: `EVP_PKEY_public_check` on the EC path refuses no
+valid key. 15,057 passed, 0 failed. The check costs one scalar multiplication
+per **key import**, not per operation — the harness imports tens of thousands
+of keys; an application imports a few and then signs with them.
+
+## Two more, from reading the report rather than the failures
+
+### Valid AES-KW blobs over 256 bytes refused
+
+Visible only once the crash stopped masking it: `tc10`, `tc52` and `tc107` are
+*valid* vectors whose plaintext exceeds the buffer. They aborted the process;
+then they were cleanly refused; now they are unwrapped. The buffer is 4 KiB.
+
+Not moved to `fhsm_secure_malloc`, which is where key material belongs:
+`C_UnwrapKey` has 28 return statements, about twenty after the allocation
+point, and one missed path leaks plaintext key material. That wants the
+function restructured around a single exit — as does zeroising the buffer,
+which the code does not do today at either size.
+
+### `CKM_AES_KEY_WRAP` had half a mechanism — #14
+
+PKCS#11 v3.2 §6.16.3 gives the AES key wrap mechanisms both Wrap & Unwrap and
+Encrypt & Decrypt. Only wrapping existed. The module was self-consistent about
+it — table said `wrap`, `C_GetMechanismInfo` reported `CKF_WRAP`,
+`C_EncryptInit` returned `CKR_MECHANISM_INVALID` — and consistently short of the
+specification.
+
+The dispatch table carried one `op` string per mechanism and could not express
+two families; `op` now accepts `wrap+encrypt` and `fhsm_mech_flags_for()` ORs
+the sets.
+
+The consequence was concrete: NIST publishes ACVP AES-KW and AES-KWP vectors at
+the byte level, and they drive `C_Encrypt`. **7,219 of 7,231, 100 %** — a body
+of official validation vectors that could not run at all against this module
+before.
+
+## Where it stands
+
+Final full-corpus run, 2026-09-09, signed module, FIPS provider, all seven
+changes:
+
+| | v2.0.3 (2026-09-07) | v2.1.0 |
+|---|---|---|
+| vectors | 111,739 | 111,739 |
+| passed | 34,886 | **42,363** |
+| failed | 2 | **2** |
+| CRITICAL | 1 | 1 |
+| HIGH | 1 | 1 |
+| crashed | 0 | **0** |
+| xfail | 27,693 | 20,223 |
+
+The 7,477 additional passes are the ACVP AES-KW and AES-KWP vectors that #14
+made reachable, which is close to the 7,219 that file reports on its own.
+
+**One measurement in between is worth recording, because it is why this
+document says "seven changes" and not six.** The first full run against the #14
+code reported **8 crashes**, all on `test_error_path_kwp.py`:
+
+    C_Decrypt wrote past the minimal output buffer on a corrupted
+    CKM_AES_KEY_WRAP_KWP error path: guard=00000000000000004b
+
+`EVP_DecryptUpdate` on AES-WRAP writes more than `ulEncLen - 8` bytes before
+the AIV check trims the result, so writing into the caller's buffer overran a
+buffer sized to the length we ourselves reported — and left unverified
+plaintext there on the error path. `C_UnwrapKey` has always decrypted into a
+local buffer and copied afterwards; the new path did not.
+
+That regression existed for about eighteen hours, on `main`, in no release. It
+was found by the run that exists to be made before tagging, which is the entire
+argument for making it before rather than after.
+
+An earlier run the same morning reported 90,056 vectors instead of 111,739 with
+no explanation. Its report directory was in `/tmp` and did not survive a
+reboot, so the discrepancy cannot be investigated and is recorded as an
+unexplained measurement rather than a finding. Reports now go to
+`~/Documents/dev/freehsm-reports/`.
+
+What remains:
+
+- **R1** — Tookan §3.3, `C_UnwrapKey` with `CKA_SENSITIVE=False`. A documented
+  position, not a defect to fix.
+- **R3** — AES-GCM IV reuse accepted. Same.
+- The optional IV parameter of §6.16.2 is honoured on neither the wrap nor the
+  encrypt path; both pass NULL and use the SP 800-38F default. #14 stays open.
+
+## What this episode is about
+
+Not the four defects. They are ordinary, and finding them is what the harness is
+for.
+
+It is that for two months this document reported counts without stating what
+they covered, and the number it did not state was off by a factor of 28. "Zero
+crashes" over 4,014 vectors and "zero crashes" over 111,739 are different
+claims, and nothing in the report, the summary or this file distinguished them.
+
+`provenance.txt` now records the harness version, the OpenSSL version, the
+module path and its SHA-256 for every run. It should record the state of the
+data sources too — that is the same lesson one iteration later, and it is not
+done yet.
+
+**Where it would become discriminating, and that is worth doing.** Build
+`interop` *and* sign it. The module then advertises SHA-1, MD5, 3DES and
+RSA-PKCS v1.5 while the FIPS provider refuses to serve them: the mechanism list
+promises what the EVP layer will not deliver. What the module does at that
+point — a clean `CKR_MECHANISM_INVALID`, or a failure further in — is not
+known, and it is the one question this harness is well placed to answer.
+Untested, and named rather than guessed.
+
+## H1 — `test_benchmark.py` cannot run from any published install (upstream)
+
+Not a FreeHSM finding. Recorded here because it silently subtracts one file of
+295 from every run this document reports, and because a run's summary line is
+the number that ends up in release notes.
+
+```
+[114/295] .../testcases/test_benchmark.py
+ImportError: Error importing plugin "benchmark": No module named 'benchmark'
+FAILED .../testcases/test_benchmark.py (1.2s)
+```
+
+pytest is given `-p benchmark`, resolves it through entry points first, finds
+none because **pytest-benchmark is not installed**, and falls back to importing
+a module literally named `benchmark`.
+
+The cause is in `pyproject.toml`. `pytest-benchmark>=5.2.3` appears only under
+`[dependency-groups] dev` — a PEP 735 group, which `pip install pkcs11-check`
+does not install, and neither does `pip install -e .`. It needs
+`pip install --group dev` or `uv sync`. So a test file shipped inside the
+package cannot execute for anyone who installs the package.
+
+**Why it matters beyond the one file.** The failure produces no record in
+`report.jsonl` (`grep -c benchmark` → 0) and no line in `== Summary ==`. It
+exists only in console output that scrolls past. A consumer reading either
+artefact concludes 295 of 295 files ran.
+
+Worked around locally with `pip install pytest-benchmark` in the harness venv.
+Not added to the pinned CI install: what CI measures should be what a published
+install gives, and a workaround there would hide the gap rather than close it.
+To report upstream.
+
+## R1 — `TestTookanUnwrapAttrs::test_unwrapped_key_cannot_unset_sensitive`
+
+An unwrap template carrying `CKA_SENSITIVE=False` produces a readable copy of a
+key that was sensitive before it was wrapped (Tookan §3.3). Reproduced during
+the campaign: a `SENSITIVE=True` AES key came back as
+`8a6257b04169cf7d5fe9e4d97484d71f` in the clear.
+
+**Position: hardening is opt-in, via `CKA_UNWRAP_TEMPLATE` on the unwrapping
+key.** A blanket refusal was implemented, measured, and reverted: it blocked
+this attack and broke seven legitimate round-trips, including the module's own
+`test_wrap_unwrap_oaep`. PKCS#11 has no way to say "this key was sensitive
+before it was wrapped" — the wrapped blob carries no attributes — so the choice
+is between refusing all attribute downgrades on unwrap or letting the operator
+state the policy. The spec provides `CKA_UNWRAP_TEMPLATE` for exactly that, and
+it is honoured on every unwrap path including the RSA v1.5 and raw-RSA ones
+added later.
+
+**What would move it:** deciding that the default should be restrictive and
+accepting that callers must set `CKA_UNWRAP_TEMPLATE` to permit downgrades —
+the inverse default. Defensible; it was not chosen because it breaks
+conforming callers silently at their next unwrap.
+
+## R2 — `TestAESPaddingOracle::test_cbc_pad_all_last_block_positions`
+
+`CKM_AES_CBC_PAD` decryption distinguishes a valid PKCS#7 pad from an invalid
+one, which is a padding oracle.
+
+**Position: inherent to the mechanism.** CBC-PAD without an authentication tag
+cannot report "this ciphertext did not decrypt" without revealing why, and
+`C_Decrypt` must return something. Suppressing the distinction would return
+garbage plaintext on corruption, which is worse for every honest caller.
+
+**What would move it:** nothing, short of removing `CKM_AES_CBC_PAD`. Callers
+who need integrity want `CKM_AES_GCM` or `CKM_AES_KEY_WRAP`. This is worth
+saying in user-facing documentation rather than only here.
+
+### Why it stopped reproducing — measured 2026-08-03
+
+The harness corrupts one byte of the *last* ciphertext block, which randomises
+the entire final plaintext block, then asks whether the module ever returns
+`CKR_OK`. A uniformly random 16-byte block carries valid PKCS#7 padding with
+probability
+
+    sum_{n=1..16} 256^-n  =  1/255  ~=  0.392%
+
+so over its 320 probes, P(not one lands on valid padding) = (1 - 1/255)^320
+~= **28%**. The test misses roughly one run in three or four. Its docstring
+asserts 0.05%, which is what you get from assuming 6/256 per probe — six times
+too high. Nothing about the module changed between the two runs.
+
+Measured directly against the module (`tests/test_cbc_pad_oracle.c`,
+three independent runs, 105 600 corruption probes):
+
+| | |
+|---|---|
+| accidentally-valid paddings | 433 |
+| probes | 105 600 |
+| rate | 0.0041 — one in 244 |
+| 95% CI | one in 271 … one in 222 — contains the theoretical 1/255 |
+| `CKR_OK` with plaintext matching the original | 0 |
+| rejections that were not `CKR_ENCRYPTED_DATA_INVALID` | 0 |
+| P(a 320-probe harness run finds nothing) | 28–31% |
+
+Two things follow, and they point in opposite directions.
+
+The finding is confirmed, not dismissed: the oracle is present, always was, and
+the position above is unchanged — it is inherent to CBC-PAD without
+authentication and the remedy is at the application layer.
+
+But the same numbers say the implementation is behaving correctly. 99.6% of
+corrupted ciphertexts are refused with the single code the spec defines, the
+residual matches theory to within sampling error, and no corrupted ciphertext
+ever decrypted back to the original plaintext. Had padding validation been
+missing, the rate would have been near 100%, which is the *worse* finding —
+unchecked malleability rather than a one-bit leak. That distinction is why
+`tests/test_cbc_pad_oracle` asserts a band rather than an absence.
+
+**Timing.** `test_aes_cbc_pad_decrypt_timing_sanity` had once reported a 22.5x
+valid/invalid ratio. Measured here over 48 000 decryptions: 986 ns for a valid
+padding against 1014 ns for an invalid one, a ratio of **1.03x**. No timing
+channel is detectable at this resolution — which is a statement about the
+resolution as much as about the module: `clock_gettime` overhead is tens of
+nanoseconds against a one-microsecond operation, single-threaded, with no
+control for cache state. It rules out a 22x difference. It does not rule out a
+few percent.
+
+### Not reported upstream — Denis had already fixed it (2026-08-03)
+
+We drafted a report and did not send it. Checking his repository first would have
+saved the trouble: `ad93ff9 fix(security): sound measurement in the
+padding-oracle suite`, dated **2026-07-30** and released in **v0.1.8**, four days
+before we wrote ours. Our local checkout was at v0.1.6 and we read it as current.
+
+He reached the same conclusion, in his own words:
+
+> about 1/256 per probe, not the 6/256 originally assumed. Over 320 probes
+> P(no such probe) = (1 - 1/256)\*\*320 ~= 29%
+
+and went further than we did. Where we had one module, he had a provider pool
+and the evidence to match: three rounds recording fail counts 10 → 17 → 14,
+flipping in both directions on the same provider across five commits. He then did
+the thing we had not thought to propose — reclassified the outcome rather than
+just widening the sample. `classify_padding_outcomes` now returns
+`inherent_channel` for the valid-and-invalid mix, which is **not a failure**,
+because it is what every conforming CBC-PAD implementation does; the CRITICAL
+compliance note is still recorded so the channel is reported. Only
+`unchecked_malleability` — the module that validates nothing — remains a fail.
+
+**So R2 is no longer an open failure against us.** Our position and his
+classification now say the same thing, arrived at independently. That is a better
+outcome than a report would have been.
+
+# Two found without a harness (2026-09-12 / 14)
+
+Both were found by the module's own checks rather than by pkcs11-check, and
+neither could have been found by it. Recorded here because this file is where
+the project keeps what it learns, and because the pattern they share is more
+useful than either one.
+
+## The ratchet had a blind spot exactly where it was needed
+
+`tests/test_advertised_operational` asks `C_GetMechanismInfo` which operation
+each advertised mechanism claims, calls it, and fails on
+`CKR_MECHANISM_INVALID`. It was written on 2026-09-09 to make
+"advertised but not operational" a build failure rather than a finding.
+
+It skipped `CKF_GENERATE` and `CKF_GENERATE_KEY_PAIR`, on the reasoning that
+key generation needs a per-mechanism template and a generic probe would report
+noise. Ten of 78 mechanisms were outside its reach.
+
+Three days later `CKM_EC_MONTGOMERY_KEY_PAIR_GEN` was added, marked approved,
+and advertised in a build whose FIPS provider has no X25519 at all:
+
+```
+inner_evp_generic_fetch: unsupported:
+Algorithm (X25519 : 112), Properties (<null>)
+```
+
+The test written to make that impossible could not see it. `run_fips_tests.sh`
+caught it instead, because it runs without the integrity bypass and therefore
+inside the evaluated configuration — the one place in this project where the
+two providers differ visibly.
+
+**The reasoning was wrong in a way worth stating.** The template does not have
+to be correct. Only `CKR_MECHANISM_INVALID` counts as a failure, so the probe
+only needs to *reach* the mechanism switch, and every entry point runs its
+generic template checks first and its switch after. A template that is wrong
+for the mechanism comes back `CKR_ATTRIBUTE_VALUE_INVALID` or
+`CKR_TEMPLATE_INCONSISTENT` — which means the mechanism was recognised, which
+is the whole question. The key-pair probe now carries both `CKA_MODULUS_BITS`
+and `CKA_EC_PARAMS`: wrong for every mechanism, right for the question.
+
+On the first run after the extension:
+
+```
+0x402c  advertises GenerateKey but C_GenerateKey returns CKR_MECHANISM_INVALID
+```
+
+`CKM_HKDF_KEY_GEN`, advertised since the mechanism table replaced the
+hand-written list and refused by `C_GenerateKey` for just as long. No harness
+ever reported it. It was not noticed earlier the same evening either, while
+`CKM_HKDF_DERIVE` and `CKM_HKDF_DATA` were being implemented with all three
+sitting together in the same table.
+
+Now `119` operations probed across `78` mechanisms, `0` outside the ratchet's
+reach.
+
+## KMAC was advertised on code points that do not exist
+
+`CKM_KMAC128` = `0x4080` and `CKM_KMAC256` = `0x4081`. Neither is a PKCS#11
+mechanism. The OASIS v3.2 `pkcs11t.h` contains no KMAC of any spelling, and
+the standard mechanism range it defines ends at `CKM_PUB_KEY_FROM_PRIV_KEY` =
+`0x403A`.
+
+The table entries cited SP 800-185 §4 — the standard for the algorithm, which
+says nothing about a PKCS#11 code point. A reference to the right document for
+the wrong question reads like a verification that happened.
+
+**Unassigned is worse than wrong.** OASIS may assign `0x4080`. An application
+written against this module would then ask for one mechanism and be handed
+another — the CMAC/GMAC inversion recorded at `CKM_AES_GMAC`, pointed forward
+instead of back.
+
+Removed rather than moved into `CKM_VENDOR_DEFINED` (`0x80000000`), where the
+two hybrids correctly live, because nobody has asked for KMAC and nothing
+external could reach it. pkcs11-check's own KMAC tests resolve mechanism names
+through a table with no KMAC entry, so they skip against every module — which
+is why no report in this file ever mentioned them. Reported upstream.
+
+**How it was found.** By starting to implement the two mechanisms, and
+checking their code points against the OASIS table first, per the rule this
+project wrote for itself after the GMAC incident. That rule had not yet caught
+anything. It has now, and what it caught was our own.
+
+## What these two have in common
+
+Neither was findable by measurement. The first was invisible because the
+instrument did not look there; the second because no instrument could — the
+mechanism was unreachable by name from outside.
+
+Both were found by reading the module against its own rules: one by asking why
+ten mechanisms were exempt from a check meant to be exhaustive, the other by
+following a verification rule to a source. Harnesses find what they have
+vectors for. This file has spent two months recording what that misses, and
+these are two more.
+
+## A note on the history
+
+`CKM_HKDF_KEY_GEN` and the ratchet extension were committed inside
+`b850db7` (X25519) and `bf849db` (KMAC removal), whose messages describe
+neither. A prepared commit for them was never run, and `git status` was not
+re-read before the commit that swept them up. The history is public and was
+not rewritten; this section is the record instead.
+
+What survives from our side, and is worth keeping: the 105 600-probe measurement
+of *our* module's behaviour, and `tests/test_cbc_pad_oracle.c`. Neither depends
+on the harness. The one residue upstream is cosmetic — the docstring of
+`test_cbc_pad_all_last_block_positions` still carries the old
+"~6/256 ≈ 2.3% … about 0.05%. Effectively-deterministic detection" text, which
+the corrected `classify_padding_outcomes` sitting above it now contradicts. A
+file that contradicts itself, which is precisely what we fixed in this repo the
+same week (#128's heading). Worth a three-line PR, not a report.
+
+**The lesson is ours to keep.** Three times in one day a conclusion was drawn
+from a stale copy — a sandbox working tree, stale remote-tracking refs, and this
+checkout. The first two cost nothing. This one was addressed to a person. Refresh
+before reading, and check the upstream fix before writing the upstream report.
+
+## `CKA_ALWAYS_AUTHENTICATE` was stored, reported, and enforced nowhere (2026-09-16)
+
+The full corpus, on the run of 2026-09-15, returned a failure that had not
+appeared before:
+
+```
+C_Sign on a CKA_ALWAYS_AUTHENTICATE=True key without
+CKU_CONTEXT_SPECIFIC login                                    [CRITICAL]
+```
+
+It is new to the report and not new to the module. It appeared now for the same
+reason yesterday's GMAC findings did: the corpus reaches a test once the tests
+before it stop failing. The defect is older than its first measurement, which is
+the third time in two weeks that sentence has been true here.
+
+### What the module did
+
+`C_GenerateKeyPair` read `CKA_ALWAYS_AUTHENTICATE` from the private template and
+stored it as `FHSM_OBJF_ALWAYS_AUTH`. `C_GetAttributeValue` read it back as
+`TRUE`. `C_Sign` never consulted it. And `C_Login(CKU_CONTEXT_SPECIFIC)`
+returned `CKR_FUNCTION_NOT_SUPPORTED` whenever an operation was active, with a
+comment saying why:
+
+> the module stores `CKA_ALWAYS_AUTHENTICATE` but does not yet gate operations
+> on it, so accepting a re-authentication would claim a control that nothing
+> enforces. Refusing what we cannot enforce, as elsewhere.
+
+That reasoning is sound and it addressed the smaller half of the problem. The
+refusal made the module honest about the one call it did not implement, and
+left it silent about the control it was not applying. An application that set
+the attribute and then read it back to confirm — which is what a careful
+application does — was told it held a protection it did not hold. A missing
+feature is discovered; a false confirmation is acted upon.
+
+### What it does now
+
+The attribute is read once, at `op_init`, into per-operation state, so every
+`C_*Init` gets the same answer from the same place. `C_Login(CKU_CONTEXT_SPECIFIC)`
+verifies the PIN and marks the session's active operations as re-authenticated.
+`C_Sign`, `C_SignUpdate`, `C_SignFinal`, `C_Decrypt`, `C_DecryptUpdate` and
+`C_DecryptFinal` refuse with `CKR_USER_NOT_LOGGED_IN` until it has.
+
+Three details worth stating rather than leaving to be inferred:
+
+* **The PIN is really verified.** `fhsm_token_login` could not be reused: its
+  first act, when the requested role is already the current one, is to return
+  `CKR_USER_ALREADY_LOGGED_IN` — before the PIN is read. Re-authenticating
+  through it would have accepted any PIN at all, which is the exact failure the
+  re-authentication exists to prevent. `fhsm_token_verify_pin` was added for
+  this, with the same failure counter and throttle as the login path so that
+  asking to re-authenticate is not an unthrottled PIN oracle.
+* **One re-authentication authorises one operation, not one call.** The flag is
+  cleared by `op_init`, so the next `C_SignInit` starts unauthorised. Clearing
+  it per call instead would have broken the ordinary size query — `C_Sign(NULL)`
+  then `C_Sign(buf)` — where the first call produces no signature.
+* **The scope is stated, not implied.** The gate is on the operations that have
+  an Init step for the re-authentication to attach to. `C_UnwrapKey` and
+  `C_DeriveKey` are single calls with no moment between "initialised" and
+  "used", so they are not gated and the module does not claim they are.
+
+### The shape, again
+
+`C_GenerateKeyPair` honoured the attribute on the private template.
+`C_CreateObject` did not — so the same key imported rather than generated read
+back `FALSE`, and the one place the flag was stored was reached by one of the
+two ways in. That is the recurring defect of this file, found this time by
+looking for it rather than by being told.
+
+`tests/test_always_authenticate.c` checks both directions of the loop: that the
+gate refuses, that a correct PIN opens it, that a wrong PIN does not, that the
+authorisation dies with the operation, and that a key without the attribute is
+untouched.
+
+## `CKM_HKDF_DATA` — a test that agreed with the code it was written beside (2026-09-17)
+
+The corpus reported:
+
+```
+advertised but rejected a canonical op (1): CKM_HKDF_DATA
+```
+
+That line is set algebra, computed in `report/capability.py` as
+`advertised ∩ rejected − accepted`: the mechanism was refused at least once
+and accepted nowhere. It says the module refuses something. It does not say
+what, and there were two candidates — a missing `CKA_VALUE_LEN` and the
+`CKA_DERIVE` usage gate on the base key.
+
+`tests/probe_hkdf_data.c` was written to ask rather than reason, reproducing
+the harness's own call shapes:
+
+```
+base key: CKK_GENERIC_SECRET, CKA_DERIVE=TRUE
+  A  HKDF_DATA   extract+expand, no CKA_VALUE_LEN    0xd0  CKR_TEMPLATE_INCOMPLETE
+  B  HKDF_DERIVE extract+expand, no CKA_VALUE_LEN    0xd0  CKR_TEMPLATE_INCOMPLETE
+  C  HKDF_DATA   extract+expand, CKA_VALUE_LEN=32    0x0   CKR_OK  (32 bytes)
+  D  HKDF_DATA   extract only,   no CKA_VALUE_LEN    0x0   CKR_OK  (32 bytes)
+  E  HKDF_DATA   expand only,    CKA_VALUE_LEN=32    0x0   CKR_OK  (32 bytes)
+base key: CKA_DERIVE=FALSE
+  F  HKDF_DATA   extract+expand, CKA_VALUE_LEN=32    0x68  CKR_KEY_FUNCTION_NOT_PERMITTED
+```
+
+A and B agree, so nothing about it is specific to `CKM_HKDF_DATA`. C succeeds,
+so the missing `CKA_VALUE_LEN` is the whole of it. F is a correct refusal on a
+different rule and is not involved — the harness's base key carries
+`CKA_DERIVE`.
+
+### Why only one of the two was named
+
+`pkcs11-check`'s `_hkdf_derive` and `_hkdf_data_derive` helpers carry
+**identical** attribute templates; neither sets `CKA_VALUE_LEN`. The module
+refused both. `CKM_HKDF_DERIVE` stayed off the list because some other test
+accepted it, and the set difference removed it. The report named the mechanism
+that happened to have no second test, not the one that behaved differently.
+Reading the line as "HKDF_DATA is broken and HKDF_DERIVE is fine" would have
+sent the fix to the wrong place.
+
+### What the spec says
+
+PKCS#11 v3.2 §6.62.3, verbatim:
+
+> If bExpand is set to true, CKA_VALUE_LEN **should** be set to the desired key
+> length. If it is false CKA_VALUE_LEN may be set to the length of the hash,
+> but that is not necessary as the mechanism will supply this value.
+
+"should" — where §6.62.5, two sections later, writes "CKA_VALUE_LEN **must** be
+set in the template" for `CKM_HKDF_KEY_GEN`. The same document uses "must" a
+few lines away when it means must. Our `CKR_TEMPLATE_INCOMPLETE` was stricter
+than the standard, and turned a caller's permitted omission into an error.
+
+It was also the recurring shape once more: extract-only already supplied the
+hash length for a template that said nothing (case D), and the neighbouring
+branch demanded it. One rule, wired to one of the two paths that reach it.
+
+Now the hash length is supplied in both. The cost is stated rather than left to
+be discovered: a caller who simply forgot `CKA_VALUE_LEN` gets 32 bytes instead
+of a diagnosis. That is the trade §6.62.3 made by writing "should".
+
+### The part worth keeping
+
+`tests/test_derive_hkdf.c` case (7) had asserted
+`CKR_TEMPLATE_INCOMPLETE` for exactly this input. It was written the same
+afternoon as the code, from the same reading of the spec, and so it confirmed
+the reading instead of testing it. A test written beside the code it tests, by
+the same pair of eyes, on the same day, checks that the code does what its
+author meant — not that its author read the standard correctly. The corpus is
+what read the standard back to us, three days later.
+
+## HKDF carried the concatenation family's ceiling (2026-09-17)
+
+Found in the same scoped run as the `CKA_VALUE_LEN` fix above, and only
+because the scope gave HKDF a view the full corpus drowns: nine records in the
+xfail bucket, three per hash, on approved hashes and vectors marked valid.
+
+```
+hkdf_sha256_test.json:tc24, tc47, tc73
+hkdf_sha384_test.json:tc21, tc44, tc67
+hkdf_sha512_test.json:tc21, tc44, tc67
+    CKR_ATTRIBUTE_VALUE_INVALID; expected CKR_OK
+```
+
+They ask for outputs between 4096 bytes and RFC 5869 §2.3's cap of
+255 × HashLen — 8160 under SHA-256, 16320 under SHA-512. The module applied
+`FHSM_DERIVE_MAX`, which is 4096 and was written for the §6.20 combiners;
+HKDF was wired onto it when HKDF was implemented. One constant, two mechanisms
+whose legitimate ranges differ. The recurring shape, arriving this time as a
+bound rather than a rule.
+
+`FHSM_DERIVE_MAX` is left where it is. Its stated reason — "the token object
+store's practical ceiling" — describes a store that changed in #110:
+`FHSM_OBJ_VALUE_MAX` has been 2 MiB since the v2 format, so 4096 outlived the
+fact that justified it. That is worth knowing and is not worth changing on the
+way past: the combiners bound two caller-supplied inputs being concatenated,
+where a ceiling is a defence rather than a transcription of a spec.
+
+### Two readings that were wrong on the way
+
+**The summary's example is not the summary's rule.** The report line read:
+
+```
+[93] not_operational — e.g. HKDF derive failed for valid vector
+     hkdf_sha1_test.json:tc1-valid: Unexpected CK_RV CKR_MECHANISM_PARAM_INVALID
+     | by param: hash=sha-1 (84), hash=sha-256 (3), hash=sha-384 (3), hash=sha-512 (3)
+```
+
+and the `CKR_` in it was carried over to all ninety-three. It belongs to the
+one example after "e.g.", a SHA-1 record. The nine return
+`CKR_ATTRIBUTE_VALUE_INVALID`, which has exactly one source in the HKDF branch
+and named the defect immediately. Reading `report.jsonl` rather than the
+rendered summary is what settled it, and should have been the first move.
+
+**A probe run beside the configuration under test measures nothing about it.**
+The first probe invocation carried `FHSM_INTEGRITY_ALLOW_UNSIGNED=1`, so it
+ran against the default provider while the corpus had measured the signed
+module against the FIPS provider. The result happened to be identical, so
+nothing was concluded wrongly — but it was luck, not method, and this file has
+recorded the same mistake three times before under "measuring something
+adjacent to the object under test".
+
+### The SHA-1 eighty-four
+
+The remaining 84 are every valid vector in `hkdf_sha1_test.json`, refused
+because `digest_mech_to_hash` rejects a non-approved PRF under `fips-strict`.
+That is the profile working as designed and not a defect; it is recorded here
+so that the number is explained rather than left looking like a hole, and so
+that a decision to change it would be a decision rather than a drift.
+
+## `CKM_ML_KEM` was advertised through a door the module never opened (2026-09-18)
+
+The full run of 2026-09-16 carried one line that looked like the least
+interesting on the page:
+
+```
+- advertised, no canonical accept/reject observed (1): CKM_ML_KEM
+```
+
+"Limbo", in `report/capability.py`'s set algebra: advertised, never accepted,
+never rejected, never crashed. The report also carried a data-quality caveat,
+so the first reading was that the harness had simply not reached it — a gap in
+the measurement rather than in the module. That reading was wrong, and the
+`functions 67/92` on line 6 of the same report was the other half of the
+sentence.
+
+### What was true
+
+`CKM_ML_KEM` is advertised by `C_GetMechanismList`. `C_EncapsulateKey` and
+`C_DecapsulateKey` are implemented, exported, and covered end to end by
+`tests/mlkem_e2e.c`, which passes.
+
+And no application could call them. The only interface the module published
+was v3.0, whose function list ends at slot 91. Encapsulation is a v3.2
+addition at slots 92 and 93 — in the OASIS `pkcs11f.h` it sits behind
+`#ifndef CK_PKCS11_3_0_ONLY`. A caller that loaded the module the normal way
+saw the mechanism in the list and had no function to invoke it with.
+
+`tests/mlkem_e2e.c` says so in its own first lines, and had said so since it
+was written:
+
+> Exercises the v3.0-extended C_EncapsulateKey / C_DecapsulateKey symbols
+> **which are NOT in the legacy CK_FUNCTION_LIST**. We dlopen the module and
+> call them directly.
+
+It was recorded as a property of the test. It was a gap in the module.
+
+### The part that would have been worse than the gap
+
+Wiring the existing functions into slots 92 and 93 was nearly a one-line
+change, and would have shipped memory corruption. The module's signature was
+
+```c
+C_EncapsulateKey(hSession, pMechanism, hPublicKey, pTemplate, ulCount,
+                 phNewKey, pCiphertext, pulCiphertextLen)
+```
+
+against the OASIS v3.2 header's
+
+```c
+C_EncapsulateKey(hSession, pMechanism, hPublicKey, pTemplate, ulAttributeCount,
+                 pCiphertext, pulCiphertextLen, phKey)
+```
+
+The last three arguments are permuted. A conforming caller's `pCiphertext`
+would have arrived where the module expects `phKey` — a `CK_BYTE *` read as a
+`CK_OBJECT_HANDLE *`, and written to. Not a wrong return code: a write into
+the caller's buffer.
+
+The signature had been written without the header in front of it; the comment
+above it called these "PKCS#11 v3.0 extended functions", and there are no such
+functions in v3.0. Nothing ever disagreed, because the only caller was
+`mlkem_e2e.c`, written from the same assumption. Two pieces agreeing with each
+other and never meeting a third.
+
+No caller can be broken by the correction: the functions were in no function
+list, so the only way to reach them was `dlsym` plus knowledge of our order.
+
+### What changed
+
+* Both signatures now follow the OASIS v3.2 order, and `mlkem_e2e.c` with
+  them.
+* A `fhsm_function_list_3_2` (104 slots, version `{3,2}`): 0–91 verbatim from
+  the v3.0 table, 92 and 93 wired, 94–103 refusing through the same
+  `fhsm_not_supported` as everything else the module does not implement. Two
+  of twelve v3.2 functions. This is not a claim to implement v3.2.
+* `C_GetInterfaceList` reports both interfaces, newest first.
+  `C_GetInterface` matches on the requested version and refuses one it does
+  not publish. **The default for a NULL version stays v3.0** — the comment
+  above `fhsm_init_v3_0_table` records a version mismatch that once made
+  `pkcs11-tool` dereference past the end of an array, and a caller passing
+  NULL has said nothing about what it can read. `pkcs11-check` asks for
+  `{3,2}` explicitly (`raw/api.py`), which is what made the change worth
+  making. The policy is one line to reverse.
+* Slots 68 and 69 of the v3.0 table were wired only inside `C_GetInterface`,
+  so a caller arriving through `C_GetInterfaceList` found `fhsm_not_supported`
+  in the two slots that make a v3.0 module a v3.0 module. Now filled where the
+  rest of the table is.
+
+### `tests/test_interface_v32.c`
+
+Every other test in the suite reaches the module with `dlsym`. That is right
+for checking arithmetic and useless for checking reachability, and the
+difference is the whole of this finding. The new test calls `dlsym` exactly
+twice — for `C_GetInterfaceList` and `C_GetInterface`, which is how an
+application bootstraps — and everything after goes through the function-list
+pointers the module hands back. A function it cannot reach is a function no
+caller can reach.
+
+It also pins the argument order by calling through the table with the spec's
+order, which is the disagreement nothing could produce while the only caller
+shared the module's assumption.
+
+### What the door cost on the way through
+
+The first run after publishing the v3.2 interface returned **crash 3**,
+against crash 0 every day this month. All three were the same probe:
+
+```
+security/test_arithmetic_overflow.py -
+C_DecapsulateKey(ML-KEM output template_count=0xffffffffffffffff):
+module crashed with signal 11
+```
+
+`fhsm_check_template` exists because of that test — its comment names it — and
+had never been wired into `C_EncapsulateKey` or `C_DecapsulateKey`. It could
+not have been found: the test cannot reach a function that is in no function
+list. **Opening the interface did not create the hole. It made it measurable,
+which is the argument for opening it.**
+
+Asking the question at the level of the class rather than the instance found
+three more entry points that take a caller template with no bound on the
+count: `C_DeriveKey`, `C_UnwrapKey`, `C_CopyObject`. `C_DeriveKey` doubly —
+the two length checks it *does* call open with `if (n == 0 || t == NULL)
+return OK` and then iterate `n`, so they walked the absurd count themselves
+before the body was reached. Five entry points missing it, against seven that
+had it. `C_GetAttributeValue` was suspected and cleared: it carries the same
+bound inline with a written reason for not using the shared helper.
+
+### A wrong turn, recorded
+
+The first fix attempted for those crashes was a per-version static
+`CK_INTERFACE`, on the theory that one shared static was being overwritten
+between calls. The run after it was **byte-identical** — 121 passed, 211
+skipped, crash 3 — which is what a wrong theory looks like, and the same
+signal that settled the secp521r1 question on 2026-09-12.
+
+The static bug is real and the fix stayed: a caller is entitled to hold the
+interface the spec hands it, and `test_interface_v32.c` now checks that a held
+`{3,2}` survives a later request for `{3,0}`. But it was written as an
+explanation for a crash it did not explain, before the report naming the crash
+had been read. Twice in one afternoon a conclusion preceded the evidence; both
+times the evidence was one grep away.
+
+### What it made visible
+
+Three ML-KEM behaviours no measurement could reach before, none of them
+regressions:
+
+* **HIGH** — `C_DecapsulateKey` accepts `CKA_VALUE` injected into the template
+  and returns `CKR_OK`. The value is ignored; it comes from the shared secret.
+  Accepting in silence what one ignores is the shape removed from
+  `CKM_AES_GMAC` two days earlier.
+* **MEDIUM ×2** — `C_EncapsulateKey` hard-codes `CKK_GENERIC_SECRET` and reads
+  neither `CKA_KEY_TYPE` nor `CKA_VALUE_LEN` from the template, so a caller
+  asking for an AES-128 key reads back a generic secret. The same shape
+  `derive_store_secret` carried until `CKM_HKDF_DATA` was wired onto it.
+* **100 vectors** — ML-KEM public-key import through `C_CreateObject` returns
+  `CKR_TEMPLATE_INCONSISTENT`.
+
+## `CKA_ENCAPSULATE` / `CKA_DECAPSULATE`, and what counts as a claim (2026-09-19)
+
+```
+[1] C_DecapsulateKey CKM_ML_KEM - decapsulate with CKA_DECAPSULATE=False on
+    private key (§5.14.8 requires CKR_KEY_FUNCTION_NOT_PERMITTED):
+    claimed the protection then returned CKR_OK          [CRITICAL]
+[1] C_EncapsulateKey CKM_ML_KEM - encapsulate with CKA_ENCAPSULATE=False
+    on public key (§5.14.7): idem
+```
+
+Under harness 0.1.9 the same behaviour was an `honest_deviation` — "module
+does not claim the protection". It was checked here on 2026-09-18 and the
+check was right as far as it went: the module neither stored nor reported the
+attributes, so it was not claiming anything.
+
+0.2.0 changed what counts as a claim, and the change is correct.
+`testcases/test_kem.py`, verbatim:
+
+> Creation-time template acceptance is independent claim evidence: [...]
+> reaching this point already proves the module accepted
+> `CKA_DECAPSULATE=False` at create. The readback below corroborates the claim
+> where available, but a missing readback must not downgrade it — that would
+> let one unreadable attribute mask a proven decapsulate-permission violation.
+
+**Accepting an attribute in silence is the claim.** A caller who sets it, gets
+`CKR_OK`, and watches the operation succeed has no way to learn it was
+dropped. Which makes the earlier verdict — mine — the narrower reading of two
+defensible ones, and the harness's the better.
+
+The module already held the rule, on the wrong path. `C_GenerateKey` rejects
+both attributes on a symmetric template with a comment calling that better
+than ignoring them; `C_GenerateKeyPair` ignored them. One rule, wired to the
+path where the attributes mean nothing.
+
+### Where the bits went
+
+Both per-object bytes were full, and the flags byte said so itself:
+
+> NOTE: this is the last bit of the flags byte. A further per-object boolean
+> needs a wider field; the v3 record (#125) exists now, so that is a matter of
+> spending a byte in it rather than a format change.
+
+The v3 record ends its extension with `pad(1)` at offset 203, written
+`out[off + 203] = 0` and read by nobody — one occurrence in the whole tree,
+checked before the plan was written rather than after. That is the byte.
+
+**The bits are negative: set means restricted.** Zero therefore means
+permitted, which is both the spec default and what every record written before
+today already carries, so v1, v2 and older v3 records keep their meaning with
+no migration. The compatibility story is the polarity, not a special case.
+
+### Six call sites, listed before any was written
+
+The recurring defect of this file is a rule wired to some of the paths that
+reach a state, so the list came first: the token accessors, `C_GenerateKeyPair`,
+both creation tails of `C_CreateObject`, `C_CopyObject`, `C_GetAttributeValue`,
+and the two operations. `C_CopyObject` is on it deliberately — its own comment
+records it as "fifth of six creation paths to be missed by a guard wired only
+to the others", and a copy that could shed a restriction would be the obvious
+way around the control.
+
+### A second observation, not fixed here
+
+Writing the store round-trip test turned one up. **Login state survives
+`C_Finalize`.** After `C_Finalize` and a fresh `C_Initialize`, `C_Login` answers
+`CKR_USER_ALREADY_LOGGED_IN`: the token object and its authenticated state
+outlive the library's lifecycle, so the store is never re-parsed either.
+
+Two consequences. An application that finalizes and re-initializes inherits
+the previous authenticated state, which is not what §5.6 describes. And no
+test driving the module through PKCS#11 can stage a reload — which is why the
+round trip for these bits lives at the token layer in
+`tests/test_encap_flags_store.c`, following `test_throttle_reboot`: "a reboot
+cannot be staged inside a test, but it does not have to be: the file is the
+whole interface between two boots".
+
+Recorded rather than repaired on the way past. It deserves its own reading.
+
+## The forty CRITICALs were eight behaviours (2026-09-19)
+
+The first full run under pkcs11-check 0.2.0 returned `fail 51 (CRITICAL 40 ·
+HIGH 9)`, against 4 the day before under 0.1.9. Neither number means what it
+looks like on its own: the corpus changed size (92,609 vectors against
+112,038) and 0.2.0 both removed 63 invented findings and restored hard
+failures that had been mere deviations. Totals across the two versions do not
+compare. Composition does.
+
+Forty CRITICALs were **eight behaviours**, one of which accounted for thirty.
+Four were repaired the same day; what follows is what they had in common,
+because that is more useful than four accounts of four bugs.
+
+### The shared sentence
+
+Three of the four are the same finding text: *"claimed the protection then
+violated it"*, which 0.2.0 produces from `classify_policy_enforcement` when a
+module reports a protective attribute back and then breaches it. Its
+docstring is the whole lesson:
+
+> `not claimed` → xfail (honest non-support of an optional protection);
+> `claimed` and `violated` → fail (the module claimed the protection then
+> violated it — a self-contradiction, broken for any provider).
+
+And 0.2.0 widened what counts as claiming: **accepting an attribute in a
+creation template is itself the claim**, whether or not the module can report
+it back. That is the change that moved `CKA_ENCAPSULATE`, `CKA_DECAPSULATE`,
+`CKA_COPYABLE` and `CKA_ALLOWED_MECHANISMS` from honest non-support to
+contradiction — and it is the better reading. A caller who sets an attribute,
+receives `CKR_OK`, and watches the operation succeed has no way to learn it
+was dropped.
+
+The module already held that rule and had wired it to one path. `C_GenerateKey`
+has rejected `CKA_ENCAPSULATE` on a symmetric template since #125, with a
+comment calling that better than ignoring it. `C_GenerateKeyPair` ignored it.
+
+### The four, and what each needed
+
+| Finding | Count | Answer |
+|---|---|---|
+| `CKM_AES_GMAC` tag does not match the known answer | 30 | Parse `CK_GCM_PARAMS`; honour `ulTagBits` |
+| `CKA_ENCAPSULATE` / `CKA_DECAPSULATE` unenforced | 2 | Store in a new flags byte; enforce; report |
+| `CKA_COPYABLE` accepted, reported `TRUE` regardless | 2 | Same byte, one more bit |
+| `CKA_ALLOWED_MECHANISMS` accepted and dropped | 1 | Refuse: the module cannot store a list |
+
+Three of the four had nowhere to put a bit. Both per-object bytes were full,
+and the flags byte said so itself — "this is the last bit [...] the v3 record
+exists now, so that is a matter of spending a byte in it rather than a format
+change". The v3 record's `pad` at offset 203 was that byte: written zero,
+read by nobody, one occurrence in the tree. The bits placed there are
+**negative** — set means restricted — so every record written before today
+still reads as permitted, and backward compatibility is a consequence of the
+polarity rather than a migration.
+
+The fourth could not take that route. `CKA_ALLOWED_MECHANISMS` is a list, and
+a bit is not a list; refusing it is the honest answer until the store can hold
+one.
+
+### The thirty
+
+`CKM_AES_GMAC` was not that family at all. The module parsed `CK_GCM_PARAMS`
+for `CKM_AES_GCM` only, so the canonical parameter block for GMAC fell through
+to a raw-IV branch and had its 48 struct bytes — the first eight a pointer —
+read as an IV. Every tag was wrong.
+
+It became measurable only because **this module published a v3.2 interface the
+day before**: pkcs11-check picks the GMAC parameter form from the interface
+version it negotiates, and had been sending a bare IV, the one form the module
+handled. Opening one door exposed the next defect, for the fourth time in
+three days.
+
+The raw-IV branch also probed a 16-byte parameter for a
+`CK_AES_GMAC_PARAMS = { ulIvLen; pIv }` its comment called "PKCS#11 v3.2
+canonical form". No such structure exists — not in the OASIS `pkcs11t.h`,
+which carries exactly one GMAC line, and not in pkcs11-check, which implements
+every parameter structure from v2.40 to v3.2. Both checked. It is the third
+invented structure found this week, after the KMAC code points and the
+permuted `C_EncapsulateKey` signature.
+
+### Method, since it went wrong twice and was caught twice
+
+Both times a conclusion preceded the evidence, and both times the evidence was
+one command away.
+
+The GMAC diagnosis was nearly made against the **wrong source**: the report
+named the installed 0.2.0, while the working checkout was still at 0.1.9 and
+its `test_acvp_aes_gmac` called a different function with a different
+classifier. Caught by noticing that the code being read could not have
+produced the report being read.
+
+A regression was then announced in the module when two cases of the new GMAC
+test failed. They failed because the test's own size query — `C_Sign` with a
+NULL buffer — leaves the operation active by design, and the test never came
+back with a buffer. `CKR_OPERATION_ACTIVE`. The module was right; the test was
+wrong. The case added to repair it now pins that an operation survives a size
+query, which the module had correct and nothing held.
+
+## Two findings in the harness, not in the module (2026-09-19)
+
+Both were read out of pkcs11-check 0.2.0's own source and then measured before
+being written up. Neither is a module defect, and neither cost us a fix; they
+are recorded here because the numbers are ours and would otherwise live only
+in a run directory.
+
+    pkcs11-check   0.2.0 (b7f860d)
+    openssl        3.5.7
+    module-sha256  e62ec7b43981685457b28f673d02f4abd9b516dcb8cf38648aaa5c654a6a3ebd
+    scope          -k "mldsa_siggen or mldsa_sigver or
+                        always_authenticate_with_context_login"
+    result         passed 225/341 · fail 0 · crash 0 · xfail 71
+
+### Three tests disagree about `C_Login(CKU_CONTEXT_SPECIFIC)`
+
+Three places call it with no operation in progress.
+`test_always_authenticate.py::test_context_specific_login_without_active_op_rejected`
+and `test_v30_session.py::test_context_specific_login_without_active_op` both
+require `CKR_OPERATION_NOT_INITIALIZED`, the second quoting the v2.40 §11.6
+error table. `test_access_levels.py::test_always_authenticate_with_context_login`
+expects `CKR_USER_ALREADY_LOGGED_IN` — its own comment states the order, "Do
+context-specific login, then sign", and no `C_SignInit` precedes it.
+
+Under 0.1.9 our answer produced a skip. Under 0.2.0 it produces one deviation:
+
+    [1] nonspec_reject -> SPEC_REVIEW - e.g. C_Login
+        actual_ckr CKR_OPERATION_NOT_INITIALIZED
+        "Context-specific C_Login for CKA_ALWAYS_AUTHENTICATE:
+         provider rejected with a non-spec CKR"
+
+The sibling test in the same file has the spec's order — `C_SignInit`, then
+the context login, then `C_Sign` — so the suite contains both shapes.
+
+### Hash-ML-DSA for SHA2 and SHAKE is gated and recorded as `ML_DSA`
+
+`get_mldsa_mechanism` normalises the ACVP spelling before looking up
+(`SHA2-` → `SHA-`, `SHAKE-` → `SHAKE`) and raises on a miss. `_get_mech_name`,
+in the test module, is keyed on the PKCS#11 spelling, is handed the ACVP one,
+and returns `"ML_DSA"` on a miss. So the harness performs `CKM_HASH_ML_DSA_*`
+while gating and recording `CKM_ML_DSA`.
+
+ACVP and PKCS#11 spell `SHA3-256` identically, so the SHA3 third of the family
+resolves correctly and is the control case:
+
+    skipped, naming the mechanism:  HASH_ML_DSA_SHA3_{224,256,384,512}  45
+    run and recorded as ML_DSA:     SHA2-* and SHAKE-*                  70
+        46  C_Sign,   mechanism ML_DSA,  CKR_MECHANISM_INVALID
+        20  C_Verify, lifecycle,         CKR_MECHANISM_INVALID
+         4  sigver,                      CKR_MECHANISM_INVALID
+
+Same module, same absent capability, two outcomes. No skip in the run names
+`HASH_ML_DSA_SHA224/256/384/512` or `HASH_ML_DSA_SHAKE128/256`.
+
+That the 70 are the pre-hashed vectors needs no access to the corpus: 180
+`TestMlDsaSigGen` vectors passed in the same run signing with pure
+`CKM_ML_DSA`. Had these 70 reached `C_SignInit` with that mechanism they would
+have signed too. The audit line therefore reads `C_Sign ML_DSA ... advertised
+ML-DSA operation is not operational` about a mechanism that is operational
+180 times in the same report.
+
+### Method
+
+Both numbers in the first draft were wrong, and the scoped run that corrected
+them took minutes against a corpus that takes a night.
+
+The count was written as 199 from memory of a full-corpus run; it is 70, and
+the 199 belonged to a different set entirely. The scope was written as "every
+pre-hashed vector"; it is SHA2 and SHAKE only, because the SHA3 spellings
+coincide — and that coincidence turned out to be the strongest evidence in the
+report, since it puts the working and the broken path side by side under one
+module.
+
+Neither error was in the reading of the code, which held. Both were in numbers
+recalled rather than measured, which is the same shape as the stale checkout
+on 2026-09-17 and the stale module on 2026-09-11. The rule that keeps earning
+its place: a claim with a number in it gets the number from a file, not from
+memory of a file.
+
+## The cap was not the risk (2026-09-19, evening)
+
+Four attributes — `CKA_ALLOWED_MECHANISMS` and the three nested templates —
+had been refused since #125 for one reason: variable-length per-object policy
+with no field in the record to hold it. `dev/fhsm-policy-field-plan.md`
+proposed a v4 record with a fixed extension, and set one condition before any
+of it was written: **read what the corpus actually sends, and fix the caps
+from that.**
+
+That condition earned its place in the first twenty minutes.
+
+### What the corpus sends
+
+Measured against pkcs11-check 0.2.0, not recalled:
+
+```
+CKA_ALLOWED_MECHANISMS   1 mechanism, at all 17 literal sites   (plus the empty list)
+CKA_WRAP_TEMPLATE        1 entry
+CKA_UNWRAP_TEMPLATE      1 entry
+CKA_DERIVE_TEMPLATE      2 entries
+```
+
+So the plan's cap of eight was generous three times over. The plan had worried
+about the wrong number.
+
+The entries are `CKA_LABEL` — byte strings of 33 to 41 octets — and
+`CKA_KEY_TYPE`, a `CK_ULONG`. There is not one boolean anywhere in them.
+
+The plan's entry layout was `(u32 attribute type + u8 value + pad(3))`, which
+stores a boolean and nothing else. Eight of those per template would have
+grown every record by 228 bytes and still refused every nested-template test
+in the corpus. **A cap chosen too low fails loudly; a value type chosen wrong
+fails by accepting the attribute and never matching anything.**
+
+### The module had already made that mistake
+
+`fhsm_parse_unwrap_template` has carried partial `CKA_UNWRAP_TEMPLATE` support
+since #125, with a comment calling it *deliberately partial*: only
+`CKA_SENSITIVE=TRUE` and `CKA_EXTRACTABLE=FALSE`, "because those are what
+defend the key".
+
+It is not partial. Its first test on each nested entry is
+
+```c
+if (!nest[k].pValue || nest[k].ulValueLen != 1) return -1;
+```
+
+and every entry the corpus sends is 8 bytes or 33–41. They are refused at the
+door, before the `switch` that chooses which attributes are honoured ever
+runs. The overlap between what that code supports and what anything tests is
+**zero**, and had been for three months.
+
+Nothing in any report could have said so. The tests skip on the refusal, and
+a skip for "the module does not support this" and a skip for "the module
+cannot see this" are the same line.
+
+### Absent is not empty
+
+An absent `CKA_ALLOWED_MECHANISMS` permits every mechanism. One set to the
+empty list permits none — and pkcs11-check sends that case deliberately, then
+checks that `C_EncryptInit` is refused afterwards.
+
+Both store a count of zero. A count byte cannot be asked which one it is.
+
+The store had already met this and already answered it: `start_date_len`
+exists because "absent" and "set to empty" are different answers and the
+payload cannot tell them apart. The same answer applies, in `flags2`, whose
+bits are negative — set means restricted — so a record written before those
+bits existed reads as no policy, which is what it means.
+
+Writing the design comment is what surfaced this. The first draft of the
+struct comment said presence "lives in the PKCS#11 layer's own bits", which
+was a way of not deciding, and the layer in question did not have any.
+
+### Three tails, not one entry point
+
+`CKA_ALLOWED_MECHANISMS` is parsed at eleven creation tails. `C_CreateObject`
+holds three of them — the verbatim path, the certificate path and the
+EVP_PKEY path — so a wiring done per entry point would have covered one of
+three and looked complete. Counting `fhsm_token_object_add` call sites rather
+than counting functions is what produced eleven.
+
+Enforcement is at ten sites, listed in a comment above `fhsm_check_allowed_mech`
+before the first was wired.
+
+### The fixture had to be a real file
+
+`tests/fixtures/token-v3.tok` was written by the pre-v4 build in a git
+worktree and committed. The alternative — synthesising a v3 blob from the v4
+code — would produce a file built from the same beliefs the reader holds: an
+offset wrong in the writer would be wrong in the synthesiser, and the test
+would agree with itself.
+
+This is `test_encap_flags_store`'s argument about a reboot, one step further
+back: the file is the whole interface between two builds, and only a file this
+build had no part in making can contradict it.
+
+### Method
+
+Two mistakes, both caught within minutes, both the same shape as the subject.
+
+`fhsm_check_allowed_mech` got a forward declaration because `C_DeriveKey`
+needed one. `fhsm_apply_allowed_mechs` did not, because the reasoning was not
+repeated for the second function — two sibling functions, one of the two cases
+handled. The compiler caught it.
+
+And the first draft of `tests/test_allowed_mechanisms.c` called
+`C_EncryptInit` twice in a row and would have read the second one's
+`CKR_OPERATION_ACTIVE` as a refused mechanism. `tests/test_gmac_params` was
+written with that exact defect **the same week**, and reported a module
+regression that did not exist. Knowing a trap is not the same as avoiding it;
+what avoided it this time was re-reading the test before running it, not
+memory.
+
+## A comment that was wrong about the test beside it (2026-09-19, night)
+
+The other three policy attributes, and one defect found by the corpus in code
+written an hour earlier — in the same evening spent proving that a cap taken
+from assumption was wrong.
+
+### What the scoped run said
+
+`-k "template or allowed_mechanisms"`, pkcs11-check 0.2.0, signed module:
+
+```
+before the readback fix   passed 89/113 · fail 0 · crash 0 · xfail 7
+after                     passed 90/113 · fail 0 · crash 0 · xfail 6
+```
+
+One deviation gone, none new, the other six byte-identical. The six that
+stayed: two pre-existing return codes unrelated to this work
+(`C_CreateObject(bad CLASS)`, `C_GenerateKeyPair(RSA, 0)`), three readbacks on
+a key that genuinely has no template — "unavailable" is the right answer and
+the harness records it as an honest deviation anyway — and one probe that
+needs a key reporting `CKA_SENSITIVE=TRUE` which its own setup does not give
+it.
+
+And the line that is no longer in the report at all: **no skip mentions any of
+the four policy attributes.** `CKA_WRAP_TEMPLATE not supported at key
+generation` and its two siblings are gone. That was the whole point of the v4
+record, and it is the only part of it that a report can show.
+
+### The defect
+
+The readback for the three nested templates built the `CK_ATTRIBUTE` array in
+module-side storage and returned pointers into a buffer that died when
+`C_GetAttributeValue` returned. A caller following them read freed stack.
+
+The comment sitting beside that code said:
+
+> pkcs11-check checks the length and the shape rather than following the
+> pointers (test_remaining_gaps asks only that the readback be at least
+> sizeof(CK_ATTRIBUTE)) [...]
+
+It follows them. `security/test_unwrap_reimport.py` builds the two levels in
+its own storage, calls `C_GetAttributeValue`, and compares each returned
+`pValue` against `ctypes.addressof` of the buffer it supplied:
+
+```python
+if int(inner_record.pValue or 0) != ctypes.addressof(inner_value):
+    return "nested CKA_SENSITIVE pointer was not caller-owned storage"
+```
+
+The sentence was true of one test file and written as though it were true of
+the suite. The half that was checked was the half that had been looked at.
+
+An array attribute is two levels and the caller owns both. The module fills
+the caller's buffers and sets the lengths, touching neither level of pointer.
+
+### Why three of our own tests passed over it
+
+`tests/test_nested_templates.c` checked that the readback reported
+`sizeof(CK_ATTRIBUTE)` — the shape the comment had assumed was enough,
+verified against the assumption that produced it. A test written from the same
+belief as the code cannot contradict it; that is the `safePrimes` shape from
+acvp-assay's own findings, and the `key_ver`/`key_gen` shape, arriving from a
+third direction in one week.
+
+The case now compares the returned pointers against the addresses it passed
+in, so the next version cannot regress past a green suite.
+
+### Two positions, named rather than buried
+
+**An attribute the stored template names and the caller omits is refused.**
+§4.9 says the stored template is applied as if the object had already been
+created, which means imposing the value. This module cannot impose an
+arbitrary attribute on an object it is creating — `CKA_LABEL` it could,
+`CKA_CLASS` it could not — and imposing the ones it can while ignoring the
+rest is a policy that holds for some attributes with nothing saying which.
+Refusing is narrower than the spec allows and never weaker than it.
+
+**`CKA_WRAP_TEMPLATE` may only name attributes the module can read back off
+an object.** It is the one of the three that compares against an existing key
+rather than a creation template, so enforcing it means reading that object's
+attributes. The readable set is seven; a template naming anything else is
+refused when the key is created. A stored policy that cannot be checked would
+have to treat the unreadable attribute as matching, and a policy that fails
+open is worse than an attribute that is refused.
+
+### Method
+
+Four times in one evening a function was defined after its first caller, and
+the compiler caught all four. Each time the cause was the same: a forward
+declaration added for one function and not for its sibling, which is the
+defect shape this entire record is about, reproduced in the ordering of the
+file describing it.
+
+Once, a script inserting guards assumed single-line predecessors. That holds
+at nine of eleven creation tails; at `C_GenerateKeyPair` the guards are three
+lines and the new blocks landed inside the previous one's failure arm. Nine of
+eleven is the same arithmetic as three of six and five of six elsewhere in
+this document.
+
+None of those five reached a commit. What did reach one was the sentence about
+what the test checks — because a compiler cannot read a comment, and the only
+thing that could was the suite the comment was describing.
+
+## R3 — `TestGcmIvReuse::test_gcm_iv_reuse_same_key`
+
+The module does not detect an IV reused with the same GCM key across
+operations — a catastrophic failure mode for GCM.
+
+**Position: not implemented, because doing it honestly requires state we do not
+keep.** Detecting reuse means remembering every IV ever used per key, across
+sessions and across restarts, or constraining IV construction (deterministic
+counter per SP 800-38D §8.2.1). A partial check — remembering only recent IVs,
+or only within a session — would report "no reuse" while missing the case that
+matters, which is the pattern this whole campaign exists to remove.
+
+**What would move it:** implementing SP 800-38D §8.2.1 deterministic IV
+construction, where the module owns the counter and the caller cannot supply a
+colliding IV. That is a feature, and the right one; it is not a bug fix.
+
+## R6 — `TestECDH1CofactorDerive::test_cofactor_matches_standard_ecdh`
+
+> **CLOSED 2026-09-03 by harness v0.1.9 — the module was not at fault.** The
+> node-id now passes in all three isolation runs, with the module unchanged.
+> The investigation proposed at the end of this section was never performed and
+> is no longer worth performing. What follows is kept as written on 2026-09-02,
+> because it is the record of what was known before the answer arrived, and
+> because the one sentence that turned out to matter is the one that declined to
+> name a cause.
+
+**Observed 2026-09-02, not diagnosed.** Recorded before the v2.0.0 tag rather
+than after, because the release notes say the harness runs and an unaccounted
+failure is what this document exists to prevent.
+
+The test derives a shared secret twice — once with `CKM_ECDH1_DERIVE`, once
+with `CKM_ECDH1_COFACTOR_DERIVE` — and asserts they match. On a prime-order
+curve the cofactor is 1, so they should. One of the two derivations returned:
+
+```
+pkcs11_check.raw.rv.CkrAssertionError: Unexpected CK_RV CKR_FUNCTION_FAILED;
+    expected one of: CKR_OK
+    at testcases/test_ecdh_extended.py:176 in _ecdh_derive
+```
+
+Which of the two calls failed is not visible in the captured report, and
+`FHSM_RV_FUNCTION_FAILED` is returned from more than one place on that path.
+
+**What the code says.** The mechanism is implemented, not stubbed:
+`C_DeriveKey` accepts `CKM_ECDH1_COFACTOR_DERIVE` alongside `CKM_ECDH1_DERIVE`
+(`src/fhsm_pkcs11.c`), and `dispatch_ecdh1_cofactor`
+(`src/dispatch/fhsm_dispatch_pkey.c:464`) calls the same `ecdh_derive()` as the
+standard path. So `docs/MECHANISMS.md` marking it ✅ is accurate, and a stub is
+not the explanation.
+
+**What the counts say, and it is worth the arithmetic.** Against v0.1.8 on
+2026-08-03: 4 failed, 1697 passed, 2103 skipped. Tonight, same harness version:
+5 failed, **1697 passed**, 2102 skipped. The passed count is identical and
+skipped fell by exactly one. So one test moved from *skipped* to *failed* —
+this one. That is a test which began running, not a behaviour that changed. Why
+it was skipped before is the first thing to establish, and it has not been
+established.
+
+**Not a security finding.** A derivation that fails leaks nothing, forges
+nothing, extracts nothing. It is a functional gap between an advertised
+mechanism and its behaviour in a configuration the harness reaches.
+
+**What would move it:** running the single node-id against the module with the
+audit log open, to learn which call fails and where `FUNCTION_FAILED` is
+raised. Not attempted on 2026-09-02 — it was late and a guess written down
+would have been worse than a gap named.
+
+## R4 / R5 — `test_rsa_encrypt_boundary`, `test_rsa_decrypt_timing_sanity`
+
+Both exercise `CKM_RSA_PKCS` encryption/decryption without first checking that
+the module advertises it. Under `fips-strict` it does not:
+
+```
+CKM_RSA_PKCS   in C_GetMechanismList : no
+               C_GetMechanismInfo    : 0x70 (CKR_MECHANISM_INVALID)
+CKM_RSA_X_509  in C_GetMechanismList : no
+               C_GetMechanismInfo    : 0x70
+```
+
+RSA PKCS#1 v1.5 *encryption* is not FIPS-approved, so a module claiming
+FIPS 140-3 candidacy must not offer it in that profile. (v1.5 *signature* is
+approved and remains available in both profiles; the two gates are separate.)
+Both mechanisms are implemented and advertised in the `interop` profile, where
+these tests would exercise real code.
+
+**Position: harness gap, reported upstream.** The tests need a `has_mechanism`
+guard like their siblings. Verified by direct probe rather than asserted. The probe was written for
+this finding and not kept; it was named here as `probes/rsa_mech_advertised.c`
+and does not exist in the tree. What it established is the paragraph above.
+
+**What would move it:** a guard upstream, or running the harness against the
+interop build.
+
+## What the campaign found that no counter measured
+
+Seven defects that a passing test suite had not surfaced, listed because the
+pattern matters more than the individual bugs:
+
+* a wrong MAC algorithm served under a standardised mechanism ID;
+* PQC parameter sets unselectable — `ML-DSA-87` silently produced `ML-DSA-65`;
+* a function-list off-by-one that segfaulted every v3.0 caller;
+* `CKA_LOCAL` reporting false provenance;
+* Tookan §3.3 key extraction, reproduced in the clear;
+* no fork isolation — a child inherited session objects **and** logged-in state;
+* the FIPS §7.10.2 integrity self-test comparing a digest against itself, so it
+  had never verified anything;
+* a `size_t → int` cast in the DRBG that killed the module on one oversized
+  `C_GenerateRandom` and reported it as **"DRBG RCT alarm"** — an entropy-source
+  failure that had not happened;
+* `C_FindObjectsInit` reading past its buffer and returning stack bytes as
+  object handles, invisible until the store round-trip was run under UBSan.
+
+**The recurring shape is one guard wired to some of the paths that reach a
+shared state.** `CKA_TRUSTED` covered 1 of 3 creation paths; `CKA_UNWRAP_TEMPLATE`
+2 of 3; `fhsm_check_ro_token` 3 of 6; `fhsm_apply_token_scope` 5 of 6; the
+metadata attributes 6 of 8 on the first attempt; and the `prelim` bound was
+enforced on the write and not on the read. Counting insertion sites against
+creation paths, rather than trusting a search-and-replace, is what caught the
+last two.
+
+## Method
+
+Every fix in this batch was measured one change at a time against the harness,
+with the count recorded before and after. Two regressions were introduced and
+caught this way — a blanket unwrap refusal that broke seven legitimate paths,
+and a `CKA_TRUSTED` guard that added an unbounded template scan. Neither was
+visible to the unit suite.
+
+`make SANITIZE=1` (ASan + UBSan) was added during the store-format work. It
+turned 10 of 13 unit tests red on first use: they had been passing a short
+string literal as `C_InitToken`'s 32-byte `pLabel` field. The module was right
+and the tests were wrong, and a suite green for months went red the moment
+something was watching.
+
+## Full corpus on a signed module (2026-09-23)
+
+**55,202 passed · 2 failed · 0 crashed · xfail 14,299**, against 54,339 / 11 / 0
+/ 15,263 on 2026-09-19.
+
+The two counts do not compare directly and the reason is worth stating before
+the numbers are quoted anywhere. Every previous full run went through
+`FHSM_INTEGRITY_ALLOW_UNSIGNED`, so the OpenSSL FIPS provider was never
+loaded. This one ran against a module signed with `make integrity`, in the
+evaluated configuration. Mechanisms the `fips-strict` profile refuses become
+skips rather than failures, so the denominator moved.
+
+### The two that remain
+
+Both are `test_registry_sign_missing_required_param[EDDSA]` and its verify
+twin — the upstream disagreement in mingulov#23, not defects here.
+
+The nine that closed since 2026-09-19 are in the CHANGELOG under
+`[Unreleased]`: RSA private-key import from components, the OAEP decrypt
+sizing, `CKA_WRAP_WITH_TRUSTED`, multipart asymmetric signing and
+verification, and the two AES-CBC-PAD buffer defects.
+
+### Two of those nine were standing one in front of the other
+
+`C_DecryptUpdate` refused undersized buffers against `ulEncLen` + one block —
+`C_EncryptUpdate`'s bound, which decryption cannot reach. The harness's probe
+was refused at its *setup* step and never reached what it was testing:
+`C_DecryptFinal`, which had no output-size check at all and wrote up to 15
+bytes past the caller's buffer. Fixing the first exposed the second within the
+hour.
+
+Recorded because the first defect was not merely adjacent to the second — it
+was hiding it, and the module had passed four full corpus runs in that state.
+A guard that is wrong in the refusing direction is not the harmless kind.
+
+### 110 Wycheproof RSA-OAEP vectors skipped, correctly, for the wrong reason
+
+The harness reports:
+
+    Skipped: wycheproof RSA-OAEP decrypt KAT: Module does not implement C_CreateObject
+
+All 110 are `rsa_three_primes_oaep_*`. The module does implement
+`C_CreateObject`, including RSA private-key import from components as of this
+release; what it cannot do is accept a multi-prime RSA key, because PKCS#11
+has no attributes for the additional primes. The skip is right and its stated
+cause is not.
+
+No action here. Noted so the message does not send the next reader — or the
+next session — looking for a `C_CreateObject` gap that does not exist. Worth
+reporting upstream.
+
+## Full corpus under pkcs11-check 0.2.1 (2026-09-27)
+
+Signed module, OpenSSL 3.5.7, `provenance.txt` module-sha256 `fd29c09b…`
+matching the binary on disk.
+
+    passed 55199 / 92609   fail 2 (CRITICAL 1 · HIGH 1)   crash 0   xfail 14300
+
+Against the 0.2.0 baseline of 55 202 / 2 / 0 / 14 299.
+
+### The two failures are the same two, checked by node-id
+
+`EDDSA C_SignInit` and `C_VerifyInit` accepting a call with the required
+parameters missing — `got CKR_OK`, harness wants `CKR_MECHANISM_PARAM_INVALID`.
+This is the open upstream dispute mingulov#23, where the harness's own comment
+in `_resolve_mechanism` contradicts its `param_required=True`.
+
+Verified by node-id rather than by the count agreeing. Two runs can both show
+"fail 2" and be showing different failures, and a version bump is exactly the
+occasion where that happens.
+
+### The −3 passed / +1 xfail is not attributed, and that is the finding
+
+There was no stored 0.2.0 report to diff against: the three archived runs are
+all 0.1.9. The plausible reading is that 0.2.1 moved a few cases between
+buckets — it repins the vector datasets and grows one pin test from 5 probes to
+14 — but that is a reading, and this document is for measurements.
+
+Fixed for next time rather than for this one: `reports/pkcs11-check-021` now
+holds `outcomes.tsv.gz`, one `outcome<TAB>nodeid` line per test for all 92 514
+`call` records, 317 KB compressed. The next reference change can diff by
+node-id instead of comparing two totals.
+
+The raw `report.jsonl` is **370 MB** under 0.2.1 against 12 MB under 0.1.9 — it
+writes setup, call and teardown per test, each carrying the same keyword dict.
+That is the announced "evidence intact end to end" and not a defect, but it is
+why archiving the raw file the way the 0.1.9 runs did is no longer sensible,
+and it is the same weight that made `pkcs11_check_summary.py` expensive in
+September.
+
+### KMAC: the skip now names its remedy, and it does not help us
+
+    Skipped: CKM_KMAC_128: no code point known to pkcs11-check
+             (pass --p11-vendor-mechanism KMAC_128=0x... for a vendor mechanism)
+
+This is our upstream issue #22 partly addressed: the skip used to be silent
+about why it could never run. The flag is spelled `--p11-vendor-mechanism`, not
+`--vendor-mechanism` as the release notes have it.
+
+It changes nothing here. This module advertises 85 mechanisms and no KMAC —
+they were removed for want of an assigned code point — so registering a vendor
+id would exercise a mechanism that is not there. Recorded because the next
+reader meeting that skip message will otherwise reach for the flag.
+
+### A counting trap worth writing down
+
+Counting outcomes out of `report.jsonl` by `outcome` field gives roughly three
+times the real number: pytest writes one record per phase, and setup and
+teardown both say `passed` for a test whose `call` says `skipped`. An early
+pass at this entry read "18 KMAC tests passed" from exactly that, for a
+mechanism the module does not implement. Filter on `when == "call"`.
+
+## Two runs of the same profile, a day apart (2026-09-28)
+
+Meant to be an `all-mechanisms` run. It was not: a bare `make integrity`
+regenerated the tree for the default profile before signing it, and the run
+tested `nist-approved-only` again. `run_pkcs11_check.sh` now prints the
+profile read out of the module itself, and refuses to start when
+`FHSM_EXPECT_PROFILE` disagrees.
+
+What the mistake produced instead is worth more than a re-run. Diffed by
+node-id against `reports/pkcs11-check-021` with `scripts/diff_pkcs11_runs.py`:
+
+    before : 92601 tests   module fd29c09b…   2026-09-26
+    after  : 92601 tests   module d74efa61…   2026-09-27
+
+    1 test(s) moved:
+        1  xfailed -> passed     TestLogoutErrors::test_logout_when_not_logged_in
+
+**That one test is the `C_Logout` fix**, made between the two builds: logout
+with nobody logged in now returns `CKR_USER_NOT_LOGGED_IN` where it returned
+`CKR_OK`. An external harness that reads no FreeHSM code scores it as fixed.
+
+**And nothing else moved.** Between the two modules sit a day's work — the
+three-axis rename, the SHA-384 documentation, the doc-twin synchronisation,
+the C_Logout change. Across 92 601 tests the only difference is the intended
+one.
+
+**The run-to-run noise is zero on this pair.** The same harness version, a day
+apart, gave the same outcome on 92 600 of 92 601 tests, and the one exception
+has a known cause. That refines, without settling, the −3 passed recorded for
+the 0.2.0 → 0.2.1 move: it was not the harness being noisy, it was the version.
+
+Archived as `reports/pkcs11-check-021b` rather than under the `-all` name it
+was run with, since it is not that.
+
+## The all-mechanisms profile, through the corpus for the first time (2026-09-28)
+
+`PROFILE=all-mechanisms`, signed module, pkcs11-check 0.2.1, the profile read
+out of the module by `run_pkcs11_check.sh` and asserted with
+`FHSM_EXPECT_PROFILE`:
+
+    passed 56180/92778 · fail 11 (CRITICAL 6 · HIGH 5) · crash 0 · xfail 13795
+
+Every earlier corpus run in this file tested `nist-approved-only`, which is what
+CI builds. The thirteen mechanisms only this profile compiles in had never been
+through the corpus.
+
+Diffed by node-id against the `nist-approved-only` run of the day before,
+1 149 tests moved. 403 went skipped → passed and 547 xfailed → passed: the
+mechanisms the approved profile correctly leaves out, working where they exist.
+That is category 1 of the ROADMAP's "2105 tests report nothing" entry,
+measured rather than inferred.
+
+Eleven failures, two of them the EDDSA pair already open upstream. Nine new:
+
+| test | reading | status |
+|---|---|---|
+| `TestRSAPaddingOracle::test_pkcs1v15_bleichenbacher_structured_oracle` | OpenSSL implicit rejection, relied on deliberately | **module correct** |
+| `TestInvalidOperations::test_decrypt_garbage` | same | **module correct** |
+| `TestDecryptDataErrors::test_rsa_ciphertext_wrong_length` | no length check in `C_Decrypt` | **fixed** |
+| `test_registry_encrypt_missing_required_param[DES3_CBC]` | IV refused at `C_Encrypt`, not at Init | **fixed** |
+| `test_registry_decrypt_missing_required_param[DES3_CBC]` | same | **fixed** |
+| `TestDES3KeySizeBoundary::test_des3_below_min_is_refused` | request overridden, not refused | **fixed** |
+| `TestECKeySizeBoundary::test_ec_below_min_is_refused` | curves outside the advertised range accepted | **fixed** |
+| `test_ecdh_montgomery_low_order_point[x25519-u0]` | X25519 key generation fails on a signed module; the probe never ran | **fixed** (de-advertised) |
+| `test_ecdh_montgomery_low_order_point[x448-u0]` | same, X448 | **fixed** (de-advertised) |
+
+### The two that are the module being right
+
+Both flag `CKR_OK` on a malformed PKCS#1 v1.5 block — one as a Bleichenbacher
+oracle, one as a "padding bypass", both CRITICAL. That `CKR_OK` is OpenSSL 3.2+
+implicit rejection: a deterministic pseudo-random plaintext instead of an error,
+which is the Marvin countermeasure. `fhsm_pkcs11.c` above `rsa_unwrap` has
+documented relying on it since before this run, with a measurement on 3.5.6.
+Returning an error here would rebuild the oracle. Raised upstream rather than
+changed, because a harness that scores the countermeasure CRITICAL pushes the
+next implementer to remove it: mingulov/pkcs11-check#37, opened 2026-09-30.
+This paragraph said "raised upstream" two days before it was.
+
+### The three that were real, and were the same defect twice
+
+Neither was a weakness — no operation ever ran without an IV, and a
+wrong-length RSA input never recovered a real plaintext — but both answered
+the wrong call with the wrong code. In both cases the correct rule was already
+in the tree on a neighbouring path: `rsa_unwrap` checked the ciphertext length,
+with the reasoning that makes it safe, and `C_Decrypt` never got it; the
+key-wrap IV had been validated at Init since #14, and the 3DES one never was.
+A scoped re-run after the fix
+(`FHSM_PKCS11CHECK_MATCH="test_rsa_ciphertext_wrong_length or (missing_required_param and DES3_CBC)"`)
+passed all three.
+
+### The EC boundary: the one of the nine that was a real weakness
+
+`C_GetMechanismInfo(CKM_EC_KEY_PAIR_GEN)` reports 256..521 bits. Under
+`all-mechanisms`, `match_curve_ex()` handed every curve outside its three-entry
+NIST table to OpenSSL's registry — 82 curves on the build host, from
+`secp112r1` to `sect571k1` — so the module would generate or import a 112-bit
+key while advertising a 256-bit minimum. The fallback's own comment said it
+was there for brainpool; nothing bounded it to that. Under `nist-approved-only`
+the fallback is refused outright, which is why the same test passed there.
+
+It now accepts only what the module advertises: degree within 256..521, and a
+prime field, since nothing advertises binary curves. Twelve of the 82
+survive — the three NIST curves, secp256k1, and brainpool 256 through 512. SM2
+passes both tests and is excluded by name: this module has no SM2 mechanism.
+`FHSM_EC_MIN_BITS` / `FHSM_EC_MAX_BITS` now feed both `C_GetMechanismInfo` and
+the check, so the advertisement and the enforcement cannot drift apart again.
+`tests/test_ec_curve_bounds.c` asserts it in both profiles, including that
+brainpool still works where it is meant to. The scoped harness re-run passes.
+
+### 3DES: a request overridden rather than refused
+
+Read from the harness's own source before concluding. It takes
+`ulMinKeySize` from `C_GetMechanismInfo(CKM_DES3_KEY_GEN)` — 8, which it reads
+as bytes — and asks for a key with `CKA_VALUE_LEN = 7`. The module answered
+`CKR_OK`.
+
+No 56-bit key was ever made. 3DES key generation fixed `key_len = 24` and never
+looked at `CKA_VALUE_LEN`; the comment above it even said "no CKA_VALUE_LEN".
+So the caller asked for 7 bytes, got 24, and was told its request had been met.
+Two causes, as with EC: the advertisement was wrong — 3DES shared an 8..24
+range with single DES, which is never implemented here — and the enforcement
+was absent.
+
+3DES now advertises 24..24 and refuses any other `CKA_VALUE_LEN` with
+`CKR_TEMPLATE_INCONSISTENT`. The scoped re-run passes both boundaries, below
+and above.
+
+### The two low-order-point cases were not about the low-order point
+
+They were first read as the module refusing a u=0 point, which RFC 7748 §6.1
+permits, and left open on that reading. The harness trace says otherwise: the
+failure is at line 1063, `gen_keypair`, before the probe. A signed module loads
+the OpenSSL FIPS provider, which has neither X25519 nor X448, so
+`CKM_EC_MONTGOMERY_KEY_PAIR_GEN` was advertised by every signed all-mechanisms
+build and failed on every call -- 1 607 tests not operational in the same run.
+The module now asks the loaded providers (`fhsm_ecm_available()`) and leaves
+the mechanism out when they cannot serve it. Local tests had never seen it:
+they run under the integrity bypass, which loads the default provider.
+
+None of the nine touches the default build: eight are in mechanisms only this
+profile compiles in, and the EC boundary behaved in the approved one — the
+approved profile never reached the fallback that was unbounded.
+
+## 2026-09-29 — all-mechanisms again, after the fixes
+
+    pkcs11-check 0.2.1 · full corpus · signed module · all-mechanisms
+    passed 55653/92760 · fail 4 (CRITICAL 3 · HIGH 1) · crash 0 · xfail 14316
+
+The four failures are the ones accounted for: the EDDSA pair (#23) and the two
+implicit-rejection cases (#37). Passed fell by 527 and xfail rose by 521: the
+Wycheproof secp224r1 vectors, which now meet a refusal, since 224 bits is below
+the advertised 256-bit floor. Expected, and said in the CHANGELOG when the
+bound went in.
+
+One new xfail was a real defect: `TestLoginConflicts::test_so_login_while_user_logged_in`
+answered with the vendor code `0x80000004` (PIN_THROTTLED). Nothing refused a
+login by one role while the other held the token; with the right PIN an SO
+login took the token over. Three neighbouring rules were missing as well --
+SO login with a read-only session open, a read-only session while the SO is
+in, and closing the last session leaving the token logged in -- and
+`CKF_SERIAL_SESSION` was not required. All fixed; `tests/test_login_conflicts.c`.
+
+The `CKR_OPERATION_ACTIVE` xfails that moved between mechanisms from one run to
+the next are not the module's: `TestBadParameters` shares one session per file
+and never ends an Init the module accepted. Raised as mingulov/pkcs11-check#38.
+
+Since 2026-09-30 CI runs the harness against the signed module, FIPS provider
+loaded, in both profiles, and fails on any failure not listed with its reason
+in `tests/pkcs11_check_known_failures.txt` (`pkcs11-check-signed`).
+
+## 2026-10-04 — the suite against the FIPS provider, all-mechanisms
+
+    scripts/run_fips_tests.sh · Debian 13 · packaged OpenSSL FIPS provider
+    signed module · all-mechanisms · 62 of 64
+
+Run to answer one question from `docs/fhsm-gui-plan.md`: can a signed
+`all-mechanisms` module sign with the composite under the FIPS provider? It
+can. The provider was shown loaded before anything was counted, no test fell
+back to the integrity bypass, and every composite test passed — through the
+signed `.so` and as signed copies.
+
+CI runs this script on the default profile, where it passes 62 of 62. The
+two failures are in mechanisms only `all-mechanisms` compiles in, and are the
+X25519 defect of 2026-09-28 again, in two more places: the module offers
+something the loaded providers cannot serve, and says so only when it fails.
+
+- **`CKM_MD5` is advertised and `C_DigestInit` fails.** The FIPS provider has
+  no MD5; SHA-1 it has, and `test_legacy_digest` passed that half. The test
+  also decides the profile from SHA-1's advertisement and then expects MD5 to
+  work, so it asserts one mechanism's availability from another's.
+- **brainpool passes the curve check and key generation fails.** The bound of
+  2026-09-28 admits brainpool 256–512 under `all-mechanisms`; the FIPS
+  provider has no brainpool group, so `C_GenerateKeyPair` fails with
+  OpenSSL's `unknown group` rather than refusing the curve.
+  `test_ec_curve_bounds` asserts "brainpool still works where it is meant
+  to", which was only ever measured under the integrity bypass.
+
+Neither touches the default build or a deployment that follows the Security
+Target, which runs `nist-approved-only`. Both were invisible for the reason
+X25519 was: local tests run under the bypass, which loads the default
+provider.
+
+Fixed the same day, the way X25519 was: the module asks the loaded
+providers. A digest is advertised, and accepted by `C_DigestInit`, only if
+`EVP_MD_fetch` finds it (`fhsm_md_available`); a curve outside the NIST table
+passes the curve check only if EC parameter generation on its group succeeds
+(`fhsm_ec_group_served`), and is otherwise refused with
+`CKR_ATTRIBUTE_VALUE_INVALID`. The two tests now ask the module instead of
+inferring from the profile, and still require MD5 and brainpool to work under
+the integrity bypass, where the default provider serves them.
+
+## 2026-10-06 — pkcs11-check 0.2.1 → 0.2.3, both profiles
+
+    pkcs11-check 0.2.3 · OpenSSL 3.5.7 · signed module, FIPS provider loaded
+    integrity bypass absent from the environment (checked in the run log)
+    reports/pkcs11-check-nist-0.2.3 · reports/pkcs11-check-all-0.2.3
+
+| profile | passed | failed | baseline (0.2.1) |
+|---|---|---|---|
+| nist-approved-only | 55 378 / 93 010 | 7 | 55 205, 2 failed |
+| all-mechanisms | 55 832 / 93 141 | 7 | 55 655, 4 failed |
+
+Diffed by node-id against the archived 0.2.1 runs, 668 tests moved in the
+approved profile and 672 in all-mechanisms. Nearly all are the harness:
+381 new tests landing in xfail, about 160 xfail → passed, 72 xfail → skipped.
+The moves that could be a regression were read one by one.
+
+### Failures that were the module's — fixed
+
+- **AES `CKA_VALUE_LEN` read narrowed** (`TestGenerateKeyValueLenTruncation`,
+  approved profile). `C_GenerateKey` now reads the attribute whole, refuses
+  2^32 + 16 with `CKR_KEY_SIZE_RANGE`, and only then narrows it. The test
+  now reports xfail: it expects `CKR_ATTRIBUTE_VALUE_INVALID` or
+  `CKR_TEMPLATE_INCONSISTENT`. `CKR_KEY_SIZE_RANGE` is what every other
+  unsupported AES length, such as 17, already gets, and one code for "not a
+  size this key type has" is kept rather than a second for large values.
+- **Ed25519 answered a `CK_EDDSA_PARAMS` block with pure Ed25519**
+  (`TestEdDSAParametrizedModes::test_edwards25519_ctx_{empty_bytes,null_pointer}_roundtrip`,
+  both profiles). On Ed25519 the presence of the block selects Ed25519ctx,
+  whose signature carries the dom2 prefix. Ed25519ctx and Ed25519ph are not
+  implemented, so any block on an Ed25519 key is now
+  `CKR_MECHANISM_PARAM_INVALID`, which the harness counts as a declined mode.
+- **`C_EncryptFinal` straight after `C_EncryptInit` reported no operation**
+  (`TestZeroDataFinal::test_encrypt_final_no_update`, passed → xfailed). The
+  cipher context was built by the first Update only; Final now builds it, and
+  `C_DecryptFinal` likewise.
+
+### Failures listed in `tests/pkcs11_check_known_failures.txt`
+
+- **`TestAsyncErrors::test_async_get_id_{no_operation,empty_selector}`.** The
+  child probe passes a `c_char` buffer where the harness declares
+  `CK_UTF8CHAR_PTR`; ctypes raises `ArgumentError` before the module is called
+  and the child exits without a result. Reproduced with the same prototype
+  and a stub. Under 0.2.1 both were skips on the module's
+  `CKR_FUNCTION_NOT_SUPPORTED`. Reported as mingulov/pkcs11-check#49.
+- **`TestEdDSAParameters::test_eddsa_edwards448_{sign,verify}_missing_required_param`.**
+  Ed448 with no parameter block is accepted as pure Ed448. The harness
+  requires the block; whether PKCS#11 v3.2 does is asked, with the clause, in
+  #49. If it does, the module refuses NULL and the entries go.
+- **`TestRSAPaddingOracle::test_pkcs1v15_bleichenbacher_structured_oracle`**
+  (all-mechanisms), unchanged since 2026-09-28: implicit rejection returns
+  `CKR_OK`. 0.2.3 now recognises it in `TestInvalidOperations::test_decrypt_garbage`,
+  failed → xfailed; this test does not yet. Noted in #49.
+
+### No longer failing
+
+The EDDSA pair of #23 (`TestBadParameters::test_registry_{sign,verify}_missing_required_param[EDDSA]`)
+now skips: 0.2.3 treats pure Ed25519 with NULL parameters as the default
+profile. With `test_decrypt_garbage`, their entries were removed from the
+known-failures list when the workflows moved to 0.2.3.
+
+### Moves read and left
+
+- `TestKeyTypeConfusionOnUnwrap::test_unwrap_aes_as_des3_rejected`, passed →
+  xfailed. An AES-KW blob unwrapped as `CKK_DES3` is still refused, with
+  `CKR_KEY_TYPE_INCONSISTENT`; 0.2.3 expects `CKR_WRAPPED_KEY_LEN_RANGE`.
+  Which code fits is open; the refusal is what matters and it stands.
+- `TestForkSafety::test_fork_after_initialize`, passed → skipped. The harness
+  now files it as a robustness observation without a verdict.
+
+The constant audit in `ci.yml` gives the same result under both references,
+322 conform, 30 not in the reference, 0 divergent, so its pin moved with the
+corpus workflows'.
+
+
+## 2026-10-10 — the 2.3.1 candidate, both profiles
+
+    pkcs11-check 0.2.3 · signed module, FIPS provider loaded · main at the
+    key-value commit · reports/pkcs11-check-{nist,all}-2.3.1
+
+| profile | passed | failed | v2.3.0 + 2026-10-06 fixes (0.2.3) |
+|---|---|---|---|
+| nist-approved-only | 55 396 / 93 010 | 4, all known | 55 378, 7 failed |
+| all-mechanisms | 55 851 / 93 141 | 5, all known | 55 832, 7 failed |
+
+Diffed by node-id against the 2026-10-06 runs: 25 moves in each profile, every
+one attributed.
+
+- **xfailed → passed, 20 (nist) and 21 (all).** The multipart digests, 16 and
+  18 — SHA-1 exists only in all-mechanisms; `TestZeroDataFinal::test_encrypt_final_no_update`;
+  and three `TestSensitiveKeyValue` tests that now see `CKR_ATTRIBUTE_SENSITIVE`
+  where the module returned `CKR_OK` with the value withheld.
+- **failed → xfailed.** Ed25519ctx ×2, both profiles, and the AES
+  `CKA_VALUE_LEN` truncation in nist — the 2026-10-06 fixes.
+- **passed → xfailed, 2, both profiles — consequences of the new rules, and
+  meant.**
+  - `TestDigestKey::test_digest_key_sensitive_non_extractable_imported_key`
+    imports an AES key with `CKA_SENSITIVE=TRUE`. Import ignored that flag,
+    so `C_DigestKey` used to accept the key; it now refuses a sensitive key
+    with `CKR_KEY_INDIGESTIBLE`, as it always meant to, so that a digest
+    cannot stand in for the value.
+  - `TestHKDFDataKAT::test_rfc5869_sha256` imports its base key with
+    `CKA_SENSITIVE=FALSE` and no `CKA_EXTRACTABLE`, then reads the value. Not
+    extractable by default here, so not revealed — the attribute tables'
+    footnote 7. The test relies on a default that is the module's to choose.
+
+The failures are the known ones: the async probes and the Ed448 question
+(mingulov/pkcs11-check#49; the async fix is upstream PR #50), and in
+all-mechanisms the v1.5 structured oracle (#37). The gate passes in both.
+
+The all-mechanisms run had to be made twice. `make integrity` depends on the
+library, so run after `make PROFILE=all-mechanisms` without repeating the
+profile it rebuilt the library in the default one and signed that — the first
+"all" run measured a nist-approved-only module, caught by its provenance line.
+Every command in a profile build has to carry the profile.
+
+## 2026-10-12 — HashML-DSA, both profiles
+
+    pkcs11-check 0.2.3 · signed module, FIPS provider loaded · branch
+    hash-ml-dsa · reports/p11check-hashmldsa-full-{nist,all}
+
+| profile | passed | failed | 2.3.1 candidate (2026-10-10) |
+|---|---|---|---|
+| nist-approved-only | 55 658 / 93 285 | 4, all known | 55 396 / 93 010 |
+| all-mechanisms | 56 113 / 93 416 | 5, all known | 55 851 / 93 141 |
+
+Diffed by node-id against the 2026-10-10 runs: 453 moves in each profile, the
+same 453 in both, every one attributed. +262 passed, nothing that passed
+before moved.
+
+- **skipped → passed, 156.** The suites that had no mechanism to run on:
+  `test_acvp_mldsa.py` `TestMlDsaSigGen` (78) and `TestMlDsaSigVer` (37),
+  their preHash groups, and the 41 tests of `test_hash_ml_dsa.py` for the ten
+  hash-specific mechanisms and the generic one's advertisement.
+- **(absent) → passed, 88, and (absent) → skipped, 183.** The registry tests
+  the harness derives for each advertised mechanism, eleven more of them.
+- **xfailed → passed, 18.** Wycheproof's InvalidContext cases for
+  `CKM_ML_DSA`: a context over 255 bytes is now refused at `C_SignInit` and
+  false at verification, as FIPS 204 has it, where 256 bytes answered
+  `CKR_FUNCTION_FAILED`. Looking into them found worse: beyond 256 bytes,
+  and for a NULL `pContext` with a length, the context was dropped and the
+  empty one used.
+- **xfailed, 8, new — the harness, raised upstream as
+  mingulov/pkcs11-check#51.** All on the generic
+  `CKM_HASH_ML_DSA`, which takes `PH(M)` single-part (v3.2 §6.67.6, Table
+  283). `TestHashMLDSAGeneric::test_sign_verify_roundtrip` (4) passes the
+  message, which `C_Sign` refuses with `CKR_DATA_LEN_RANGE`.
+  `TestMechSignRoundtrip` (2) and `TestMultipartSign` (2) come from the
+  harness's registry, whose entry marks the parameter required and gives no
+  recipe for it, so `C_SignInit` is called without
+  `CK_HASH_SIGN_ADDITIONAL_CONTEXT` and answers
+  `CKR_MECHANISM_PARAM_INVALID`. (Corrected 2026-10-16: this said the
+  registry tests passed the message and drove `C_SignUpdate`; the reports say
+  otherwise.)
+
+The failures are the known ones, and the gate passes in both. The
+all-mechanisms count of advertised mechanisms, 88, is its provenance check:
+the nist module advertises 82.
+
+The first targeted run stopped at `C_Initialize`: the FIPS provider no longer
+loaded on the VM, `SELF_TEST_post: invalid state`, the stale `fipsmodule.cnf`
+case of AGD_PRE §3.3.1 with OpenSSL's version unchanged. Regenerated as that
+section says.
+
+`CKA_PARAMETER_SET` then became required on PQC key import (v3.2 footnote 1).
+A run of the ML-DSA, ML-KEM and PQC tests after it,
+reports/p11check-pset-nist, 2 891 tests, moved none of them against the full
+nist run above: pkcs11-check's importers already send the attribute.
+
+## 2026-10-15 — merged main for 2.4.0, both profiles
+
+    pkcs11-check 0.2.3 · signed module, FIPS provider loaded · main after
+    PR #20 (fhsm-crypt) and PR #21 (hash-ml-dsa) ·
+    reports/pkcs11-check-{nist,all}-2.4.0
+
+55 658 passed of 93 285 in `nist-approved-only`, 56 113 of 93 416 in
+`all-mechanisms`, 4 and 5 failures, all known; the gate passes in both.
+Against the `hash-ml-dsa` branch runs of 2026-10-12, by node-id: nothing
+moved in either profile. `fhsm-crypt` changes the tools, not the module.
+
+The first all-mechanisms attempt froze the VM twice in
+`test_wycheproof_ecdsa.py`, which passed alone in 460 s with the same 28 915
+outcomes as on 2026-10-12. The third attempt, with `TMPDIR` on disk rather
+than in Debian 13's tmpfs `/tmp`, finished. The cause is not established:
+the harness's per-file logs, about 384 MB for the corpus, cannot by
+themselves exhaust a VM with 16 GB of RAM, and one success against two
+freezes proves nothing. Next time it happens, `vmstat` and `dmesg` from
+inside the VM are what would say.
+
+## 2026-10-16 — RSA-OAEP hashes and the SLH-DSA sets
+
+    pkcs11-check 0.2.3 · signed module, nist-approved-only · main after the
+    OAEP and SLH-DSA fixes · reports/p11check-oaep-slh-nist (OAEP, RSA,
+    SLH-DSA subset, 11 620 tests)
+
+Against the same tests in the merged-main run of 2026-10-14, 203 moved,
+none of them the wrong way:
+
+- **xfailed → passed, 183, `test_wycheproof_rsa_oaep`.** The vectors with
+  SHA-224 and SHA-3 as OAEP or MGF1 hash, which the module refused.
+- **xfailed → passed, 18, `test_wycheproof_rsa_pss`.** RSA-PSS takes its
+  MGF1 hash from the same table, so valid PSS vectors with MGF1-SHA-224 or
+  SHA-3 had been answered `CKR_MECHANISM_PARAM_INVALID` as well. Not what
+  the fix was written for; what it reached.
+- **skipped → passed, 2, `TestSLHDSAKeyGeneration`.** Parameter sets the
+  pair-wise check's buffer had made ungenerable.
+
+## 2026-10-16 — Ed448 on an RFC 8032 key, out of the known failures
+
+    pkcs11-check 0.2.3 · unsigned module, default provider, default build
+    profile · Debian 13, OpenSSL 3.5.7 · the 82 tests matching
+    "eddsa or EdDSA or ed448 or Ed448 or edwards", before and after
+
+Of the five known failures, three are not the module's and stay listed: the
+two `TestAsyncErrors` probes, a ctypes type error in the harness fixed
+upstream after 0.2.3 (#49, not yet released), and the v1.5 structured oracle,
+which is implicit rejection doing its job (#37).
+
+The Ed448 pair was listed as a question for #49, still unanswered. Reading the
+two tests answered most of it: both generate the key with `CKA_EC_PARAMS` set
+to the PrintableString `edwards448`, the RFC 8032 curveName, not the
+`id-Ed448` OID. The harness's own mode table (`tests/test_eddsa_param_modes.py`
+in its sdist) makes the encoding the switch: on an RFC 8410 key a NULL
+parameter is pure Ed448, on an RFC 8032 `edwards448` key every scheme takes a
+`CK_EDDSA_PARAMS` block. Its Wycheproof Ed448 vectors import with the OID,
+so this change does not reach them (they were skipped in the run below, which
+had no vector data). So the disagreement was never "is the block required for
+Ed448", which would have broken OpenSC and the Wycheproof run alike, but
+"which profile is this key", and the module could not answer: it accepted
+both encodings at generation and import, mapped both to the same OpenSSL key,
+and reported the OID for either.
+
+The form is now recorded per object, in a byte of the v4 record that was
+written as zero and never read (docs/TOKEN_STORE_FORMAT.md, "The third flags
+byte"). On an `edwards448` key, NULL is `CKR_MECHANISM_PARAM_INVALID` at both
+Inits; `CKA_EC_PARAMS` reads back as given.
+
+Diffed by node-id against the same 82 tests on main: 2 moved,
+`test_eddsa_edwards448_{sign,verify}_missing_required_param`, failed →
+passed. Nothing else moved. The two lines are out of the known-failures list.
+
+What is still inferred rather than read: the clause. The OASIS v3.2 text
+could not be fetched from here, as on 2026-09-14 (#23); the table above is
+pkcs11-check's encoding of it. If the clause turns out to say otherwise, the
+refusal is one `if` in `op_init` and the recorded form stays useful for
+`CKA_EC_PARAMS` alone.
+
+Read on 2026-10-17, and it does not: PKCS#11 v3.2 Table 73, "Mapping to RFC
+8032 Signature Schemes", gives Ed25519 the mechanism parameter "Not
+Required" and Ed448 "Required" (phFlag False, context optional), and the
+sentence after it says that "for curves according to [RFC 8410], the
+mechanism is implicitly given by the curve, which is EdDSA in pure mode".
+The refusal on an `edwards448` key and the acceptance on `id-Ed448` are the
+text, not only the harness's reading of it. A full nist-approved-only run
+the same day (reports/p11c-nist) has the pair passing and no failure but the
+two async probes.
+
+## 2026-10-17 — main for 2.4.0, both profiles, after the week's fixes
+
+    pkcs11-check 0.2.3 · signed module, FIPS provider loaded ·
+    reports/p11c-{nist,all}
+
+| profile | passed | failed | merged main, 2026-10-14/15 |
+|---|---|---|---|
+| nist-approved-only | 55 870 / 93 285 | 2, both known | 55 658, 4 failed |
+| all-mechanisms | 56 325 / 93 416 | 3, all known | 56 113, 5 failed |
+
+212 moves in each profile, the same 212, none backwards: 183 Wycheproof
+RSA-OAEP and 18 RSA-PSS vectors (SHA-224 and SHA-3 as OAEP or MGF1 hash),
+6 Wycheproof ML-KEM decapsulations and `test_decapsulate_invalid_ciphertext_length`
+(the ciphertext length checked before OpenSSL), two SLH-DSA parameter sets
+generated, and the Ed448 pair (an RFC 8032 `edwards448` key needs its
+parameter). What fails is the async probes, fixed upstream and unreleased,
+and in all-mechanisms the v1.5 structured oracle (#37). The gate passes in
+both.
+
+## 2026-10-21 — SLH-DSA key import, the xfails nobody read
+
+    pkcs11-check 0.2.3 · unsigned module, nist-approved-only ·
+    FHSM_PKCS11CHECK_MATCH=slhdsa · reports/p11check-slhdsa-nist
+
+`tests/test_slh_dsa_kat.c`, written to check SLH-DSA against NIST's ACVP
+vectors because Wycheproof has none, failed on its first run: every SLH-DSA
+public key was refused by `C_CreateObject` with `CKR_TEMPLATE_INCONSISTENT`
+(no parser branch took the key type), and a raw private key was accepted,
+stored as sent, and failed at `C_Sign` with `CKR_FUNCTION_FAILED`. Fixed the
+same day; see the CHANGELOG.
+
+pkcs11-check had been saying so in every run. `test_acvp_slhdsa.py` imports
+NIST's keys, and its 456 tests per profile -- 120 keygen and 168 sigVer
+refused at the public import, 168 sigGen failing at `C_Sign` -- were in the
+2.4.0 reports as xfail, `not_operational`, "advertised but not operational".
+The known-failures list and the run-to-run diffs look at failures; an xfail
+that never moves is in neither, and these were never attributed.
+
+| `test_acvp_slhdsa.py` | 2.4.0 reports | after the fix |
+|---|---|---|
+| `test_slhdsa_keygen` | 120 xfail | 120 passed |
+| `test_slhdsa_sigver` | 168 xfail | 168 passed |
+| `test_slhdsa_siggen` | 168 xfail | 168 passed |
+
+The subset: 464 passed, 42 skipped (`test_hash_slh_*`, HashSLH-DSA not
+implemented), no xfail, no failure.
+
+The other `not_operational` xfails of the 2.4.0 reports, about 13 900 per
+profile, were inventoried the same day. Most are EC curves outside P-256,
+P-384 and P-521 that the loaded provider does not serve, refused with
+`CKR_ATTRIBUTE_VALUE_INVALID` where `CKR_CURVE_NOT_SUPPORTED` would say what
+happened. To look at next: X25519/X448 private import refused in
+all-mechanisms too (1 071), ECDSA verification answering
+`CKR_FUNCTION_FAILED` on invalid signatures (80), and a handful of single
+cases (`CKA_COPYABLE` true to false, a 512-bit generic secret, AES-CMAC
+multipart).
+
+## 2026-10-22 — the not_operational inventory, fixed, both profiles
+
+    pkcs11-check 0.2.3 · signed module, FIPS provider loaded ·
+    reports/p11c-nist (nist-approved-only), reports/p11c-all-1022
+    (all-mechanisms) · diffed by node-id against
+    reports/pkcs11-check-{nist,all}-2.4.0 (2026-10-14/15)
+
+| profile | passed | failed | xfailed | skipped | 2.4.0 reports |
+|---|---|---|---|---|---|
+| nist-approved-only | 49 205 / 93 293 | 2, both known | 440 | 43 646 | 55 658 passed, 4 failed |
+| all-mechanisms | 49 660 / 93 424 | 3, all known | 448 | 43 305 | 56 113 passed, 5 failed |
+
+The same 21 091 tests moved in each profile, and nothing failed that had
+passed. The passed count falls by about 6 450; that is the honest part of
+the change, explained in the third row.
+
+| move | count | why |
+|---|---:|---|
+| xfailed → passed | 746 | SLH-DSA key import (120 keygen, 168 sigVer, 168 sigGen); ECDSA verification reaching the point at infinity now `CKR_SIGNATURE_INVALID` (70 + 5 + 5); RSA-OAEP and RSA-PSS hashes of 2026-10-16 (183 + 18); ML-KEM decapsulation length (6 + 1); a 512-bit generic secret; `CKA_COPYABLE` true to false |
+| xfailed → skipped | 13 138 | a curve the module does not take is now `CKR_CURVE_NOT_SUPPORTED`, which pkcs11-check reads as absence: Wycheproof ECDSA 7 872, ECDH 4 186, X25519/X448 1 071 (no X25519 or X448 in the FIPS provider), and 9 EC tests on P-224 |
+| passed → skipped | 7 202 | Wycheproof ECDSA *invalid* vectors on brainpool, secp160/192/224 and secp256k1. The key was refused with `CKR_ATTRIBUTE_VALUE_INVALID` and the harness counted that as the invalid signature rejected -- a signature nothing had looked at. With the curve declared unsupported they are absences, which is what they always were |
+| failed → passed | 2 | the Ed448 pair of 2026-10-16 |
+| skipped → passed | 2 | two SLH-DSA parameter sets generated (2026-10-16) |
+| passed → xfailed | 1 | `TestECKeySizeBoundary::test_ec_below_min_is_refused`: secp224r1 key generation is refused with `CKR_CURVE_NOT_SUPPORTED`, which this test's list of enforcing refusals does not contain, though the harness's Wycheproof tests treat it as absence. Reported upstream rather than answered with another code |
+
+The 2026-10-17 references in reports/p11c-{nist,all} were overwritten by
+this run and reports/ is not under version control; the 2.4.0 reports of
+2026-10-14/15 are the baseline above, so the moves include those of
+2026-10-16/17 already recorded in the sections before this one.
+
+An all-mechanisms run first measured a nist-approved-only module: the
+signing step was given without `PROFILE=` and rebuilt the default profile,
+the trap the Makefile describes. Its results matched the nist run exactly
+and are kept as reports/p11c-nist-1022-rerun.
+
+Left from the inventory: AES-CMAC multipart (4 xfails), a feature not yet
+written.
+
+## 2026-10-22 — AES-CMAC multipart and HashSLH-DSA, targeted runs
+
+    pkcs11-check 0.2.3 · unsigned module, nist-approved-only ·
+    reports/p11check-cmac-nist (FHSM_PKCS11CHECK_MATCH=multipart),
+    reports/p11check-hashslh-nist (FHSM_PKCS11CHECK_MATCH=hash_slh)
+
+**AES-CMAC multipart.** 151 passed, 36 skipped, 4 xfailed, no failure. The
+`AES_CMAC:multipart-sign` xfails are gone. What remains is expected:
+`AES_GMAC` (2), which is still one-shot only, and `HASH_ML_DSA` (2), the
+generic mechanism called without its required parameter
+(mingulov/pkcs11-check#51).
+
+**HashSLH-DSA.** 129 passed, 183 skipped, 5 xfailed, no failure. The ten
+hash-specific `CKM_HASH_SLH_DSA_<hash>` pass `TestHashSLHDSA*`, the registry
+round trip, tampering, multipart and the flag tests, and the generic one
+passes the missing and malformed parameter refusals (the registry asks
+those of it alone) -- tests that were all skipped before, the mechanisms
+not existing. The five xfails are the generic `CKM_HASH_SLH_DSA`,
+in the same two shapes as `CKM_HASH_ML_DSA`: `TestHashSLHDSAGeneric` signs
+the message where v3.2 Table 283 takes PH(M) (`CKR_DATA_LEN_RANGE`, 1), and
+`TestMechSignRoundtrip` / `TestMultipartSign` call it without
+`CK_HASH_SIGN_ADDITIONAL_CONTEXT` (`CKR_MECHANISM_PARAM_INVALID`, 4). Added
+to #51 the same day. The byte-for-byte check against NIST is
+`tests/test_hash_slh_dsa.c`, not the harness, which compares no signature.
+
+## 2026-10-22 — the 2.5.0 commit, both profiles
+
+    pkcs11-check 0.2.3 · signed module, FIPS provider loaded ·
+    reports/p11c-nist-250, reports/p11c-all-250 · diffed by node-id against
+    reports/p11c-nist and reports/p11c-all-1022 (the same day, before
+    multipart GMAC and HashSLH-DSA)
+
+| profile | passed | failed | xfailed | skipped |
+|---|---|---|---|---|
+| nist-approved-only | 49 338 / 93 568 | 2, both known | 441 | 43 779 |
+| all-mechanisms | 49 793 / 93 699 | 3, all known | 449 | 43 446 |
+
+The same 321 moves in each profile, none backwards:
+
+| move | count | why |
+|---|---:|---|
+| xfailed → passed | 4 | multipart AES-CMAC and AES-GMAC (`TestMultipartSign`) |
+| skipped → passed | 41 | `TestHashSLHDSAVariants` for the ten hash-specific mechanisms, and the generic one's availability |
+| (new) → passed | 88 | per-mechanism tests generated for the eleven new mechanisms: flags, round trip, tampering, multipart |
+| (new) → skipped | 183 | registry tests that do not apply to them (no KAT entry, flag and key-type probes the registry does not run for these) |
+| (new) / skipped → xfailed | 5 | the generic `CKM_HASH_SLH_DSA`, called without `CK_HASH_SIGN_ADDITIONAL_CONTEXT` or on the message (#51) |
+
+The test count grows by 283 because pkcs11-check parametrizes per
+advertised mechanism. These are the figures in RELEASE_v2.5.0.md.

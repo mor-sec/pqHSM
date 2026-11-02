@@ -1,0 +1,9 @@
+[freehsm-c] FATAL : the secure heap could not be created.
+  Asked for 65536 kB (secure_heap_kb in /etc/freehsm/freehsm.conf,
+  default 8192 kB).
+  OpenSSL allocated it but could NOT lock it in memory, and
+  an unlocked arena is refused: key material there could be
+  written to swap, which is exactly what this heap prevents.
+  Your locked-memory limit is 8192 kB (ulimit -l). The arena must
+  fit inside it -- raising secure_heap_kb alone does not give you
+  a bigger arena, it stops the module. Raise both, or neither.

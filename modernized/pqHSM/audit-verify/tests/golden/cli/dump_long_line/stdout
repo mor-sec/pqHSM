@@ -1,0 +1,11 @@
+# tests/golden/logs/long_line_appended.log
+# timestamp                  seq     event                  slot session role result                         params
+  2026-10-29T16:22:01.236383Z 1       module_init              -1      -1 NONE CKR_OK                         {}
+  2026-10-29T16:22:01.242843Z 2       login_ok                  0       1 USER CKR_OK                         {}
+  2026-10-29T16:22:01.249724Z 3       sign                      0       1 USER CKR_OK                         {"alg":"mldsa65"}
+  2026-10-29T16:22:01.256216Z 4       login_fail                0       1 NONE CKR_PIN_INCORRECT              {}
+  2026-10-29T16:22:01.263919Z 5       request_accepted          0       2 USER CKR_OK                         {}
+  2026-10-29T16:22:01.270288Z 6       logout                    0       1 USER CKR_OK                         {}
+  1970-01-01T00:00:00.000000Z 0                                -1      -1      CKR_OK                         {}
+  1970-01-01T00:00:00.000000Z 0                                -1      -1      CKR_OK                         {}
+# total : 8 events

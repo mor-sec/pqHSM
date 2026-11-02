@@ -1,0 +1,5 @@
+# tests/golden/logs/craft_minimal_fields.log
+# timestamp                  seq     event                  slot session role result                         params
+  1970-01-01T00:00:00.000000Z 1                                -1      -1      CKR_OK                         {}
+  1970-01-01T00:00:00.000000Z 2                                -1      -1      CKR_OK                         {}
+# total : 2 events

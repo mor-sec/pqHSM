@@ -1,0 +1,6 @@
+== tests/golden/dirs/contiguous/audit.log.000001
+verify: 3 records OK, chain intact
+== tests/golden/dirs/contiguous/audit.log.000002
+verify: 3 records OK, chain intact
+
+verify: 2 log(s), sequence 000001..000002, contiguous, every chain intact

@@ -1,0 +1,18 @@
+# the database the answer rows use
+crlNumber 12
+01A2 20260101000000Z keyCompromise
+00FF10 20260215123000Z -
+7B 20251231235959Z superseded
+80 20260301000000Z cACompromise
+00 20260302000000Z unspecified
+C0 20260301000000Z unspecified
+C1 20260301000001Z keyCompromise
+C2 20260301000002Z cACompromise
+C3 20260301000003Z affiliationChanged
+C4 20260301000004Z superseded
+C5 20260301000005Z cessationOfOperation
+C6 20260301000006Z certificateHold
+C9 20260301000009Z privilegeWithdrawn
+CA 20260301000010Z aACompromise
+D0 00000101000000Z affiliationChanged
+D1 99991231235959Z -

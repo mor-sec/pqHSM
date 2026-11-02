@@ -1,0 +1,3 @@
+freehsm-audit
+verify
+tests/golden/logs/chain.log

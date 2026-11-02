@@ -1,0 +1,5 @@
+# fhsm-ca revocation database v1
+# SERIAL(hex)  DATE(YYYYMMDDHHMMSSZ)  REASON  ('-' for none)
+crlNumber 0
+A1 garbage -
+A2  keyCompromise

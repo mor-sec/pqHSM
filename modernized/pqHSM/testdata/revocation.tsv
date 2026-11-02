@@ -1,0 +1,10 @@
+db	rev_empty.db	rv=0	crl_number=0	entries=0	err=
+db	rev_three.db	rv=0	crl_number=7	entries=3	err=
+entry	rev_three.db	serial=01a2	date=20260101000000Z	epoch=1767225600	reason=1
+entry	rev_three.db	serial=00ff10	date=20260215123000Z	epoch=1771158600	reason=-1
+entry	rev_three.db	serial=7b	date=20251231235959Z	epoch=1767225599	reason=4
+db	rev_month13.db	rv=0	crl_number=0	entries=1	err=
+entry	rev_month13.db	serial=a1	date=20261340990000Z	epoch=1802487600	reason=-1
+db	rev_bad_date.db	rv=3	crl_number=0	entries=0	err=/out/rev_bad_date.db line 1: date is not YYYYMMDDHHMMSSZ   Nothing was read. A revocation database that is only partly   understood would produce a list missing revocations, which is a   signed statement that a revoked certificate is still valid.   Fix the line, or remove it deliberately. 
+db	rev_bad_reason.db	rv=3	crl_number=0	entries=0	err=/out/rev_bad_reason.db line 1: unknown revocation reason   Nothing was read. A revocation database that is only partly   understood would produce a list missing revocations, which is a   signed statement that a revoked certificate is still valid.   Fix the line, or remove it deliberately. 
+db	rev_odd_serial.db	rv=3	crl_number=0	entries=0	err=/out/rev_odd_serial.db line 1: serial is not an even number of hex digits   Nothing was read. A revocation database that is only partly   understood would produce a list missing revocations, which is a   signed statement that a revoked certificate is still valid.   Fix the line, or remove it deliberately. 

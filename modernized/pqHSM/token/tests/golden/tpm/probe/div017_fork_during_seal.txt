@@ -1,0 +1,2 @@
+createpolicy --policy-pcr -l sha256:0,1,2,3,4,5,6,7 -L <fhsm-seal-policy>|fd1=/dev/null|fd2=/dev/null|inherited=fhsm-seal-in,fhsm-seal-policy,fhsm-seal-priv,fhsm-seal-pub
+create -C 0x81010001 -i <fhsm-seal-in> -u <fhsm-seal-pub> -r <fhsm-seal-priv> -L <fhsm-seal-policy> -g sha256|fd1=/dev/null|fd2=/dev/null|inherited=fhsm-seal-in,fhsm-seal-policy,fhsm-seal-priv,fhsm-seal-pub

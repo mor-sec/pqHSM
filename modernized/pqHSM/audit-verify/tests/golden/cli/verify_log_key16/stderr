@@ -1,0 +1,5 @@
+line 1 : HMAC mismatch (record altered)
+line 1 : prev_hmac does not follow line 0 (record deleted, inserted or reordered)
+line 2 : HMAC mismatch (record altered)
+line 3 : HMAC mismatch (record altered)
+verify: 4/3 records FAILED

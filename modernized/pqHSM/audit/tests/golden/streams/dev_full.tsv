@@ -1,0 +1,7 @@
+open	0x0
+current_path	/dev/full
+event1	0x6
+event2	0x6
+stats_events	0
+stats_barriers	0
+state_error	1

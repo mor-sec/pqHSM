@@ -1,0 +1,2812 @@
+/* ===========================================================================
+ * Copyright 2026 Afchine Madjlessi <afchine.mad@gmail.com>
+ * SPDX-License-Identifier: Apache-2.0
+ * ========================================================================= */
+/* ===========================================================================
+ * fhsm-service --- the guards, and nothing else yet (#111).
+ *
+ *  docs/REST_API_DESIGN.md decided the shape. The guards came first and the
+ *  cryptography after, because refusals are the part of an API that ages
+ *  worst when they are added late. POST /sign is now real; /verify,
+ *  /certificates and /ocsp live on the public listener instead, because a
+ *  relying party has no identity to present; on this socket they answer
+ *  404 and name the one that has them.
+ *
+ *  WHAT IT ENFORCES
+ *
+ *    the socket        A unix socket, not a localhost port. §1 of the ADR is
+ *                      blunt about why: the identity header is trusted, so
+ *                      the service must be able to refuse anything that did
+ *                      not come from the proxy. Filesystem permissions decide
+ *                      who may connect and SO_PEERCRED says who did. A TCP
+ *                      port would let any local process assert any identity.
+ *
+ *    the peer          SO_PEERCRED, compared against --proxy-uid. There is no
+ *                      default for that option and the service refuses to
+ *                      start without it: a guard whose value was guessed is
+ *                      not a guard.
+ *
+ *    the identity      One X-FHSM-Client-Subject header, non-empty. Missing is
+ *                      refused; so is repeated, which is how header smuggling
+ *                      gets an attacker's value read instead of the proxy's.
+ *
+ *    the request       Parsed strictly and refused liberally. This is the code
+ *                      the ADR names as the largest thing it could ask a
+ *                      reader to audit, so it accepts exactly what the proxy
+ *                      sends: two methods, a bounded request line, bounded
+ *                      headers, Content-Length only, and no chunked transfer.
+ *                      Everything else is 400 and a closed connection.
+ *
+ *  WHY IT LINKS THE MODULE RATHER THAN dlopen()ING IT
+ *
+ *  The service is one process holding one login -- it IS the PKCS#11
+ *  application, which is the pool design in the ADR. It also needs
+ *  fhsm_audit_set_actor(), which is not part of PKCS#11 and is not exported
+ *  from the shared object (-fvisibility=hidden). Linking the objects is both
+ *  the honest shape and the only one that can attribute a log line.
+ *
+ *  NOT HERE YET, ON PURPOSE
+ *
+ *    the session pool, the throttle by identity (docs/RATE_LIMIT.md), the
+ *    daemon PIN (docs/DAEMON_PIN.md), and every operation. Each arrives with
+ *    its own measurement.
+ *
+ *      fhsm-service --socket /run/freehsm/p11.sock --proxy-uid 33
+ * ========================================================================= */
+#include "fhsm_common.h"
+#include "fhsm_audit.h"
+#include "fhsm_revocation.h"
+
+#include <errno.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <limits.h>
+#include <limits.h>
+#include <poll.h>
+#include <time.h>
+#include <time.h>
+#include <pthread.h>
+#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+
+extern unsigned long C_Initialize(void *);
+extern unsigned long C_Finalize(void *);
+extern unsigned long C_GetSlotList(unsigned char, unsigned long *, unsigned long *);
+extern unsigned long C_GetTokenInfo(unsigned long, void *);
+extern unsigned long C_OpenSession(unsigned long, unsigned long, void *, void *,
+                                    unsigned long *);
+extern unsigned long C_CloseSession(unsigned long);
+extern unsigned long C_Login(unsigned long, unsigned long, unsigned char *,
+                              unsigned long);
+extern unsigned long C_FindObjectsInit(unsigned long, void *, unsigned long);
+extern unsigned long C_FindObjects(unsigned long, unsigned long *, unsigned long,
+                                    unsigned long *);
+extern unsigned long C_FindObjectsFinal(unsigned long);
+extern unsigned long C_SignInit(unsigned long, void *, unsigned long);
+extern unsigned long C_VerifyInit(unsigned long, void *, unsigned long);
+extern unsigned long C_Verify(unsigned long, unsigned char *, unsigned long,
+                               unsigned char *, unsigned long);
+extern unsigned long C_Sign(unsigned long, unsigned char *, unsigned long,
+                             unsigned char *, unsigned long *);
+
+/* CK_TOKEN_INFO, PKCS#11 v3.2 C.6.3. Declared here for the same reason
+ * tools/fhsm_token.c declares it: so this file depends on the interface and
+ * not on our particular module's private headers. */
+struct tok_info {
+    unsigned char label[32], manufacturerID[32], model[16], serialNumber[16];
+    unsigned long flags;
+    unsigned long ulMaxSessionCount, ulSessionCount;
+    unsigned long ulMaxRwSessionCount, ulRwSessionCount;
+    unsigned long ulMaxPinLen, ulMinPinLen;
+    unsigned long ulTotalPublicMemory, ulFreePublicMemory;
+    unsigned long ulTotalPrivateMemory, ulFreePrivateMemory;
+    unsigned char hardwareVersion[2], firmwareVersion[2], utcTime[16];
+};
+#define CKF_RW_SESSION_    0x00000002UL
+#define CKF_SERIAL_SESSION 0x00000004UL
+#define CKU_USER_          1UL
+#define CKO_PUBLIC_KEY_    2UL
+#define CKO_PRIVATE_KEY_   3UL
+#define CKA_CLASS_         0UL
+#define CKA_LABEL_         3UL
+#define CKM_COMPOSITE_     0x80004202UL
+
+/* The header the proxy must set. Named for this project rather than borrowed
+ * from nginx or Caddy: the value is trusted absolutely, so it should be
+ * obvious in a configuration file that somebody chose to trust it. */
+#define IDENT_HEADER "x-fhsm-client-subject"
+/* Which key to use. Not which mechanism: the API exposes operations, not
+ * PKCS#11 (ADR §2), and a key knows how it signs. Letting a client choose
+ * the mechanism would put the algorithm agility in the least trustworthy
+ * place in the system. */
+#define KEY_HEADER   "x-fhsm-key"
+/* /verify carries two byte strings in one body. The alternatives were worse:
+ * base64 would add a decoder to get wrong, for a route whose whole argument is
+ * that a signature is bytes; a multipart body would add a parser. A length and
+ * a concatenation need neither. */
+#define SIGLEN_HEADER "x-fhsm-signature-length"
+
+/* Bounds. Every one of them exists to make the parser's worst case small and
+ * stated, rather than large and discovered. */
+#define MAX_HEADER_BYTES  8192   /* request line + headers, total */
+#define MAX_REQUEST_LINE  1024
+#define MAX_HEADERS         32
+#define MAX_TARGET         256
+#define MAX_BODY         65536
+#define MAX_KEY_LABEL       64   /* CKA_LABEL is 64 in the token store */
+
+/* --------------------------------------------------------------------------
+ * The authorisation policy: which certificate subject may use which key.
+ *
+ * A text file, one pair per line, subject and key label separated by a tab:
+ *
+ *     # fhsm-service authorisation policy v1
+ *     # SUBJECT<TAB>KEY-LABEL
+ *     CN=web01\ttls-web01
+ *     CN=ocsp01\tocsp-responder
+ *
+ * A tab because a subject contains almost anything -- spaces, commas, equals
+ * signs -- and a key label does not. Plain text for the same reasons the
+ * revocation database is: readable, greppable, diffable, and something an
+ * operator can put under version control and review in a merge request.
+ *
+ * Reloaded on SIGHUP rather than by watching the mtime. The operator decides
+ * when a change takes effect, and a file being edited in place is never read
+ * half-written. Replace it atomically and send the signal.
+ *
+ * A reload that fails keeps the previous policy. Neither of the two obvious
+ * alternatives is acceptable: falling open would grant everything on a typo,
+ * and falling closed would take the authority down for one. The failure is
+ * loud and the old rules stand.
+ * ----------------------------------------------------------------------- */
+#define POLICY_MAX 512
+
+typedef struct {
+    char subject[FHSM_AUDIT_ACTOR_MAX];
+    char key[MAX_KEY_LABEL];
+} policy_rule_t;
+
+static pthread_rwlock_t g_policy_rw = PTHREAD_RWLOCK_INITIALIZER;
+static pthread_mutex_t  g_reload_mu = PTHREAD_MUTEX_INITIALIZER;
+static policy_rule_t    g_policy[POLICY_MAX];
+static int              g_policy_n = 0;
+static char             g_policy_path[512];
+static volatile sig_atomic_t g_reload = 0;
+
+/* Returns the number of rules loaded, or -1 leaving the current set alone. */
+static int policy_load(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    static policy_rule_t staging[POLICY_MAX];   /* guarded by g_policy_rw */
+    int n = 0, lineno = 0, bad = 0;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        lineno++;
+        size_t L = strlen(line);
+        while (L && (line[L-1] == '\n' || line[L-1] == '\r')) line[--L] = '\0';
+        if (L == 0 || line[0] == '#') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) {
+            fprintf(stderr, "fhsm-service: %s:%d has no tab; a rule is"
+                            " SUBJECT<TAB>KEY-LABEL\n", path, lineno);
+            bad = 1; break;
+        }
+        *tab = '\0';
+        const char *subj = line, *key = tab + 1;
+        if (!*subj || !*key || strchr(key, '\t')) {
+            fprintf(stderr, "fhsm-service: %s:%d is malformed\n", path, lineno);
+            bad = 1; break;
+        }
+        size_t subj_len = strlen(subj), key_len = strlen(key);
+        if (subj_len >= sizeof staging[0].subject ||
+            key_len  >= sizeof staging[0].key) {
+            fprintf(stderr, "fhsm-service: %s:%d is too long\n", path, lineno);
+            bad = 1; break;
+        }
+        if (n >= POLICY_MAX) {
+            fprintf(stderr, "fhsm-service: %s has more than %d rules\n",
+                    path, POLICY_MAX);
+            bad = 1; break;
+        }
+        /* memcpy, not snprintf: the bound was checked four lines up, and the
+         * copy carries the length that was checked. At -O2 gcc followed that
+         * reasoning; at the -O1 a TSAN build uses it did not, and warned about
+         * a truncation the guard already prevents. Saying it with the length
+         * is both clearer and provable at any optimisation level. */
+        memcpy(staging[n].subject, subj, subj_len + 1);
+        memcpy(staging[n].key,     key,  key_len  + 1);
+        n++;
+    }
+    fclose(f);
+
+    /* One malformed line refuses the whole file, exactly as the revocation
+     * database does: a policy read only partly is a policy that grants less
+     * than the operator wrote, and finding that out in production is worse
+     * than refusing to load. */
+    if (bad) return -1;
+
+    pthread_rwlock_wrlock(&g_policy_rw);
+    memcpy(g_policy, staging, sizeof g_policy);
+    g_policy_n = n;
+    pthread_rwlock_unlock(&g_policy_rw);
+    return n;
+}
+
+/* SIGHUP asks for a reload; the reload happens on the next request.
+ *
+ * Not in the handler, because almost nothing is safe to call there. Not on a
+ * dedicated descriptor either -- that would be a third thing in every worker's
+ * poll() set for an event that happens twice a year. The consequence is worth
+ * stating: on an idle service the new policy takes effect when the next
+ * request arrives, which is exactly when it first matters. */
+static void policy_reload_if_asked(void)
+{
+    if (!g_reload) return;
+    pthread_mutex_lock(&g_reload_mu);
+    if (g_reload) {
+        g_reload = 0;
+        int n = policy_load(g_policy_path);
+        if (n < 0) {
+            fprintf(stderr, "fhsm-service: reloading %s failed; the previous"
+                            " policy is still in force.\n", g_policy_path);
+        } else {
+            fprintf(stderr, "fhsm-service: policy reloaded, %d rule(s)\n", n);
+        }
+    }
+    pthread_mutex_unlock(&g_reload_mu);
+}
+
+static int policy_permits(const char *subject, const char *key)
+{
+    int ok = 0;
+    pthread_rwlock_rdlock(&g_policy_rw);
+    for (int i = 0; i < g_policy_n; i++) {
+        if (strcmp(g_policy[i].subject, subject) == 0 &&
+            strcmp(g_policy[i].key, key) == 0) { ok = 1; break; }
+    }
+    pthread_rwlock_unlock(&g_policy_rw);
+    return ok;
+}
+
+/* --------------------------------------------------------------------------
+ * The session pool.
+ *
+ * "One session per concurrent request, never shared" (ADR). A session handle
+ * is not thread-safe to share -- the module keeps per-handle operation state,
+ * and two threads in the same handle would interleave into each other's
+ * operation. So a worker takes one for the length of a request and gives it
+ * back.
+ *
+ * Lazily grown to a cap: a service that opened its cap at start-up would pay
+ * ~29 KiB of resident memory per session for sessions nobody asked for
+ * (measured, docs/REST_API_DESIGN.md), and would fail to start on a token
+ * whose cap is lower than ours. Grown under the same mutex that hands slots
+ * out, which is the simple arrangement rather than the fast one: opening a
+ * session is rare and short, and a second lock here would be a second thing
+ * to get wrong.
+ *
+ * Never shrunk. A session that has been opened costs nothing further to keep,
+ * and closing one under load only to reopen it is how a pool becomes a
+ * source of latency instead of a cure for it.
+ * ----------------------------------------------------------------------- */
+#define POOL_MAX_LIMIT 127          /* the module's own cap, FHSM_MAX_SESSIONS-1 */
+
+typedef struct {
+    unsigned long handle;
+    int           in_use;
+} pool_slot_t;
+
+static pthread_mutex_t g_pool_mu  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_pool_cv  = PTHREAD_COND_INITIALIZER;
+static pool_slot_t     g_pool[POOL_MAX_LIMIT];
+static int             g_pool_open = 0;    /* slots ever opened */
+static int             g_pool_max  = 0;    /* configured ceiling */
+static unsigned long   g_slot_id   = 0;
+
+/* Borrow a session. Blocks while every open slot is busy and the pool is at
+ * its ceiling -- which is the queue the ADR says does not exist yet, in its
+ * smallest possible form: unbounded in depth and bounded only by the number
+ * of worker threads. Making it a real queue with a depth is a later slice,
+ * and docs/RATE_LIMIT.md is where its size will be argued. */
+static int pool_acquire(unsigned long *out)
+{
+    pthread_mutex_lock(&g_pool_mu);
+    for (;;) {
+        for (int i = 0; i < g_pool_open; i++) {
+            if (!g_pool[i].in_use) {
+                g_pool[i].in_use = 1;
+                *out = g_pool[i].handle;
+                pthread_mutex_unlock(&g_pool_mu);
+                return 0;
+            }
+        }
+        if (g_pool_open < g_pool_max) {
+            unsigned long h = 0;
+            unsigned long rv = C_OpenSession(g_slot_id,
+                                              CKF_SERIAL_SESSION | CKF_RW_SESSION_,
+                                              NULL, NULL, &h);
+            if (rv != 0) {
+                /* Do not retry and do not grow again this time round: the
+                 * module refused, and hammering it turns one failure into a
+                 * loop. Wait for a slot to come back instead. */
+                pthread_cond_wait(&g_pool_cv, &g_pool_mu);
+                continue;
+            }
+            g_pool[g_pool_open].handle = h;
+            g_pool[g_pool_open].in_use = 1;
+            *out = h;
+            g_pool_open++;
+            pthread_mutex_unlock(&g_pool_mu);
+            return 0;
+        }
+        pthread_cond_wait(&g_pool_cv, &g_pool_mu);
+    }
+}
+
+static void pool_release(unsigned long h)
+{
+    pthread_mutex_lock(&g_pool_mu);
+    for (int i = 0; i < g_pool_open; i++) {
+        if (g_pool[i].handle == h) { g_pool[i].in_use = 0; break; }
+    }
+    pthread_cond_signal(&g_pool_cv);
+    pthread_mutex_unlock(&g_pool_mu);
+}
+
+static void pool_close_all(void)
+{
+    pthread_mutex_lock(&g_pool_mu);
+    for (int i = 0; i < g_pool_open; i++) (void)C_CloseSession(g_pool[i].handle);
+    g_pool_open = 0;
+    pthread_mutex_unlock(&g_pool_mu);
+}
+
+/* --------------------------------------------------------------------------
+ * Per-identity concurrency --- fairness, and the resource it actually guards
+ *
+ * docs/RATE_LIMIT.md says "the cap is on how much of the pool one identity may
+ * hold". Measured against this service, that cap could never fire: main()
+ * refuses to start when --pool-max < --workers, a worker serves one request at
+ * a time, and every path releases its session, so the sessions held at once
+ * are at most the worker count and the pool is never contended. Instrumenting
+ * the wait and firing 32 concurrent signatures gave pool_waits = 0, in
+ * workers=4/pool=8 and in workers=8/pool=8 alike.
+ *
+ * The starvation the document describes is real; it happens one layer down.
+ * With four workers, one identity saturating the service took another
+ * identity's median latency from 10.4 ms to 75.1 ms -- a factor of 7.2, with
+ * zero pool contention. **The scarce resource is the worker thread.** So the
+ * count is of requests in flight per identity, not of pooled sessions.
+ *
+ * THE CAP APPLIES ONLY WHILE SOMEBODY ELSE IS USING THE SERVICE. One identity
+ * alone may use every worker; while another identity is also present, each is
+ * held to workers-1, which leaves a worker the other can always take. A
+ * service with a single client loses nothing, and nobody is refused while the
+ * service is idle -- refusing a client on an idle authority would be a worse
+ * failure than the one being prevented.
+ *
+ * "PRESENT" MEANS RECENTLY SEEN, NOT CURRENTLY IN FLIGHT, and the difference
+ * is the whole control. The first version of this counted only identities with
+ * a request in flight, which is circular and was measured to do nothing: a
+ * starved client spends its time in the kernel's accept backlog, where this
+ * process cannot see it. It is not in flight, so it caps nobody; it caps
+ * nobody, so it never gets a worker. Against a saturating identity the cap
+ * fired zero times and the starvation was unchanged.
+ *
+ * PRESENCE IS EARNED BY BEING SERVED, not by asking. An identity whose
+ * requests are all refused -- an unauthorised key, an unknown subject -- does
+ * not become present and does not tighten anyone else's cap. Found by the
+ * existing test: an earlier "CN=attacker" probe, refused by the policy, had
+ * marked itself present, which capped the legitimate client to workers-1 and
+ * turned 12 of its 16 concurrent signatures into 429s. Left alone it would
+ * also be an attack: one refused request every window, and the real client
+ * loses a worker for as long as the attacker keeps it up.
+ *
+ * So an identity stays present for IDENT_WINDOW_S after its last *served*
+ * request.
+ * The clock is CLOCK_MONOTONIC: docs/RATE_LIMIT.md rejects it for the refusal
+ * budget because it breaks across a reboot, which is exactly right there and
+ * irrelevant here -- this table is in-process and does not outlive the
+ * service, so there is no reboot for it to survive.
+ *
+ * A free entry always exists: the in_flight counts sum to at most the worker
+ * count, the table is larger than the largest legal worker count, so at least
+ * one entry is idle and can be taken -- the oldest, if none has expired.
+ * ----------------------------------------------------------------------- */
+#define IDENT_MAX      (POOL_MAX_LIMIT + 1)   /* > any legal --workers */
+#define IDENT_WINDOW_S 30   /* how long an identity stays "present" */
+/* How long an identity must go without a refusal before its burst is declared
+ * over. Without it the burst flaps: a saturating client is refused, admitted,
+ * refused again, and each swing writes two lines. Measured at zero cooldown,
+ * 9865 refusals produced 786 audit lines -- far better than one per refusal
+ * and still not the "handful" docs/RATE_LIMIT.md asks for. The burst is a
+ * property of a period, not of a single request. */
+#define BURST_COOLDOWN_S 5
+
+typedef struct {
+    char          subject[FHSM_AUDIT_ACTOR_MAX];
+    int           in_flight;
+    int           used;
+    time_t        last_seen;         /* CLOCK_MONOTONIC seconds */
+    int           limited;           /* inside a burst of refusals */
+    unsigned long suppressed;        /* refusals counted, not written */
+    time_t        limited_since;
+    time_t        last_refusal;
+} ident_t;
+
+/* What the caller must write to the log, decided under the lock and written
+ * outside it -- an audit write takes a durable barrier, and holding a mutex
+ * across one would serialise every identity behind the slowest disk. */
+typedef struct {
+    int           log_refusal;   /* this refusal is the transition into limited */
+    int           log_resume;    /* the burst just ended; close it */
+    unsigned long suppressed;    /* how many were counted and not written */
+    long          window_s;      /* how long the burst lasted */
+} ident_note_t;
+
+static time_t mono_now(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ts.tv_sec;
+}
+
+static pthread_mutex_t g_ident_mu = PTHREAD_MUTEX_INITIALIZER;
+static ident_t         g_ident[IDENT_MAX];
+static int             g_workers  = 0;   /* set once, in main(), before threads */
+
+/* 0 admitted and counted, -1 refused. Refusing does not count: a request that
+ * was turned away never held a worker, and counting it would make the cap
+ * tighten under its own refusals. */
+static int ident_enter(const char *subject, ident_note_t *note)
+{
+    time_t now = mono_now();
+    memset(note, 0, sizeof *note);
+    pthread_mutex_lock(&g_ident_mu);
+
+    int mine = -1, spare = -1, others = 0;
+    time_t oldest = 0;
+    for (int i = 0; i < IDENT_MAX; i++) {
+        if (!g_ident[i].used) { if (spare < 0) spare = i; continue; }
+
+        int present = g_ident[i].in_flight > 0 ||
+                      (now - g_ident[i].last_seen) < IDENT_WINDOW_S;
+        if (strcmp(g_ident[i].subject, subject) == 0) { mine = i; continue; }
+        if (present) {
+            others++;
+        } else if (g_ident[i].in_flight == 0) {
+            /* Expired and idle: reusable. Prefer the least recently seen, so a
+             * burst of one-off identities does not evict an active client. */
+            if (spare < 0 || g_ident[i].last_seen < oldest) {
+                spare = i; oldest = g_ident[i].last_seen;
+            }
+        }
+    }
+
+    int cap = g_workers;
+    if (others > 0 && cap > 1) cap = g_workers - 1;
+
+    if (mine >= 0) {
+        if (g_ident[mine].in_flight >= cap) {
+            /* Refused, and last_seen is *not* touched: a client kept out must
+             * not be able to hold its own presence open by being refused.
+             *
+             * The first refusal of a burst is written, because an identity
+             * that starts being turned away is the event an operator needs.
+             * The rest are counted. */
+            if (!g_ident[mine].limited) {
+                g_ident[mine].limited       = 1;
+                g_ident[mine].limited_since = now;
+                g_ident[mine].suppressed    = 0;
+                note->log_refusal           = 1;
+            } else {
+                g_ident[mine].suppressed++;
+            }
+            g_ident[mine].last_refusal = now;
+            pthread_mutex_unlock(&g_ident_mu);
+            return -1;
+        }
+        if (g_ident[mine].limited &&
+            (now - g_ident[mine].last_refusal) >= BURST_COOLDOWN_S) {
+            /* Admitted, and quiet long enough that the burst is really over.
+             * Not "admitted once": a client at its cap is admitted and refused
+             * alternately, and closing on the first admission would write two
+             * lines per swing. */
+            note->log_resume  = 1;
+            note->suppressed  = g_ident[mine].suppressed;
+            note->window_s    = (long)(now - g_ident[mine].limited_since);
+            g_ident[mine].limited    = 0;
+            g_ident[mine].suppressed = 0;
+        }
+        g_ident[mine].in_flight++;
+        /* last_seen is not touched here: admission is not service. It is set
+         * by ident_leave(), and only for a request that was actually served. */
+    } else {
+        /* A brand-new identity is never refused: it holds nothing yet, and
+         * turning away a client's first request because others are busy is the
+         * starvation this exists to prevent, pointed the other way. */
+        if (spare < 0) { pthread_mutex_unlock(&g_ident_mu); return 0; }
+        snprintf(g_ident[spare].subject, sizeof g_ident[spare].subject,
+                 "%s", subject);
+        g_ident[spare].in_flight    = 1;
+        g_ident[spare].last_seen    = 0;   /* not present until it is served */
+        g_ident[spare].limited      = 0;
+        g_ident[spare].suppressed   = 0;
+        g_ident[spare].last_refusal = 0;
+        g_ident[spare].used         = 1;
+        pthread_mutex_unlock(&g_ident_mu);
+        return 0;
+    }
+    pthread_mutex_unlock(&g_ident_mu);
+    return 0;
+}
+
+/* A burst that never ended because the client stopped asking would otherwise
+ * take its count to the grave. Called once, after the workers have joined. */
+static void ident_flush_bursts(void)
+{
+    time_t now = mono_now();
+    for (int i = 0; i < IDENT_MAX; i++) {
+        if (!g_ident[i].used || !g_ident[i].limited) continue;
+        char n[32], w[32];
+        snprintf(n, sizeof n, "%lu", g_ident[i].suppressed);
+        snprintf(w, sizeof w, "%ld", (long)(now - g_ident[i].limited_since));
+        fhsm_audit_set_actor(g_ident[i].subject);
+        (void)fhsm_audit_event(FHSM_EV_IDENTITY_RESUMED, -1, -1,
+                                FHSM_ROLE_NONE, FHSM_RV_OK,
+                                "suppressed", n, "window_s", w,
+                                "ended", "shutdown", FHSM_AUDIT_END);
+        fhsm_audit_set_actor(NULL);
+        g_ident[i].limited = 0;
+    }
+}
+
+/* `served` is what earns presence. A request that was refused for any reason
+ * decrements the in-flight count and nothing else. */
+static void ident_leave(const char *subject, int served)
+{
+    time_t now = mono_now();
+    pthread_mutex_lock(&g_ident_mu);
+    for (int i = 0; i < IDENT_MAX; i++) {
+        if (g_ident[i].used && g_ident[i].in_flight > 0 &&
+            strcmp(g_ident[i].subject, subject) == 0) {
+            g_ident[i].in_flight--;
+            if (served) g_ident[i].last_seen = now;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_ident_mu);
+}
+
+/* --------------------------------------------------------------------------
+ * The refusal budget --- job 2 of docs/RATE_LIMIT.md
+ *
+ * An authorised client asking for keys it is not authorised for is mapping the
+ * token, and repetition is how that is done. What counts here is exactly the
+ * authorisation refusal -- a key the policy does not grant, a key that does
+ * not exist, a subject the policy does not know, the three that /sign answers
+ * identically. Not a malformed request, which says nothing about the token.
+ * Not a request already refused by this budget or by the fairness cap, because
+ * counting those would let the control tighten under its own refusals.
+ *
+ * PERSIST THE COUNT. DERIVE THE DELAY. The token bought that lesson: it once
+ * stored throttle deadlines in the CLOCK_MONOTONIC domain, and a 500 ms delay
+ * read back after a reboot became thirty days.
+ *
+ * Here it goes further -- **the count is the only thing on disk.** The decay
+ * needs elapsed time, and there is no clock that can be persisted honestly:
+ * CLOCK_MONOTONIC restarts at boot, CLOCK_REALTIME moves under `date -s`. So
+ * nothing else is stored, and on load the decay clock simply starts again. A
+ * restart *pauses* the decay; it never rewinds it. That direction is the one
+ * that matters: RATE_LIMIT.md requires that a crash -- which an attacker may
+ * be able to cause -- must not hand back a reset. The cost is that an honest
+ * client's recovery is delayed by a restart, bounded by the decay it would
+ * have earned meanwhile.
+ *
+ * WHEN IT IS WRITTEN. Not at shutdown: a crash is precisely the case this
+ * exists for. Not on every refusal either, when the count is still inside the
+ * free allowance, because losing a count that owes no delay costs nothing.
+ * Written on each increment at or past the allowance -- and the write rate is
+ * then bounded by the delay the count itself imposes, which is a pleasant
+ * property rather than a coincidence: at a count of 8 the client is held for
+ * 8 s, so it cannot force more than one write per 8 s.
+ *
+ * NEVER A PERMANENT LOCK. The delay escalates, is capped, and always expires.
+ * Only the operator suspends an identity, by revoking its certificate.
+ * ----------------------------------------------------------------------- */
+#define BUDGET_MAX     256   /* identities remembered; > any realistic client set */
+#define BUDGET_FREE      4   /* refusals that cost nothing -- a typo is not an attack */
+#define BUDGET_DECAY_S 600   /* one refusal forgiven per ten quiet minutes */
+#define BUDGET_CAP_S    60   /* the delay never exceeds this */
+
+typedef struct {
+    char     subject[FHSM_AUDIT_ACTOR_MAX];
+    unsigned count;
+    time_t   last;        /* monotonic; in-process only, never written */
+    int      used;
+    int      announced;   /* the crossing into "delayed" has been logged */
+} budget_t;
+
+static pthread_mutex_t g_budget_mu = PTHREAD_MUTEX_INITIALIZER;
+static budget_t        g_budget[BUDGET_MAX];
+static char            g_budget_path[512];
+
+/* Escalating, capped, and zero inside the free allowance. Doubling from one
+ * second: 5 -> 1 s, 6 -> 2, 7 -> 4, 8 -> 8, 9 -> 16, 10 -> 32, 11 -> 60. */
+static long budget_delay_s(unsigned n)
+{
+    if (n <= BUDGET_FREE) return 0;
+    unsigned k = n - BUDGET_FREE - 1;
+    if (k >= 20) return BUDGET_CAP_S;
+    long d = 1L << k;
+    return d > BUDGET_CAP_S ? BUDGET_CAP_S : d;
+}
+
+/* Caller holds g_budget_mu. */
+static unsigned budget_decayed(const budget_t *b, time_t now)
+{
+    if (b->count == 0) return 0;
+    long quiet = (long)(now - b->last);
+    if (quiet < 0) quiet = 0;
+    unsigned forgiven = (unsigned)(quiet / BUDGET_DECAY_S);
+    return forgiven >= b->count ? 0 : b->count - forgiven;
+}
+
+/* The whole table, rewritten. It is at most BUDGET_MAX short lines, and a
+ * partial file would be worse than a slow one: temp, fsync, rename. */
+static void budget_save_locked(void)
+{
+    if (g_budget_path[0] == '\0') return;
+    char tmp[600];
+    int n = snprintf(tmp, sizeof tmp, "%s.tmp", g_budget_path);
+    if (n < 0 || (size_t)n >= sizeof tmp) return;
+
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    fprintf(f, "# fhsm-service refusal budget v1 -- count<TAB>subject\n");
+    for (int i = 0; i < BUDGET_MAX; i++) {
+        if (g_budget[i].used && g_budget[i].count > 0)
+            fprintf(f, "%u\t%s\n", g_budget[i].count, g_budget[i].subject);
+    }
+    if (fflush(f) != 0 || fsync(fileno(f)) != 0) { fclose(f); unlink(tmp); return; }
+    fclose(f);
+    if (rename(tmp, g_budget_path) != 0) unlink(tmp);
+}
+
+static void budget_load(const char *dir)
+{
+    if (!dir || !*dir) return;
+    int n = snprintf(g_budget_path, sizeof g_budget_path, "%s/budget", dir);
+    if (n < 0 || (size_t)n >= sizeof g_budget_path) { g_budget_path[0] = '\0'; return; }
+
+    FILE *f = fopen(g_budget_path, "r");
+    if (!f) return;                       /* no budget yet is not an error */
+    time_t now = mono_now();
+    char line[600];
+    int slot = 0;
+    while (fgets(line, sizeof line, f) && slot < BUDGET_MAX) {
+        if (line[0] == '#' || line[0] == '\n') continue;
+        char *tab = strchr(line, '\t');
+        if (!tab) continue;
+        *tab = '\0';
+        char *subj = tab + 1;
+        size_t L = strlen(subj);
+        while (L && (subj[L-1] == '\n' || subj[L-1] == '\r')) subj[--L] = '\0';
+        if (L == 0 || L >= sizeof g_budget[0].subject) continue;
+        unsigned c = (unsigned)strtoul(line, NULL, 10);
+        if (c == 0) continue;
+        snprintf(g_budget[slot].subject, sizeof g_budget[slot].subject, "%s", subj);
+        g_budget[slot].count = c;
+        g_budget[slot].last  = now;   /* the decay clock starts now, not before */
+        g_budget[slot].used  = 1;
+        slot++;
+    }
+    fclose(f);
+    if (slot > 0)
+        fprintf(stderr, "fhsm-service: refusal budget restored for %d identity(ies)\n",
+                slot);
+}
+
+/* Is this identity inside the interval its last refusal earned? Returns the
+ * seconds remaining, or 0 to let the request through.
+ *
+ * THE DELAY IS AN INTERVAL BETWEEN ATTEMPTS, NOT A WINDOW OF REFUSAL. A window
+ * would be a lock wearing a different word: at a count of 8 the client would
+ * be shut out until the decay brought it back under the allowance, which is
+ * forty minutes. What the document asks for is that the delay "escalates, is
+ * capped, and always expires" -- so one attempt is admitted once the interval
+ * has passed, and if that attempt is legitimate the client is simply served.
+ *
+ * A refusal produced *by this function* does not touch `last`. Otherwise every
+ * retry would push the deadline forward and the client could never leave --
+ * the control tightening under its own refusals, which is the same defect the
+ * counting rule above avoids. */
+static long budget_retry_after(const char *subject)
+{
+    time_t now = mono_now();
+    long   wait = 0;
+    pthread_mutex_lock(&g_budget_mu);
+    for (int i = 0; i < BUDGET_MAX; i++) {
+        if (!g_budget[i].used || strcmp(g_budget[i].subject, subject) != 0) continue;
+        unsigned n = budget_decayed(&g_budget[i], now);
+        long need = budget_delay_s(n);
+        long since = (long)(now - g_budget[i].last);
+        if (since < 0) since = 0;
+        if (need > since) wait = need - since;
+        break;
+    }
+    pthread_mutex_unlock(&g_budget_mu);
+    return wait;
+}
+
+/* One authorisation refusal against this identity. Returns the count reached,
+ * and sets *announce when this is the crossing out of the free allowance --
+ * the event docs/RATE_LIMIT.md calls the budget's real product: not the
+ * refusal, but the record that an identity started behaving differently. */
+static unsigned budget_charge(const char *subject, int *announce)
+{
+    time_t now = mono_now();
+    *announce = 0;
+    pthread_mutex_lock(&g_budget_mu);
+
+    int slot = -1, spare = -1;
+    unsigned oldest = 0;
+    for (int i = 0; i < BUDGET_MAX; i++) {
+        if (!g_budget[i].used) { if (spare < 0) spare = i; continue; }
+        if (strcmp(g_budget[i].subject, subject) == 0) { slot = i; break; }
+        /* An entry decayed to nothing carries no information and is reusable.
+         * Preferring the emptiest keeps a busy attacker from evicting the
+         * record of a quieter one. */
+        unsigned d = budget_decayed(&g_budget[i], now);
+        if (d == 0 && (spare < 0 || d < oldest)) { spare = i; oldest = d; }
+    }
+    if (slot < 0) {
+        if (spare < 0) { pthread_mutex_unlock(&g_budget_mu); return 0; }
+        slot = spare;
+        snprintf(g_budget[slot].subject, sizeof g_budget[slot].subject, "%s", subject);
+        g_budget[slot].count     = 0;
+        g_budget[slot].announced = 0;
+        g_budget[slot].used      = 1;
+    }
+
+    unsigned before = budget_decayed(&g_budget[slot], now);
+    g_budget[slot].count = before + 1;
+    g_budget[slot].last  = now;
+
+    if (g_budget[slot].count > BUDGET_FREE) {
+        if (!g_budget[slot].announced) {
+            g_budget[slot].announced = 1;
+            *announce = 1;
+        }
+        /* Written here and not at shutdown: a crash is the case this exists
+         * for. Not written below the allowance either, where losing the count
+         * costs nothing -- and past it, the delay bounds how often a client
+         * can force a write. */
+        budget_save_locked();
+    } else {
+        g_budget[slot].announced = 0;
+    }
+    unsigned reached = g_budget[slot].count;
+    pthread_mutex_unlock(&g_budget_mu);
+    return reached;
+}
+
+/* --------------------------------------------------------------------------
+ * The public listener --- what a relying party may ask without a certificate
+ *
+ * docs/REST_API_DESIGN.md says, under what the service refuses: "A request
+ * with no client identity. Not 'anonymous read-only' -- refused." That rule is
+ * right for every operation the authenticated socket offers, and it cannot
+ * hold for the two the ADR also names. An OCSP responder answers relying
+ * parties, and a relying party is anonymous by construction: a TLS client
+ * checking a certificate has no client certificate of its own to present.
+ * Demanding one would produce a responder nobody can query. `/certificates`
+ * is the same -- it is what an AIA caIssuers pointer resolves to.
+ *
+ * So there are two sockets, not one rule with an exception. The authenticated
+ * socket keeps its invariant untouched; this one has a different threat model
+ * and says so:
+ *
+ *   - No identity, no policy, no refusal budget. There is nobody to charge.
+ *   - **Its own workers.** Sharing them would let anonymous traffic starve
+ *     the authenticated side, which is the exact failure docs/RATE_LIMIT.md
+ *     was written about -- and here there is no identity to be fair between.
+ *   - **No audit line per request.** A durable barrier costs milliseconds;
+ *     an OCSP responder answers as often as clients open connections. Writing
+ *     one line per query is the flood the burst compression was built to stop,
+ *     handed to anyone who can reach the socket. What is recorded is that the
+ *     listener exists, at start, and nothing routine after.
+ *   - Read-only. Nothing here reaches a private key except through a signature
+ *     the CA has already authorised by holding the key -- and today, nothing
+ *     here signs at all.
+ *
+ * The peer check stays. --proxy-uid is not about identity; it is about who may
+ * open the socket, and that is still the proxy.
+ * ----------------------------------------------------------------------- */
+#define CA_CERT_MAX 65536
+
+static unsigned char g_ca_cert[CA_CERT_MAX];
+static size_t        g_ca_cert_len = 0;
+
+static int ca_cert_load(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    size_t n = fread(g_ca_cert, 1, sizeof g_ca_cert, f);
+    int over = !feof(f);
+    fclose(f);
+    if (n == 0 || over) { g_ca_cert_len = 0; return -1; }
+    g_ca_cert_len = n;
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * OCSP (#163). Everything below is on the public listener only.
+ *
+ * WHY THE DATABASE IS RE-READ RATHER THAN HELD
+ *
+ * A responder exists so that a revocation takes effect. One that loaded the
+ * file at start would keep answering `good` for a certificate the operator
+ * revoked an hour ago, until somebody restarted it -- which is precisely the
+ * failure the protocol is for, produced by the responder itself.
+ *
+ * So the file is checked on every question: stat(), and a re-read only when
+ * mtime or size moved. One syscall per query, against a revocation that takes
+ * effect on the next one. `fhsm-ca revoke` writes through a temporary file and
+ * renames, so the daemon never sees a half-written database -- it sees the old
+ * inode or the new one.
+ *
+ * The lock is a read-write lock and not a mutex because answering includes
+ * signing, which is milliseconds. Under a mutex every relying party would
+ * queue behind every other; readers share, and only a reload -- rare -- takes
+ * anyone's turn.
+ * ----------------------------------------------------------------------- */
+static char          g_ocsp_db_path[4096] = "";
+static char          g_ocsp_label[128]    = "";
+static unsigned char g_ocsp_responder[CA_CERT_MAX];
+static size_t        g_ocsp_responder_len = 0;
+static int           g_ocsp_days = 7;
+static int           g_ocsp_on   = 0;
+
+static pthread_rwlock_t g_rev_lock = PTHREAD_RWLOCK_INITIALIZER;
+static fhsm_rev_db_t    g_rev_db;
+static int              g_rev_ok    = 0;   /* the last load succeeded */
+static time_t           g_rev_mtime = 0;
+static off_t            g_rev_size  = -1;
+
+/* Bring g_rev_db up to date with the file. Returns 0 when the database is
+ * usable afterwards. Takes and releases the write lock itself; the caller
+ * holds nothing when it calls this. */
+static int rev_db_refresh(void)
+{
+    struct stat st;
+    if (stat(g_ocsp_db_path, &st) != 0) {
+        /* Not there yet is not an error: `fhsm-ca revoke` creates the file on
+         * the first revocation, and a CA that has revoked nothing is the
+         * ordinary case. An empty database answers `good`, which is true. */
+        if (errno != ENOENT) return -1;
+        st.st_mtime = 0; st.st_size = 0;
+    }
+
+    pthread_rwlock_rdlock(&g_rev_lock);
+    int fresh = g_rev_ok && st.st_mtime == g_rev_mtime && st.st_size == g_rev_size;
+    pthread_rwlock_unlock(&g_rev_lock);
+    if (fresh) return 0;
+
+    fhsm_rev_db_t fresh_db;
+    char err[FHSM_REV_ERR_MAX] = "";
+    memset(&fresh_db, 0, sizeof fresh_db);
+    int rc = fhsm_rev_db_load(g_ocsp_db_path, &fresh_db, err, sizeof err);
+    if (rc != FHSM_REV_OK) {
+        /* Parsed into nothing, so the previous database stays in force. A
+         * responder that dropped its list because the operator mistyped a
+         * line would answer `good` for everything, which is the worst
+         * available answer to a question about revocation. */
+        fprintf(stderr, "fhsm-service: %s", err);
+        pthread_rwlock_wrlock(&g_rev_lock);
+        int usable = g_rev_ok;
+        /* Do not re-read the same broken file on every request. */
+        g_rev_mtime = st.st_mtime; g_rev_size = st.st_size;
+        pthread_rwlock_unlock(&g_rev_lock);
+        return usable ? 0 : -1;
+    }
+
+    pthread_rwlock_wrlock(&g_rev_lock);
+    fhsm_rev_db_free(&g_rev_db);
+    g_rev_db    = fresh_db;
+    g_rev_ok    = 1;
+    g_rev_mtime = st.st_mtime;
+    g_rev_size  = st.st_size;
+    pthread_rwlock_unlock(&g_rev_lock);
+    return 0;
+}
+
+/* _Atomic rather than volatile sig_atomic_t. Both are correct -- C11
+ * 7.14.1.1p5 lets a handler touch a lock-free atomic, and volatile
+ * sig_atomic_t is the older blessing for the same thing -- but only one of
+ * them is checkable. The acceptor reads this on every pass of its loop rather
+ * than only after EINTR, and ThreadSanitizer reported the handler's write
+ * against those reads: a diagnostic that was correct about the code and wrong
+ * about the danger. Relying on the tool not looking is not a property worth
+ * keeping, so the flag says what it is. */
+static _Atomic sig_atomic_t g_stop = 0;
+static int g_stop_pipe[2] = { -1, -1 };
+
+/* write() to a pipe is async-signal-safe; almost nothing else here would be.
+ * The byte is what wakes every worker's poll() at once. */
+static void on_signal(int s)
+{
+    (void)s;
+    g_stop = 1;
+    if (g_stop_pipe[1] >= 0) { char b = 1; (void)!write(g_stop_pipe[1], &b, 1); }
+}
+
+static void on_hup(int s) { (void)s; g_reload = 1; }
+
+/* --------------------------------------------------------------------------
+ * A refusal is a first-class outcome here, so it has a type. `reason` is a
+ * short stable token, not a sentence: it goes in the audit line and somebody
+ * will grep for it a year from now.
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    int         status;        /* HTTP status to send */
+    const char *reason;        /* audit token, NULL when the request is fine */
+} verdict_t;
+
+static const verdict_t OK_VERDICT = { 200, NULL };
+
+/* Generated at build time from PROFILE. The service links the module's
+ * objects statically, so it carries a profile of its own -- and a service
+ * built nist-approved-only cannot sign with the composite mechanism whatever the
+ * separately built tools around it can do. --profile exists so that a test
+ * rig can ask the binary under test rather than infer from a sibling. */
+extern const int fhsm_build_fips_strict;
+
+static void respond_with(int fd, int status, const char *text,
+                          const char *extra)
+{
+    const char *phrase = status == 200 ? "OK"
+                       : status == 400 ? "Bad Request"
+                       : status == 403 ? "Forbidden"
+                       : status == 404 ? "Not Found"
+                       : status == 405 ? "Method Not Allowed"
+                       : status == 422 ? "Unprocessable Content"
+                       : status == 429 ? "Too Many Requests"
+                       : status == 408 ? "Request Timeout"
+                       : status == 413 ? "Payload Too Large"
+                       : status == 501 ? "Not Implemented"
+                       : status == 503 ? "Service Unavailable"
+                       :                 "Error";
+    char buf[512];
+    int n = snprintf(buf, sizeof buf,
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n"
+        "%s"
+        "\r\n%s",
+        status, phrase, strlen(text), extra ? extra : "", text);
+    if (n > 0 && (size_t)n < sizeof buf)
+        (void)!write(fd, buf, (size_t)n);
+}
+
+static void respond(int fd, int status, const char *text)
+{
+    respond_with(fd, status, text, NULL);
+}
+
+/* Case-insensitive compare for a header name of known length. Header names
+ * are ASCII by RFC 9110; tolower on anything else is not our problem because
+ * the byte never got past the character check in read_request(). */
+static int name_eq(const char *a, size_t alen, const char *lower)
+{
+    if (strlen(lower) != alen) return 0;
+    for (size_t i = 0; i < alen; i++) {
+        char c = a[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != lower[i]) return 0;
+    }
+    return 1;
+}
+
+/* --------------------------------------------------------------------------
+ * The parser.
+ *
+ * It reads until CRLFCRLF or until MAX_HEADER_BYTES, whichever comes first,
+ * and then walks what it read. It never grows a buffer, never allocates, and
+ * has one loop per line. That is the whole design: an auditor should be able
+ * to convince themselves it terminates by looking at it.
+ * ----------------------------------------------------------------------- */
+typedef struct {
+    char   method[8];
+    char   target[MAX_TARGET];
+    char   subject[FHSM_AUDIT_ACTOR_MAX];
+    char   key[MAX_KEY_LABEL];
+    int    have_subject;
+    int    subject_repeated;
+    int    have_key;
+    int    have_siglen;
+    int    siglen_repeated;
+    long   siglen;
+    int    key_repeated;
+    long   content_length;
+    int    saw_transfer_encoding;
+
+    /* The buffers live in the request, and the request lives on the worker's
+     * stack. They used to be `static`, which was harmless while one thread
+     * served one connection at a time and became a data race the moment
+     * workers arrived -- every one of them parsing into the same array. Found
+     * by reading, not by a sanitizer: ThreadSanitizer would have caught it,
+     * but it could not serve a request in this environment, so nothing did.
+     *
+     * 8 KiB of headers plus 64 KiB of body against a default 8 MiB thread
+     * stack. Bounded, and bounded by the same constants the parser enforces. */
+    char   hdr[MAX_HEADER_BYTES + 1];
+    size_t hdr_used;
+    unsigned char body[MAX_BODY];
+    size_t body_len;
+} request_t;
+
+/* --------------------------------------------------------------------------
+ * A DEADLINE ON THE WHOLE REQUEST
+ *
+ * Without one, four connections that say nothing stop the service. Measured,
+ * not reasoned: with --workers 4, opening four sockets and sending no bytes
+ * took /health from 9.8 ms to a timeout, for as long as they were held, and
+ * the daemon wrote nothing at all. Every worker was inside a blocking read()
+ * waiting for a header that was never coming. At sixty-nine such connections
+ * the accept backlog fills and connect() itself returns EAGAIN, so an honest
+ * client is refused by the kernel before this process sees it.
+ *
+ * The socket is mode 0660 and the peer's uid is checked, so this takes the
+ * proxy's own uid rather than any local user. That bounds who can do it; it
+ * does not make it survivable. An operator who adds `keepalive 16` to their
+ * nginx upstream block -- ordinary tuning advice -- would hold idle
+ * connections open and reach the same state without meaning to.
+ *
+ * WHY A DEADLINE AND NOT SO_RCVTIMEO
+ *
+ * SO_RCVTIMEO bounds one read(), which is not the property needed. A peer
+ * sending one byte every nine seconds resets it forever and holds the worker
+ * anyway -- the ordinary slowloris. What has to be bounded is the request, so
+ * the deadline is taken once on entry and every wait below gets whatever is
+ * left of it.
+ *
+ * ON NOT COMPRESSING THE AUDIT LINE
+ *
+ * A 408 goes through the ordinary refusal path, one durable line each, and
+ * that is deliberate. The burst compression exists because a refused identity
+ * can be refused thousands of times a second; an abandoned connection cannot,
+ * because abandoning one costs the peer the whole deadline. The control is its
+ * own rate limit, so it needs no second one.
+ * ----------------------------------------------------------------------- */
+/* TWO DEADLINES, NOT ONE
+ *
+ * A single ten-second deadline was the first version, and it left the service
+ * stalled for twenty seconds against eight silent connections and four
+ * workers: bounded, which the previous state was not, but bounded at
+ * (connections / workers) x deadline, which grows with the attacker's effort.
+ *
+ * The two waits are not the same shape. A proxy that has connected sends its
+ * request immediately -- it has it in hand; there is nothing to compute --
+ * so the wait for the *first byte* is a network hop on a unix socket, and a
+ * second is already three orders of magnitude more than it needs. The wait
+ * for the *rest* has to allow a body to arrive in pieces, which is why it is
+ * ten. nginx splits the same wait for the same reason
+ * (client_header_timeout against client_body_timeout).
+ *
+ * With the split, the same eight silent connections cost two seconds instead
+ * of twenty, and a slow body still gets its ten. */
+#define FIRST_BYTE_DEADLINE_MS 1000
+#define REQUEST_DEADLINE_MS   10000
+
+static long ms_left(const struct timespec *deadline)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    long ms = (deadline->tv_sec - now.tv_sec) * 1000
+            + (deadline->tv_nsec - now.tv_nsec) / 1000000;
+    return ms;
+}
+
+/* 1 readable, 0 the deadline passed, -1 the connection failed. */
+static int wait_readable(int fd, const struct timespec *deadline)
+{
+    for (;;) {
+        long ms = ms_left(deadline);
+        if (ms <= 0) return 0;
+        struct pollfd pfd = { fd, POLLIN, 0 };
+        int n = poll(&pfd, 1, (int)(ms > INT_MAX ? INT_MAX : ms));
+        if (n > 0) return 1;
+        if (n == 0) return 0;
+        if (errno == EINTR) continue;
+        return -1;
+    }
+}
+
+static verdict_t read_request(int fd, request_t *r)
+{
+    memset(r, 0, sizeof *r);
+    r->content_length = -1;
+
+    struct timespec deadline, first;
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    first = deadline;
+    deadline.tv_sec += REQUEST_DEADLINE_MS   / 1000;
+    first.tv_sec    += FIRST_BYTE_DEADLINE_MS / 1000;
+    int had_a_byte = 0;
+
+    char *buf = r->hdr;
+    size_t used = 0;
+    const char *end = NULL;
+
+    while (used < MAX_HEADER_BYTES) {
+        /* The first byte gets the short deadline; everything after it gets the
+         * long one. A connection that has said nothing at all is the cheap
+         * thing to hold and so the thing to let go of quickly. */
+        int w = wait_readable(fd, had_a_byte ? &deadline : &first);
+        if (w == 0)  return (verdict_t){ 408, "request_timeout" };
+        if (w < 0)   return (verdict_t){ 400, "read_failed" };
+        had_a_byte = 1;
+        ssize_t n = read(fd, buf + used, MAX_HEADER_BYTES - used);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return (verdict_t){ 400, "read_failed" };
+        }
+        if (n == 0) return (verdict_t){ 400, "closed_early" };
+        used += (size_t)n;
+        buf[used] = '\0';
+        end = strstr(buf, "\r\n\r\n");
+        if (end) break;
+    }
+    if (!end) return (verdict_t){ 400, "headers_too_large" };
+
+    /* --- the request line ------------------------------------------------ */
+    const char *p = buf;
+    const char *eol = strstr(p, "\r\n");
+    if (!eol || (size_t)(eol - p) > MAX_REQUEST_LINE)
+        return (verdict_t){ 400, "request_line" };
+
+    const char *sp1 = memchr(p, ' ', (size_t)(eol - p));
+    if (!sp1) return (verdict_t){ 400, "request_line" };
+    size_t mlen = (size_t)(sp1 - p);
+    if (mlen == 0 || mlen >= sizeof r->method)
+        return (verdict_t){ 400, "method" };
+    memcpy(r->method, p, mlen);
+    r->method[mlen] = '\0';
+    if (strcmp(r->method, "GET") != 0 && strcmp(r->method, "POST") != 0)
+        return (verdict_t){ 400, "method" };
+
+    const char *tstart = sp1 + 1;
+    const char *sp2 = memchr(tstart, ' ', (size_t)(eol - tstart));
+    if (!sp2) return (verdict_t){ 400, "request_line" };
+    size_t tlen = (size_t)(sp2 - tstart);
+    if (tlen == 0 || tlen >= sizeof r->target || tstart[0] != '/')
+        return (verdict_t){ 400, "target" };
+    for (size_t i = 0; i < tlen; i++) {
+        unsigned char c = (unsigned char)tstart[i];
+        if (c < 0x21 || c > 0x7e) return (verdict_t){ 400, "target" };
+    }
+    memcpy(r->target, tstart, tlen);
+    r->target[tlen] = '\0';
+
+    /* One version, exactly. A service behind a proxy we configure has no
+     * reason to negotiate. */
+    if ((size_t)(eol - (sp2 + 1)) != 8 || memcmp(sp2 + 1, "HTTP/1.1", 8) != 0)
+        return (verdict_t){ 400, "version" };
+
+    /* --- the headers ----------------------------------------------------- */
+    p = eol + 2;
+    int count = 0;
+    while (p < end) {
+        eol = strstr(p, "\r\n");
+        if (!eol) return (verdict_t){ 400, "header_line" };
+        if (++count > MAX_HEADERS) return (verdict_t){ 400, "header_count" };
+
+        const char *colon = memchr(p, ':', (size_t)(eol - p));
+        if (!colon) return (verdict_t){ 400, "header_line" };
+        size_t nlen = (size_t)(colon - p);
+        if (nlen == 0 || nlen > 64) return (verdict_t){ 400, "header_name" };
+
+        const char *v = colon + 1;
+        while (v < eol && (*v == ' ' || *v == '\t')) v++;
+        size_t vlen = (size_t)(eol - v);
+        while (vlen && (v[vlen-1] == ' ' || v[vlen-1] == '\t')) vlen--;
+        if (vlen > 256) return (verdict_t){ 400, "header_value" };
+
+        for (size_t i = 0; i < vlen; i++) {
+            unsigned char c = (unsigned char)v[i];
+            if (c < 0x20 || c == 0x7f) return (verdict_t){ 400, "header_value" };
+        }
+
+        if (name_eq(p, nlen, IDENT_HEADER)) {
+            /* Repeated is refused rather than resolved. Picking the first or
+             * the last is a choice, and any choice here is one an attacker
+             * can plan around. */
+            if (r->have_subject) { r->subject_repeated = 1; }
+            else if (vlen == 0 || vlen >= sizeof r->subject) {
+                return (verdict_t){ 400, "subject_length" };
+            } else {
+                memcpy(r->subject, v, vlen);
+                r->subject[vlen] = '\0';
+                r->have_subject = 1;
+            }
+        } else if (name_eq(p, nlen, SIGLEN_HEADER)) {
+            if (r->have_siglen) { r->siglen_repeated = 1; }
+            char tmp[32];
+            if (vlen == 0 || vlen >= sizeof tmp)
+                return (verdict_t){ 400, "bad_signature_length" };
+            memcpy(tmp, v, vlen); tmp[vlen] = '\0';
+            char *tail = NULL;
+            errno = 0;
+            long n = strtol(tmp, &tail, 10);
+            if (errno != 0 || !tail || *tail || n <= 0 || n > (long)MAX_BODY)
+                return (verdict_t){ 400, "bad_signature_length" };
+            r->siglen = n;
+            r->have_siglen = 1;
+        } else if (name_eq(p, nlen, KEY_HEADER)) {
+            if (r->have_key) { r->key_repeated = 1; }
+            else if (vlen == 0 || vlen >= sizeof r->key) {
+                return (verdict_t){ 400, "key_length" };
+            } else {
+                memcpy(r->key, v, vlen);
+                r->key[vlen] = '\0';
+                r->have_key = 1;
+            }
+        } else if (name_eq(p, nlen, "content-length")) {
+            if (r->content_length >= 0) return (verdict_t){ 400, "content_length" };
+            if (vlen == 0 || vlen > 9) return (verdict_t){ 400, "content_length" };
+            long cl = 0;
+            for (size_t i = 0; i < vlen; i++) {
+                if (v[i] < '0' || v[i] > '9') return (verdict_t){ 400, "content_length" };
+                cl = cl * 10 + (v[i] - '0');
+            }
+            if (cl > MAX_BODY) return (verdict_t){ 413, "body_too_large" };
+            r->content_length = cl;
+        } else if (name_eq(p, nlen, "transfer-encoding")) {
+            /* Not "handle chunked too". Refused: a body framed two ways is
+             * how a proxy and a backend come to disagree about where one
+             * request ends and the next begins. */
+            r->saw_transfer_encoding = 1;
+        }
+        p = eol + 2;
+    }
+
+    if (r->saw_transfer_encoding) return (verdict_t){ 400, "transfer_encoding" };
+
+    /* --- the body -------------------------------------------------------
+     * Whatever arrived with the headers is already in hand; the rest is read
+     * to exactly Content-Length and no further. A body longer than declared
+     * belongs to no request we will answer, and one shorter means the client
+     * went away mid-sentence. */
+    r->hdr_used = used;
+    if (r->content_length > 0) {
+        const char *bstart = end + 4;
+        size_t have = used - (size_t)(bstart - buf);
+        if (have > (size_t)r->content_length) have = (size_t)r->content_length;
+        memcpy(r->body, bstart, have);
+        r->body_len = have;
+        while (r->body_len < (size_t)r->content_length) {
+            int w = wait_readable(fd, &deadline);
+            if (w == 0)  return (verdict_t){ 408, "request_timeout" };
+            if (w < 0)   return (verdict_t){ 400, "body_read" };
+            ssize_t n = read(fd, r->body + r->body_len,
+                              (size_t)r->content_length - r->body_len);
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                return (verdict_t){ 400, "body_read" };
+            }
+            if (n == 0) return (verdict_t){ 400, "body_short" };
+            r->body_len += (size_t)n;
+        }
+    }
+    return OK_VERDICT;
+}
+
+/* --------------------------------------------------------------------------
+ * POST /sign
+ *
+ *     X-FHSM-Client-Subject: <from the proxy>
+ *     X-FHSM-Key: <label>
+ *     Content-Length: <n>
+ *     <n bytes to sign>
+ *
+ * 200 with the raw signature, or a refusal. No JSON in either direction: the
+ * headers are already parsed strictly and boundedly, and a JSON parser in C
+ * facing untrusted input is the single largest thing this project could ask a
+ * reader to audit (ADR §1). The cost is that a client cannot send a structured
+ * request, and nothing here needs one.
+ *
+ * The mechanism is not a parameter. The key knows how it signs, and letting a
+ * caller choose would put algorithm agility in the least trustworthy place in
+ * the system -- and would be PKCS#11 leaking through an API that exists not to
+ * expose it (ADR §2).
+ * ----------------------------------------------------------------------- */
+/* `cls` because /sign wants the private half and /verify the public one, and
+ * a lookup that always answered CKO_PRIVATE_KEY made every verification fail
+ * with the module refusing the handle -- found by running the route rather
+ * than by reading it. */
+static unsigned long find_key(unsigned long sess, const char *label,
+                               unsigned long cls)
+{
+    struct { unsigned long type; void *pValue; unsigned long len; } tmpl[2] = {
+        { CKA_CLASS_, &cls, sizeof cls },
+        { CKA_LABEL_, (void *)(uintptr_t)label, (unsigned long)strlen(label) }
+    };
+    unsigned long h = 0, n = 0;
+    if (C_FindObjectsInit(sess, tmpl, 2) != 0) return 0;
+    (void)C_FindObjects(sess, &h, 1, &n);
+    (void)C_FindObjectsFinal(sess);
+    return n ? h : 0;
+}
+
+static verdict_t do_sign(int fd, request_t *r)
+{
+    if (!r->have_key)   return (verdict_t){ 400, "no_key_header" };
+    if (r->key_repeated) return (verdict_t){ 400, "key_repeated" };
+    if (r->body_len == 0) return (verdict_t){ 400, "empty_body" };
+
+    unsigned long sess = 0;
+    if (pool_acquire(&sess) != 0) return (verdict_t){ 503, "pool_unavailable" };
+
+    /* Both questions are asked before either is answered.
+     *
+     * docs/RATE_LIMIT.md requires that "you are not authorised for that key"
+     * and "there is no such key" be the same answer, byte for byte and in the
+     * same time -- otherwise the refusal budget is the only thing between an
+     * attacker and a map of the token. Returning early on the policy check
+     * would make an unauthorised request measurably faster than one naming a
+     * key that does not exist, which is the map, one request at a time.
+     *
+     * So the key is looked up even when the policy has already said no, and
+     * the two results are combined afterwards. It costs one object search on
+     * a request that will be refused, against an audit line that already
+     * costs milliseconds.
+     *
+     * Honest limit: this equalises the work, not the timing. A search that
+     * finds nothing walks the whole store; one that finds a key stops early.
+     * Constant-time object lookup is not something this service can impose on
+     * the module, and claiming "in the same time" would be claiming more than
+     * is true. */
+    int permitted = policy_permits(r->subject, r->key);
+    unsigned long key = find_key(sess, r->key, CKO_PRIVATE_KEY_);
+
+    if (!permitted || key == 0) {
+        pool_release(sess);
+        return (verdict_t){ 403, "not_authorised" };
+    }
+
+    /* Automatic, not static. It was static, and sixteen concurrent
+     * signatures then wrote into one 8 KB buffer at once -- found by
+     * ThreadSanitizer under load, not by the test, because the only
+     * signature the test verified was made before the concurrent burst.
+     * This is the second buffer in this file to have been born static in a
+     * single-threaded draft and left that way once workers arrived; the
+     * first was the request parser. 8 KB on a thread stack is nothing. */
+    unsigned char sig[8192];
+    unsigned long siglen = sizeof sig;
+    unsigned long mech_type = CKM_COMPOSITE_;
+    struct { unsigned long mechanism; void *p; unsigned long len; } mech =
+        { mech_type, NULL, 0 };
+
+    unsigned long rv = C_SignInit(sess, &mech, key);
+    if (rv == 0) rv = C_Sign(sess, r->body, (unsigned long)r->body_len, sig, &siglen);
+    pool_release(sess);
+
+    if (rv != 0) {
+        (void)fhsm_audit_event(FHSM_EV_SIGN, (int)g_slot_id, (int)sess,
+                                FHSM_ROLE_USER, FHSM_RV_FUNCTION_FAILED,
+                                "key", r->key, FHSM_AUDIT_END);
+        return (verdict_t){ 500, "sign_failed" };
+    }
+
+    (void)fhsm_audit_event(FHSM_EV_SIGN, (int)g_slot_id, (int)sess,
+                            FHSM_ROLE_USER, FHSM_RV_OK,
+                            "key", r->key, FHSM_AUDIT_END);
+
+    char hdr[256];
+    int n = snprintf(hdr, sizeof hdr,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/octet-stream\r\n"
+        "Content-Length: %lu\r\n"
+        "Connection: close\r\n\r\n", siglen);
+    if (n > 0 && (size_t)n < sizeof hdr) {
+        (void)!write(fd, hdr, (size_t)n);
+        (void)!write(fd, sig, siglen);
+    }
+    return OK_VERDICT;
+}
+
+/* --------------------------------------------------------------------------
+ * POST /verify --- the only way to check a composite signature without our
+ * tools.
+ *
+ * `RELEASE_v2.0.0-beta.md` says it plainly: nothing off the shelf verifies one.
+ * OpenSSL 3.5 prints the algorithm as a bare OID. Until that changes, a
+ * verifier is either `fhsm-sign cms-verify` on the same machine as the module,
+ * or this.
+ *
+ * THE BODY IS THE SIGNATURE FOLLOWED BY THE MESSAGE, split by
+ * X-FHSM-Signature-Length. No base64 -- the route's whole argument is that a
+ * signature is bytes -- and no multipart, which would be a parser.
+ *
+ * SAME AUTHORISATION AS /sign, and the same equalised refusal. Verification
+ * needs no secret, so it is tempting to leave it open; that would make the key
+ * label an oracle. A caller could ask about a label it does not hold and learn
+ * from the answer whether the key exists, which is the map of the token that
+ * do_sign() spends its comments preventing. The cost is that this route is
+ * useful only to clients already in the policy file.
+ * ----------------------------------------------------------------------- */
+static verdict_t do_verify(int fd, request_t *r)
+{
+    if (!r->have_key)     return (verdict_t){ 400, "no_key_header" };
+    if (r->key_repeated)  return (verdict_t){ 400, "key_repeated" };
+    if (!r->have_siglen)  return (verdict_t){ 400, "no_signature_length" };
+    if (r->siglen_repeated) return (verdict_t){ 400, "signature_length_repeated" };
+    if (r->body_len == 0) return (verdict_t){ 400, "empty_body" };
+
+    /* The split has to leave something on both sides. A signature with no
+     * message would verify nothing, and this is cheaper to refuse here than to
+     * discover as a zero-length buffer three calls down. */
+    if ((size_t)r->siglen >= r->body_len)
+        return (verdict_t){ 400, "signature_length_covers_body" };
+
+    unsigned long sess = 0;
+    if (pool_acquire(&sess) != 0) return (verdict_t){ 503, "pool_unavailable" };
+
+    /* Both questions before either answer, exactly as /sign does, so that the
+     * three refusals stay one answer. */
+    int permitted = policy_permits(r->subject, r->key);
+    unsigned long key = find_key(sess, r->key, CKO_PUBLIC_KEY_);
+    if (!permitted || key == 0) {
+        pool_release(sess);
+        return (verdict_t){ 403, "not_authorised" };
+    }
+
+    unsigned long mech_type = CKM_COMPOSITE_;
+    struct { unsigned long mechanism; void *p; unsigned long len; } mech =
+        { mech_type, NULL, 0 };
+
+    unsigned long rv = C_VerifyInit(sess, &mech, key);
+    if (rv == 0)
+        rv = C_Verify(sess,
+                      r->body + r->siglen, (unsigned long)(r->body_len - (size_t)r->siglen),
+                      r->body,             (unsigned long)r->siglen);
+    pool_release(sess);
+
+    /* CKR_SIGNATURE_INVALID is a result, not a failure of the request. Any
+     * other non-zero is the module refusing for a reason the caller cannot fix
+     * -- a wrong key type, a mechanism the profile forbids -- and that is a
+     * 500, not a verdict on the signature. */
+    int valid   = (rv == 0);
+    int invalid = (rv == FHSM_RV_SIGNATURE_INVALID);
+    if (!valid && !invalid) {
+        (void)fhsm_audit_event(FHSM_EV_VERIFY, (int)g_slot_id, (int)sess,
+                                FHSM_ROLE_USER, FHSM_RV_FUNCTION_FAILED,
+                                "key", r->key, FHSM_AUDIT_END);
+        return (verdict_t){ 500, "verify_failed" };
+    }
+
+    (void)fhsm_audit_event(FHSM_EV_VERIFY, (int)g_slot_id, (int)sess,
+                            FHSM_ROLE_USER,
+                            valid ? FHSM_RV_OK : FHSM_RV_SIGNATURE_INVALID,
+                            "key", r->key,
+                            "result", valid ? "valid" : "invalid", FHSM_AUDIT_END);
+
+    /* 200 ONLY WHEN IT VERIFIES. A client that checks the status and ignores
+     * the body is then correct by default; the opposite arrangement -- 200 with
+     * "invalid" in the body -- makes the careless reading say yes. 422 is the
+     * request being well-formed and the content not being what it claims. */
+    respond(fd, valid ? 200 : 422, valid ? "valid\n" : "invalid\n");
+    return OK_VERDICT;
+}
+
+/* --------------------------------------------------------------------------
+ * One connection.
+ * ----------------------------------------------------------------------- */
+static void serve(int fd, uid_t proxy_uid)
+{
+    verdict_t v = OK_VERDICT;
+    request_t r;
+    int       counted = 0;      /* this request holds a slot in g_ident */
+    memset(&r, 0, sizeof r);
+
+    /* The peer first, before a single byte is read. Nothing this process does
+     * on behalf of an unknown peer is safe, including parsing. */
+    struct ucred cr;
+    socklen_t crlen = sizeof cr;
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &crlen) != 0) {
+        v = (verdict_t){ 403, "peercred_unavailable" };
+    } else if (cr.uid != proxy_uid) {
+        v = (verdict_t){ 403, "peer_not_proxy" };
+    } else {
+        v = read_request(fd, &r);
+    }
+
+    /* The actor is set only once an identity has been established, so a
+     * refusal before that point is logged with an empty actor -- which is the
+     * truth: we do not know who it was, and writing a guess into an audit log
+     * would be worse than the blank. */
+    if (v.reason == NULL) {
+        if (r.subject_repeated)   v = (verdict_t){ 400, "subject_repeated" };
+        else if (!r.have_subject) v = (verdict_t){ 403, "no_identity" };
+        else                      fhsm_audit_set_actor(r.subject);
+    }
+
+    /* The budget first, before the fairness cap even counts this request as in
+     * flight: an identity inside the interval its refusals earned should not
+     * occupy a slot in either table. Rule 1 again -- decided before any audit
+     * write, so the control's own record cannot become the flood. */
+    long retry_after = 0;
+    if (v.reason == NULL) {
+        retry_after = budget_retry_after(r.subject);
+        if (retry_after > 0)
+            v = (verdict_t){ 429, "refusal_budget" };
+    }
+
+    /* Before the route, before the pool, and -- per docs/RATE_LIMIT.md rule 1
+     * -- before any audit write: a control whose own record can be flooded is
+     * a control that hands the attacker the log. Nothing has been done on this
+     * request's behalf yet, so refusing here costs a worker one syscall. */
+    ident_note_t note;
+    memset(&note, 0, sizeof note);
+    if (v.reason == NULL) {
+        if (ident_enter(r.subject, &note) != 0)
+            v = (verdict_t){ 429, "too_many_in_flight" };
+        else
+            counted = 1;
+    }
+    if (note.log_resume) {
+        char n[32], w[32];
+        snprintf(n, sizeof n, "%lu", note.suppressed);
+        snprintf(w, sizeof w, "%ld", note.window_s);
+        (void)fhsm_audit_event(FHSM_EV_IDENTITY_RESUMED, -1, -1,
+                                FHSM_ROLE_NONE, FHSM_RV_OK,
+                                "suppressed", n, "window_s", w, FHSM_AUDIT_END);
+    }
+
+    if (v.reason == NULL) {
+        if (strcmp(r.target, "/health") == 0 && strcmp(r.method, "GET") == 0) {
+            (void)fhsm_audit_event(FHSM_EV_REQUEST_ACCEPTED, -1, -1,
+                                    FHSM_ROLE_NONE, FHSM_RV_OK,
+                                    "route", "/health", FHSM_AUDIT_END);
+            respond(fd, 200, "ok\n");
+            goto done;
+        }
+        if (strcmp(r.target, "/token") == 0 && strcmp(r.method, "GET") == 0) {
+            /* The only route that touches the module. It exists so the pool
+             * and the login are exercised by something: a pool nothing
+             * borrows from is a pool whose growth path has never run. It
+             * reads the token's own description, which is public -- no key
+             * material, no operation, nothing that needs authorisation. */
+            unsigned long sess = 0;
+            struct tok_info ti;
+            memset(&ti, 0, sizeof ti);
+            if (pool_acquire(&sess) != 0) {
+                v = (verdict_t){ 503, "pool_unavailable" };
+            } else {
+                unsigned long rv = C_GetTokenInfo(g_slot_id, &ti);
+                pool_release(sess);
+                if (rv != 0) {
+                    v = (verdict_t){ 503, "token_unavailable" };
+                } else {
+                    char label[33], serial[17];
+                    memcpy(label, ti.label, 32);  label[32]  = '\0';
+                    memcpy(serial, ti.serialNumber, 16); serial[16] = '\0';
+                    for (int i = 31; i >= 0 && label[i]  == ' '; i--) label[i]  = '\0';
+                    for (int i = 15; i >= 0 && serial[i] == ' '; i--) serial[i] = '\0';
+                    char body[128];
+                    snprintf(body, sizeof body, "label=%s\nserial=%s\n", label, serial);
+                    (void)fhsm_audit_event(FHSM_EV_REQUEST_ACCEPTED, (int)g_slot_id,
+                                            (int)sess, FHSM_ROLE_USER, FHSM_RV_OK,
+                                            "route", "/token", FHSM_AUDIT_END);
+                    respond(fd, 200, body);
+                    goto done;
+                }
+            }
+        }
+        else if (strcmp(r.target, "/sign") == 0 && strcmp(r.method, "POST") == 0) {
+            v = do_sign(fd, &r);
+            if (v.reason == NULL) goto done;
+        }
+        else if (strcmp(r.target, "/sign") == 0) {
+            /* /sign exists and the method is wrong -- the guard above admits
+             * GET and POST, so this is GET. It used to fall into the 501 list
+             * below, which was true when the route was empty and became a lie
+             * the moment it was written: "not implemented" for a route that
+             * is. 404 would be a different lie, denying a route that exists.
+             * 405 is the one answer that is neither. */
+            v = (verdict_t){ 405, "wrong_method" };
+        }
+        else if (strcmp(r.target, "/verify") == 0 && strcmp(r.method, "POST") == 0) {
+            v = do_verify(fd, &r);
+            if (v.reason == NULL) goto done;
+        }
+        else if (strcmp(r.target, "/verify") == 0) {
+            v = (verdict_t){ 405, "wrong_method" };
+        }
+        else if (strcmp(r.target, "/certificates") == 0 ||
+                 strcmp(r.target, "/ocsp")         == 0) {
+            /* Both live on the public listener, and neither belongs here: a
+             * relying party asking for the CA certificate or a revocation
+             * status has no identity to present, which is why --public-socket
+             * exists. 501 said "we have not written this", which stopped being
+             * true for /certificates the moment the public side served it. 404
+             * is the honest answer on *this* socket, and the header names the
+             * one that has it. */
+            respond_with(fd, 404, "not here; see the public listener\n",
+                         "Link: </certificates>; rel=\"alternate\"\r\n");
+            goto done;
+        }
+        /* There is no 501 branch on this socket any more. Every route the
+         * authenticated side names is now either written or is served by the
+         * public listener; a branch kept alive by `if (0)` to hold a comment
+         * would be the dead code this file objects to elsewhere. */
+        /* `else`, not a bare statement. It was unconditional, which was
+         * correct only while every branch above ended in `return`: the moment
+         * one of them produced a verdict and fell through -- /sign refusing an
+         * unauthorised key -- its verdict was silently replaced by 404. Every
+         * refusal the route made came out as "unknown route", which is both
+         * the wrong status and a lie in the audit line. */
+        else if (v.reason == NULL) v = (verdict_t){ 404, "unknown_route" };
+    }
+
+    /* An authorisation refusal, and only that one, is what the budget counts.
+     * v.reason is compared rather than the status: 403 is also what a missing
+     * identity and a non-proxy peer get, and neither says anything about the
+     * token. Charged after the verdict and outside every lock, because the
+     * announcement writes to the audit log. */
+    if (v.reason != NULL && strcmp(v.reason, "not_authorised") == 0) {
+        int announce = 0;
+        unsigned n = budget_charge(r.subject, &announce);
+        if (announce) {
+            char cnt[32], del[32];
+            snprintf(cnt, sizeof cnt, "%u", n);
+            snprintf(del, sizeof del, "%ld", budget_delay_s(n));
+            /* The budget's real product. A certificate stolen from a
+             * legitimate client is not detectable by content -- every request
+             * it makes is well-formed and authorised. What changes is the rate
+             * and the shape, so the line saying an identity started behaving
+             * differently is worth more than the refusal itself. */
+            (void)fhsm_audit_event(FHSM_EV_IDENTITY_LIMITED, -1, -1,
+                                    FHSM_ROLE_NONE, FHSM_RV_FUNCTION_FAILED,
+                                    "refusals", cnt, "delay_s", del, FHSM_AUDIT_END);
+        }
+    }
+
+    /* Every refusal is written except the inside of a throttled burst, whose
+     * first line was already written by ident_enter() and whose remainder is
+     * counted for the identity_resumed line. This is the weakening
+     * docs/RATE_LIMIT.md chooses deliberately: a log that can be flooded into
+     * ERROR records nothing at all, which is strictly worse than a log that
+     * records a burst as a burst. It is also what makes the cap do anything --
+     * measured, a written refusal cost 48.8 ms, so a worker "reserved" for
+     * another identity spent it writing refusals for the one being capped. */
+    if (v.status != 429 || note.log_refusal) {
+        (void)fhsm_audit_event(FHSM_EV_REQUEST_REFUSED, -1, -1,
+                                FHSM_ROLE_NONE, FHSM_RV_FUNCTION_FAILED,
+                                "reason", v.reason,
+                                "route", r.target[0] ? r.target : "-",
+                                FHSM_AUDIT_END);
+    }
+    /* Retry-After, on both kinds of 429 and with different honesty. From the
+     * budget it is the interval actually derived from the count. From the
+     * fairness cap it is one second, because the header's unit is seconds and
+     * the condition clears when a worker finishes a signature -- single-digit
+     * milliseconds, so one is the smallest overstatement available.
+     *
+     * Known and accepted: the two are distinguishable by their value, so a
+     * client can tell "you are being throttled for probing" from "the service
+     * is busy". docs/RATE_LIMIT.md asks that the refusal not say why, and it
+     * does not -- status and body are identical. Telling an attacker their
+     * probing was noticed is a deterrent; telling them which key exists would
+     * not be. */
+    char ra[64];
+    const char *extra = NULL;
+    if (v.status == 429) {
+        snprintf(ra, sizeof ra, "Retry-After: %ld\r\n",
+                 retry_after > 0 ? retry_after : 1L);
+        extra = ra;
+    }
+    respond_with(fd, v.status, "refused\n", extra);
+
+    /* One exit, reached by every path, because the previous slice lost a
+     * signature buffer to exactly this shape: per-request teardown repeated at
+     * each return is teardown that will be forgotten at the next return added.
+     * The `goto`s above exist to make this the only place it happens. */
+done:
+    if (counted) ident_leave(r.subject, v.reason == NULL);
+    fhsm_audit_set_actor(NULL);
+}
+
+/* --------------------------------------------------------------------------
+ * The PIN, once, from a place a child process cannot inherit.
+ *
+ * docs/DAEMON_PIN.md decided this and also decided what to refuse, which is
+ * the part worth having in the code rather than the document:
+ *
+ *   - no PIN in an argument (visible in ps) and none in an inherited
+ *     environment variable, because systemd's own reason for credentials is
+ *     that the environment is inherited by every child the daemon ever spawns;
+ *   - one attempt, never a retry loop. The token locks after
+ *     FHSM_PIN_MAX_FAILED consecutive failures, so a daemon restarting under
+ *     systemd would spend those five in seconds and turn a misconfigured
+ *     credential into a destroyed deployment;
+ *   - never log the PIN, its length, or a hash of it.
+ * ----------------------------------------------------------------------- */
+static int login_once(unsigned long slot, const char *pin_file_override)
+{
+    char path[512];
+    if (pin_file_override) {
+        snprintf(path, sizeof path, "%s", pin_file_override);
+    } else {
+        const char *dir = getenv("CREDENTIALS_DIRECTORY");
+        if (!dir || !*dir) {
+            fprintf(stderr,
+              "fhsm-service: no PIN source. Either run under systemd with\n"
+              "  LoadCredentialEncrypted=fhsm-pin:... so that\n"
+              "  $CREDENTIALS_DIRECTORY/fhsm-pin exists, or pass --pin-file PATH\n"
+              "  for a test rig. There is no third option, and none that reads\n"
+              "  the environment: see docs/DAEMON_PIN.md.\n");
+            return -1;
+        }
+        snprintf(path, sizeof path, "%s/fhsm-pin", dir);
+    }
+
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        fprintf(stderr, "fhsm-service: cannot read the PIN from %s: %s\n",
+                path, strerror(errno));
+        return -1;
+    }
+    unsigned char pin[128];
+    ssize_t n = read(fd, pin, sizeof pin);
+    close(fd);
+    if (n <= 0) {
+        fhsm_zeroize(pin, sizeof pin);
+        fprintf(stderr, "fhsm-service: the PIN file is empty.\n");
+        return -1;
+    }
+    /* A credential written by a shell usually ends in a newline, and a PIN is
+     * a byte string: the trailing byte would be part of it. Trimmed here,
+     * once, rather than by every operator who wonders why login fails. */
+    while (n > 0 && (pin[n-1] == '\n' || pin[n-1] == '\r')) n--;
+
+    unsigned long sess = 0;
+    unsigned long rv = C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION_,
+                                      NULL, NULL, &sess);
+    if (rv != 0) {
+        fhsm_zeroize(pin, sizeof pin);
+        fprintf(stderr, "fhsm-service: C_OpenSession failed (0x%lx)\n", rv);
+        return -1;
+    }
+    rv = C_Login(sess, CKU_USER_, pin, (unsigned long)n);
+    fhsm_zeroize(pin, sizeof pin);          /* before anything can fail below */
+
+    if (rv != 0) {
+        (void)C_CloseSession(sess);
+        fprintf(stderr,
+          "fhsm-service: C_Login failed (0x%lx). Not retrying: the token locks\n"
+          "  after a handful of consecutive failures, and a restart loop would\n"
+          "  spend them. Fix the credential and start again.\n", rv);
+        return -1;
+    }
+
+    /* Login state is per token per application, so this one session's login
+     * covers every session this process opens afterwards -- which is exactly
+     * why the pool is not a security boundary (ADR) and why one process
+     * cannot serve two clients as two different roles. The session is kept as
+     * the pool's first slot rather than closed. */
+    pthread_mutex_lock(&g_pool_mu);
+    g_pool[0].handle = sess;
+    g_pool[0].in_use = 0;
+    g_pool_open = 1;
+    pthread_mutex_unlock(&g_pool_mu);
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Workers. Each takes a connection off the listening socket and serves it to
+ * the end. accept() on one listening socket from several threads is safe on
+ * Linux and needs no lock of ours.
+ * ----------------------------------------------------------------------- */
+/* --------------------------------------------------------------------------
+ * POST /ocsp
+ *
+ * The parsing, the lookup and the assembly are fhsm_ocsp_answer(), shared with
+ * `fhsm-ca ocsp-respond`. What is here is the socket, the session and the
+ * choice of status.
+ *
+ * NO Cache-Control, DELIBERATELY. The response carries its own nextUpdate, and
+ * that is the freshness statement a relying party is meant to read. Adding an
+ * HTTP max-age would let an intermediary keep serving `good` for a certificate
+ * this responder already knows is revoked -- undoing, at the proxy, the
+ * re-read that the note above rev_db_refresh() exists for. RFC 5019 allows the
+ * header; this deployment cannot see the caches and will not speak for them.
+ *
+ * NO AUDIT LINE, like the rest of this listener. A durable barrier costs
+ * milliseconds and a responder answers as often as clients open connections.
+ * ----------------------------------------------------------------------- */
+typedef struct { unsigned long sess; unsigned long key; } ocsp_signer_t;
+
+static fhsm_rv_t ocsp_sign_cb(void *ctx, const uint8_t *tbs, size_t tbs_len,
+                               uint8_t *sig, size_t *sig_len)
+{
+    ocsp_signer_t *sg = ctx;
+    struct { unsigned long mechanism; void *p; unsigned long len; } mech =
+        { CKM_COMPOSITE_, NULL, 0 };
+    unsigned long n = (unsigned long)*sig_len;
+    unsigned long rv = C_SignInit(sg->sess, &mech, sg->key);
+    if (rv == 0) rv = C_Sign(sg->sess, (unsigned char *)(uintptr_t)tbs,
+                              (unsigned long)tbs_len, sig, &n);
+    if (rv != 0) return FHSM_RV_FUNCTION_FAILED;
+    *sig_len = (size_t)n;
+    return FHSM_RV_OK;
+}
+
+/* Send an OCSPResponse: a status-only one when `der` is NULL. Both go out as
+ * 200 with application/ocsp-response, because both are OCSP answers -- a
+ * client that reads only the HTTP status learns nothing either way, and one
+ * that parses the body learns exactly what happened. The alternative, a 4xx
+ * with a DER body, is a shape some clients discard unread. */
+static void respond_ocsp(int fd, const uint8_t *der, size_t len, int status)
+{
+    uint8_t small[5];
+    if (!der) {
+        len = fhsm_ocsp_status_response(status, small);
+        if (len == 0) { respond(fd, 500, "internal error\n"); return; }
+        der = small;
+    }
+    char hdr[256];
+    int n = snprintf(hdr, sizeof hdr,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: application/ocsp-response\r\n"
+        "Content-Length: %zu\r\n"
+        "Connection: close\r\n\r\n", len);
+    if (n > 0 && (size_t)n < sizeof hdr) {
+        (void)!write(fd, hdr, (size_t)n);
+        (void)!write(fd, der, len);
+    }
+}
+
+static void do_ocsp(int fd, request_t *r)
+{
+    if (r->body_len == 0) { respond_ocsp(fd, NULL, 0, FHSM_OCSP_RESP_MALFORMED); return; }
+
+    if (rev_db_refresh() != 0) {
+        /* tryLater, not internalError: nothing about the request is wrong and
+         * an operator fixing the file makes the same question answerable.
+         * internalError would tell a client the responder is broken, which
+         * invites it to give up rather than come back. */
+        respond_ocsp(fd, NULL, 0, FHSM_OCSP_RESP_TRYLATER);
+        return;
+    }
+
+    unsigned long sess = 0;
+    if (pool_acquire(&sess) != 0) {
+        respond_ocsp(fd, NULL, 0, FHSM_OCSP_RESP_TRYLATER);
+        return;
+    }
+    unsigned long key = find_key(sess, g_ocsp_label, CKO_PRIVATE_KEY_);
+    if (key == 0) {
+        pool_release(sess);
+        respond_ocsp(fd, NULL, 0, FHSM_OCSP_RESP_INTERNAL);
+        return;
+    }
+
+    ocsp_signer_t sg = { sess, key };
+    uint8_t *out = NULL; size_t out_len = 0;
+    fhsm_ocsp_stats_t st;
+    char err[FHSM_REV_ERR_MAX] = "";
+
+    /* The read lock is held across the signature. See rev_db_refresh(). */
+    pthread_rwlock_rdlock(&g_rev_lock);
+    int rc = fhsm_ocsp_answer(r->body, r->body_len,
+                               g_ca_cert, g_ca_cert_len,
+                               g_ocsp_responder_len ? g_ocsp_responder : g_ca_cert,
+                               g_ocsp_responder_len ? g_ocsp_responder_len : g_ca_cert_len,
+                               &g_rev_db, g_ocsp_days, NULL,
+                               ocsp_sign_cb, &sg, &out, &out_len, &st,
+                               err, sizeof err);
+    pthread_rwlock_unlock(&g_rev_lock);
+    pool_release(sess);
+
+    if (rc != FHSM_REV_OK) {
+        /* EPARSE is the caller's request; anything else is ours. Telling a
+         * relying party that its request was malformed when the fault was
+         * here would send it looking in the wrong place. */
+        respond_ocsp(fd, NULL, 0,
+                     rc == FHSM_REV_EPARSE ? FHSM_OCSP_RESP_MALFORMED
+                                           : FHSM_OCSP_RESP_INTERNAL);
+        return;
+    }
+
+    respond_ocsp(fd, out, out_len, FHSM_OCSP_RESP_SUCCESSFUL);
+    free(out);
+}
+
+/* The public half of the daemon. Deliberately short: everything the
+ * authenticated path does -- identity, policy, budget, fairness, per-request
+ * audit -- is absent here, and each absence is a decision recorded above
+ * rather than an omission. */
+static void serve_public(int fd, uid_t proxy_uid)
+{
+    request_t r;
+    memset(&r, 0, sizeof r);
+
+    struct ucred cr;
+    socklen_t crlen = sizeof cr;
+    if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &crlen) != 0 ||
+        cr.uid != proxy_uid) {
+        respond(fd, 403, "refused\n");
+        return;
+    }
+
+    verdict_t v = read_request(fd, &r);
+    if (v.reason != NULL) { respond(fd, v.status, "refused\n"); return; }
+
+    /* No identity is required, and one offered is ignored rather than
+     * believed. A caller could otherwise set X-FHSM-Client-Subject here and
+     * see it appear in an audit line, which would put a string it chose into
+     * the record. */
+    if (strcmp(r.target, "/health") == 0 && strcmp(r.method, "GET") == 0) {
+        respond(fd, 200, "ok\n");
+        return;
+    }
+
+    if (strcmp(r.target, "/certificates") == 0 && strcmp(r.method, "GET") == 0) {
+        if (g_ca_cert_len == 0) {
+            /* Configured without --ca-cert. 404 rather than 500: the resource
+             * is genuinely not here, and the operator's mistake is theirs to
+             * see in the startup message, not the relying party's to decode. */
+            respond(fd, 404, "no certificate configured\n");
+            return;
+        }
+        char hdr[256];
+        int n = snprintf(hdr, sizeof hdr,
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/pkix-cert\r\n"
+            "Content-Length: %zu\r\n"
+            "Cache-Control: public, max-age=86400\r\n"
+            "Connection: close\r\n\r\n", g_ca_cert_len);
+        if (n > 0 && (size_t)n < sizeof hdr) {
+            (void)!write(fd, hdr, (size_t)n);
+            (void)!write(fd, g_ca_cert, g_ca_cert_len);
+        }
+        return;
+    }
+
+    if (strcmp(r.target, "/ocsp") == 0) {
+        if (!g_ocsp_on) {
+            /* Started without --revocation-db. 404 rather than 501: the route
+             * is not here on this deployment, and the operator's omission is
+             * theirs to see in the startup message, not the relying party's to
+             * decode from a status that promises the route exists. */
+            respond(fd, 404, "no responder configured\n");
+            return;
+        }
+        if (strcmp(r.method, "POST") != 0) {
+            /* RFC 6960 A.1 also allows the request base64'd into the URL, and
+             * clients try it first because an intermediary can cache a GET.
+             * Not served: it needs a base64 decoder and a URL-length policy in
+             * a daemon that has neither, and a decoder is a thing one can get
+             * wrong. The header names what does work rather than leaving the
+             * client to guess between GET and POST. */
+            respond_with(fd, 405, "POST only; RFC 6960 A.1 GET is not served\n",
+                         "Allow: POST\r\n");
+            return;
+        }
+        do_ocsp(fd, &r);
+        return;
+    }
+
+    respond(fd, 404, "refused\n");
+}
+
+/* ==========================================================================
+ * WHO OWNS A CONNECTION
+ *
+ * Until this slice a worker owned a connection from accept() to close(), and
+ * that is what made a peer saying nothing expensive: the deadlines bounded the
+ * wait but a silent connection still cost a worker for the whole first second,
+ * so n of them cost a legitimate client (n / workers) x 1 s -- 7.9 s at 32,
+ * measured.
+ *
+ * The scarce thing is the worker. Measured, holding an accepted connection in
+ * a poll set costs 0.25-0.46 kB and one descriptor; an idle thread costs
+ * 19.7 kB and a pooled session ~29 kB. Two orders of magnitude apart, so the
+ * connection should wait somewhere that is not a worker.
+ *
+ * One acceptor thread per listener therefore holds every connection that has
+ * not yet said anything, and hands a worker only a connection that is already
+ * readable. A worker never waits for a first byte again. A silent peer costs a
+ * descriptor and a slot, and costs a legitimate client nothing.
+ *
+ * The slot count is the queue depth the ADR asked for, and having it is what
+ * finally lets this process say "too busy". Past it the acceptor answers 503
+ * with Retry-After and closes -- where before, past the kernel's backlog,
+ * connect() returned EAGAIN and an honest client could not tell a saturated
+ * service from an absent one.
+ *
+ * THE ACCEPTOR MUST NOT BLOCK. Everything it does is bounded: accept, poll,
+ * a non-blocking write of a short refusal, close. In particular the 503 and
+ * the 408 are written with the connection in O_NONBLOCK and abandoned on
+ * EAGAIN rather than waited on -- a peer that will not read its own refusal
+ * would otherwise stall the acceptor, which is this same defect one level up.
+ * ======================================================================= */
+
+enum { BURST_QUEUE_FULL = 0, BURST_HANGUP = 1 };
+
+typedef struct {
+    int   fd;
+    struct timespec deadline;        /* first byte, or it goes */
+} waiting_t;
+
+typedef struct {
+    int        lfd;
+    int        is_public;
+    uid_t      proxy_uid;
+    int        depth;
+
+    waiting_t *wait;                 /* the acceptor thread alone touches this */
+    int        nwait;
+    struct pollfd *pfds;             /* 2 + depth */
+
+    pthread_mutex_t mu;              /* the hand-off to workers */
+    pthread_cond_t  cv;
+    int       *ready;
+    int        rhead, rtail, rcount;
+    int        stopping;
+
+    /* The queue-full burst, compressed like the identity bursts and for the
+     * same reason -- rule 1 of docs/RATE_LIMIT.md: a control whose own record
+     * can be flooded is not a control. This one needed it more than the 408
+     * above, not less. Abandoning a connection costs the peer a whole second,
+     * so 408s rate-limit themselves; a 503 is immediate, so the *peer* sets
+     * the rate. Measured before this existed: 722 audit lines and 264 kB in
+     * two seconds from one process opening sockets in a loop.
+     *
+     * Touched only by the acceptor thread, which is single. */
+    /* Two of them: the queue being full, and peers that hang up before
+     * saying anything. The second was found by measuring the first --
+     * hammering a saturated service left 1371 `closed_early` lines, because a
+     * connection that closed became readable (POLLHUP), went to a worker, and
+     * the worker's read of zero bytes was logged as a refusal. That path
+     * predates the queue; what the acceptor adds is somewhere to catch it
+     * before a worker is woken at all. */
+    struct {
+        unsigned long count;
+        time_t        since, last;
+        int           open;
+    } burst[2];
+} listener_t;
+
+static const char *const BURST_OPEN_REASON[2]  = { "queue_full", "hung_up_early" };
+static const char *const BURST_CLOSE_REASON[2] = { "queue_full_over", "hung_up_early_over" };
+
+/* The first of a burst is written; the rest are counted. */
+static void burst_note(listener_t *L, int kind, time_t now)
+{
+    if (!L->burst[kind].open) {
+        (void)fhsm_audit_event(FHSM_EV_REQUEST_REFUSED, -1, -1,
+                                FHSM_ROLE_NONE, FHSM_RV_FUNCTION_FAILED,
+                                "reason", BURST_OPEN_REASON[kind],
+                                "route", "-", FHSM_AUDIT_END);
+        L->burst[kind].open = 1;
+        L->burst[kind].since = now;
+        L->burst[kind].count = 0;
+    }
+    L->burst[kind].count++;
+    L->burst[kind].last = now;
+}
+
+static void burst_flush(listener_t *L, time_t now, int force)
+{
+    for (int k = 0; k < 2; k++) {
+        if (!L->burst[k].open) continue;
+        if (!force && (now - L->burst[k].last) < BURST_COOLDOWN_S) continue;
+        char cnt[32], win[32];
+        snprintf(cnt, sizeof cnt, "%lu", L->burst[k].count);
+        snprintf(win, sizeof win, "%ld", (long)(L->burst[k].last - L->burst[k].since));
+        (void)fhsm_audit_event(FHSM_EV_REQUEST_REFUSED, -1, -1,
+                                FHSM_ROLE_NONE, FHSM_RV_FUNCTION_FAILED,
+                                "reason", BURST_CLOSE_REASON[k],
+                                "refused", cnt, "window_s", win, FHSM_AUDIT_END);
+        L->burst[k].open = 0; L->burst[k].count = 0;
+    }
+}
+
+/* Written with the fd non-blocking, and dropped rather than retried. */
+static void refuse_now(int fd, int status, const char *text, const char *extra)
+{
+    char buf[512];
+    const char *phrase = status == 408 ? "Request Timeout" : "Service Unavailable";
+    int n = snprintf(buf, sizeof buf,
+        "HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\n"
+        "Content-Length: %zu\r\nConnection: close\r\n%s\r\n%s",
+        status, phrase, strlen(text), extra ? extra : "", text);
+    if (n > 0 && (size_t)n < sizeof buf) (void)!write(fd, buf, (size_t)n);
+}
+
+static void ready_push(listener_t *L, int fd)
+{
+    pthread_mutex_lock(&L->mu);
+    /* Cannot overflow: an fd is in `wait` or in `ready`, never both, and both
+     * are sized to depth. Checked anyway, because "cannot" is how a ring
+     * buffer overwrites its own tail. */
+    if (L->rcount < L->depth) {
+        L->ready[L->rtail] = fd;
+        L->rtail = (L->rtail + 1) % L->depth;
+        L->rcount++;
+        pthread_cond_signal(&L->cv);
+        fd = -1;
+    }
+    pthread_mutex_unlock(&L->mu);
+    if (fd >= 0) close(fd);
+}
+
+static void *worker(void *argp)
+{
+    listener_t *L = argp;
+    for (;;) {
+        int fd = -1;
+        pthread_mutex_lock(&L->mu);
+        while (L->rcount == 0 && !L->stopping)
+            pthread_cond_wait(&L->cv, &L->mu);
+        if (L->rcount > 0) {
+            fd = L->ready[L->rhead];
+            L->rhead = (L->rhead + 1) % L->depth;
+            L->rcount--;
+        }
+        int stop = L->stopping;
+        pthread_mutex_unlock(&L->mu);
+
+        if (fd < 0) { if (stop) break; continue; }
+
+        /* Back to blocking for the worker: the acceptor needed non-blocking to
+         * refuse without waiting, the worker needs the ordinary read path. */
+        int fl = fcntl(fd, F_GETFL, 0);
+        if (fl >= 0) (void)fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+        struct timeval tv = { REQUEST_DEADLINE_MS / 1000,
+                              (REQUEST_DEADLINE_MS % 1000) * 1000 };
+        (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+
+        if (L->is_public) serve_public(fd, L->proxy_uid);
+        else { policy_reload_if_asked(); serve(fd, L->proxy_uid); }
+        close(fd);
+    }
+    return NULL;
+}
+
+/* The acceptor. Owns lfd, the stop pipe and every connection that has not yet
+ * spoken. Single-threaded by construction, so `wait` needs no lock. */
+static void *acceptor(void *argp)
+{
+    listener_t *L = argp;
+    for (;;) {
+        int n = 0;
+        L->pfds[n].fd = L->lfd;          L->pfds[n].events = POLLIN; n++;
+        L->pfds[n].fd = g_stop_pipe[0];  L->pfds[n].events = POLLIN; n++;
+        for (int i = 0; i < L->nwait; i++) {
+            L->pfds[n].fd = L->wait[i].fd; L->pfds[n].events = POLLIN; n++;
+        }
+        for (int i = 0; i < n; i++) L->pfds[i].revents = 0;
+
+        /* Sleep no longer than the nearest deadline, so a silent connection is
+         * let go on time rather than when the next event happens to arrive. */
+        int timeout = -1;
+        /* An open burst needs the loop to wake up to close it, even once the
+         * queue has drained and there is nothing else to wait for. */
+        if (L->burst[0].open || L->burst[1].open) timeout = BURST_COOLDOWN_S * 1000;
+        for (int i = 0; i < L->nwait; i++) {
+            long ms = ms_left(&L->wait[i].deadline);
+            if (ms < 0) ms = 0;
+            if (timeout < 0 || ms < timeout) timeout = (int)ms;
+        }
+
+        int r = poll(L->pfds, (nfds_t)n, timeout);
+        burst_flush(L, time(NULL), 0);
+        if (r < 0 && errno != EINTR) break;
+        if (g_stop) break;
+        if (L->pfds[1].revents) break;
+
+        /* Expired first. A slot freed here is a slot the accept below can use,
+         * which is what keeps a burst of silent connections from turning into
+         * a burst of 503s for everyone behind them. */
+        for (int i = 0; i < L->nwait; ) {
+            int readable = L->pfds[2 + i].revents & (POLLIN | POLLHUP | POLLERR);
+            if (!readable && ms_left(&L->wait[i].deadline) <= 0) {
+                refuse_now(L->wait[i].fd, 408,
+                           "no request within the deadline\n", NULL);
+                (void)fhsm_audit_event(FHSM_EV_REQUEST_REFUSED, -1, -1,
+                                        FHSM_ROLE_NONE, FHSM_RV_FUNCTION_FAILED,
+                                        "reason", "request_timeout",
+                                        "route", "-", FHSM_AUDIT_END);
+                close(L->wait[i].fd);
+                L->wait[i] = L->wait[--L->nwait];
+                continue;                /* the moved entry still needs looking at */
+            }
+            i++;
+        }
+        /* Then the ones that spoke. Recomputed against the *current* pfds
+         * indices would be wrong after the compaction above, so this pass
+         * matches on the descriptor rather than on the position. */
+        for (int k = 2; k < n; k++) {
+            if (!(L->pfds[k].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+            int fd = L->pfds[k].fd;
+            /* POLLHUP is not the test, and assuming it was cost a
+             * measurement: a unix peer that closes leaves the socket readable
+             * in the EOF sense, so POLLIN is set too and POLLHUP-without-
+             * POLLIN never fires. Look instead of deducing -- one MSG_PEEK
+             * says whether there is a byte or an end. */
+            char peek;
+            ssize_t pk = recv(fd, &peek, 1, MSG_PEEK | MSG_DONTWAIT);
+            int hungup = (pk == 0);
+            if (pk < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+                continue;                /* spurious wakeup: still waiting */
+            for (int i = 0; i < L->nwait; i++) {
+                if (L->wait[i].fd != fd) continue;
+                L->wait[i] = L->wait[--L->nwait];
+                if (hungup) {
+                    /* Gone before it said anything. There is no request to
+                     * refuse and nobody left to tell, so waking a worker to
+                     * discover that would spend a durable audit write on a
+                     * peer that is not there -- which is how connect-and-close
+                     * in a loop became a flood. Counted, not narrated. */
+                    burst_note(L, BURST_HANGUP, time(NULL));
+                    close(fd);
+                } else {
+                    ready_push(L, fd);
+                }
+                break;
+            }
+        }
+
+        if (!(L->pfds[0].revents & POLLIN)) continue;
+
+        for (;;) {
+            int cfd = accept(L->lfd, NULL, NULL);
+            if (cfd < 0) break;          /* EAGAIN: drained */
+            int fl = fcntl(cfd, F_GETFL, 0);
+            if (fl >= 0) (void)fcntl(cfd, F_SETFL, fl | O_NONBLOCK);
+
+            if (L->nwait >= L->depth) {
+                /* The first time this daemon can say it is busy. Retry-After
+                 * is one second because that is the first-byte deadline: the
+                 * slot ahead of this one is released within it or not at all. */
+                refuse_now(cfd, 503, "queue full\n", "Retry-After: 1\r\n");
+                /* What an operator needs is that the service went to
+                 * saturation and for how long, not one line per connection
+                 * that bounced off it. */
+                burst_note(L, BURST_QUEUE_FULL, time(NULL));
+                close(cfd);
+                continue;
+            }
+            L->wait[L->nwait].fd = cfd;
+            clock_gettime(CLOCK_MONOTONIC, &L->wait[L->nwait].deadline);
+            L->wait[L->nwait].deadline.tv_sec += FIRST_BYTE_DEADLINE_MS / 1000;
+            L->nwait++;
+        }
+    }
+
+    pthread_mutex_lock(&L->mu);
+    L->stopping = 1;
+    pthread_cond_broadcast(&L->cv);
+    pthread_mutex_unlock(&L->mu);
+    burst_flush(L, time(NULL), 1);         /* a burst that never ended */
+    for (int i = 0; i < L->nwait; i++) close(L->wait[i].fd);
+    L->nwait = 0;
+    return NULL;
+}
+
+static int listener_init(listener_t *L, int lfd, int is_public,
+                          uid_t uid, int depth)
+{
+    memset(L, 0, sizeof *L);
+    L->lfd = lfd; L->is_public = is_public; L->proxy_uid = uid; L->depth = depth;
+    L->wait  = calloc((size_t)depth, sizeof *L->wait);
+    L->ready = calloc((size_t)depth, sizeof *L->ready);
+    L->pfds  = calloc((size_t)depth + 2, sizeof *L->pfds);
+    if (!L->wait || !L->ready || !L->pfds) return -1;
+    pthread_mutex_init(&L->mu, NULL);
+    pthread_cond_init(&L->cv, NULL);
+    return 0;
+}
+
+static void usage(void)
+{
+    fprintf(stderr,
+      "fhsm-service --- signs and verifies over a local socket (#111)\n\n"
+      "  fhsm-service --socket PATH --proxy-uid N\n\n"
+      "  --socket PATH    unix socket to listen on. Created with mode 0660;\n"
+      "                   put the proxy in the group and nobody else.\n"
+      "  --proxy-uid N    the uid the reverse proxy runs as. Required, with no\n"
+      "                   default: SO_PEERCRED is the whole enforcement, and a\n"
+      "                   guard whose value was guessed is not a guard.\n"
+      "  --workers N      concurrent request handlers (default 4).\n"
+      "  --pool-max N     ceiling on pooled sessions (default 32, module cap\n"
+      "                   127). Grown lazily: an idle session still costs\n"
+      "                   ~29 KiB resident, so they are opened on demand.\n"
+      "  --policy PATH    authorisation policy: SUBJECT<TAB>KEY-LABEL per\n"
+      "                   line. Required. Reloaded on SIGHUP, taking effect\n"
+      "                   on the next request; a failed reload keeps the\n"
+      "                   rules already in force.\n"
+      "  Fairness: while another identity has a request in flight, each is\n"
+      "  held to --workers minus one, so a client cannot take every worker.\n"
+      "  A single client is never capped, and the refusal is 429.\n\n"
+      );
+    /* Split, not shortened. One literal had grown past the 4095 characters
+     * C99 requires a compiler to accept, and -Wpedantic -Werror is right to
+     * say so; the fix is two calls, not a shorter explanation. */
+    fprintf(stderr,
+      "  --queue-depth N  connections the acceptor will hold while they have\n"
+      "                   said nothing (default 256, per listener). Holding one\n"
+      "                   costs a descriptor and ~0.4 kB; committing a worker to\n"
+      "                   it costs 19.7 kB and a client's latency, which is why\n"
+      "                   the acceptor holds it instead. Past the depth the\n"
+      "                   answer is 503 with Retry-After. Refused at start if\n"
+      "                   the descriptor limit cannot cover it -- past that the\n"
+      "                   failure is EMFILE, which nobody is told about.\n\n"
+      "  --public-socket PATH\n"
+      "                   a second socket that requires no identity, for the\n"
+      "                   things a relying party asks anonymously: GET\n"
+      "                   /certificates and POST /ocsp. No policy, no refusal\n"
+      "                   budget, no audit line per request -- see the notes in\n"
+      "                   the source for why each is absent. Off unless given.\n"
+      "  --public-workers N   threads for it (default 2). Separate from\n"
+      "                   --workers so anonymous traffic cannot starve the\n"
+      "                   authenticated side.\n"
+      "  --ca-cert FILE   the certificate GET /certificates returns, and the\n"
+      "                   issuer POST /ocsp matches CertIDs against. Only\n"
+      "                   meaningful with --public-socket.\n\n"
+      "  --revocation-db FILE\n"
+      "                   the database `fhsm-ca revoke` writes. Re-read when\n"
+      "                   the file changes, checked once per query: a\n"
+      "                   responder that held it would keep answering `good`\n"
+      "                   for a certificate revoked an hour ago, which is the\n"
+      "                   failure OCSP exists to prevent.\n"
+      "  --ocsp-label NAME    the key that signs responses. Required with\n"
+      "                   --revocation-db, and --ca-cert is required with\n"
+      "                   both: a CertID identifies by issuer name and key.\n"
+      "  --responder-cert FILE\n"
+      "                   sign as a delegated responder (RFC 6960 4.2.2.2)\n"
+      "                   rather than as the CA. Its extendedKeyUsage and\n"
+      "                   issuer are checked at start, not per request.\n"
+      "  --ocsp-days N    nextUpdate, in days (default 7).\n"
+      "                   POST only: the RFC 6960 A.1 GET form would need a\n"
+      "                   base64 decoder this daemon does not have.\n\n"
+      "  --profile        print the profile this binary was built with and\n"
+      "                   exit. The service links the module statically, so\n"
+      "                   the answer is about this binary and no other.\n\n"
+      "  --pin-file PATH  read the token PIN from PATH instead of from\n"
+      "                   $CREDENTIALS_DIRECTORY/fhsm-pin. For test rigs; a\n"
+      "                   deployment uses LoadCredentialEncrypted=.\n\n"
+      "  The token directory comes from FHSM_TOKENS_DIR, as everywhere else.\n"
+      "  The PIN is never taken from an argument or an inherited environment\n"
+      "  variable -- see docs/DAEMON_PIN.md for why the environment is as bad\n"
+      "  as the command line here.\n\n"
+      "  POST /verify checks a signature against the same key, with the body\n"
+      "  carrying the signature followed by the message and\n"
+      "  X-FHSM-Signature-Length saying where to cut. 200 only when it\n"
+      "  verifies, 422 when it does not -- so a caller that reads the status\n"
+      "  and ignores the body is right by default.\n\n"
+      "  /token reads the token's public description; POST /sign signs a\n"
+      "  request body with the key named by X-FHSM-Key, if the policy file\n"
+      "  pairs it with the caller's subject. /certificates and /ocsp are on\n"
+      "  the public listener, not here.\n");
+    exit(2);
+}
+
+int main(int argc, char **argv)
+{
+    const char *sock_path = NULL, *pin_file = NULL, *policy_file = NULL;
+    long proxy_uid = -1, workers = 4, pool_max = 32;
+    const char *pub_path = NULL, *ca_cert_path = NULL;
+    const char *rev_db_path = NULL, *ocsp_label = NULL, *responder_path = NULL;
+    long pub_workers = 2, ocsp_days = 7, queue_depth = 256;
+
+    for (int i = 1; i < argc; i++) {
+        char *e = NULL;
+        if (!strcmp(argv[i], "--profile")) {
+            /* The canonical profile names since 2026-09-26. This printed "interop"
+             * for two days after the rename, because the rename searched for the
+             * name in backticks and in phrases, not as a bare quoted string --
+             * and the three service scripts compared against the same stale word,
+             * so the pair agreed with each other and with nothing else. */
+            puts(fhsm_build_fips_strict ? "nist-approved-only" : "all-mechanisms");
+            return 0;
+        }
+        else if (!strcmp(argv[i], "--socket") && i + 1 < argc) sock_path = argv[++i];
+        else if (!strcmp(argv[i], "--pin-file") && i + 1 < argc) pin_file = argv[++i];
+        else if (!strcmp(argv[i], "--policy") && i + 1 < argc) policy_file = argv[++i];
+        else if (!strcmp(argv[i], "--proxy-uid") && i + 1 < argc) {
+            proxy_uid = strtol(argv[++i], &e, 10);
+            if (!e || *e || proxy_uid < 0) usage();
+        } else if (!strcmp(argv[i], "--workers") && i + 1 < argc) {
+            workers = strtol(argv[++i], &e, 10);
+            if (!e || *e || workers < 1 || workers > 256) usage();
+        } else if (!strcmp(argv[i], "--pool-max") && i + 1 < argc) {
+            pool_max = strtol(argv[++i], &e, 10);
+            if (!e || *e || pool_max < 1 || pool_max > POOL_MAX_LIMIT) usage();
+        } else if (!strcmp(argv[i], "--public-socket") && i + 1 < argc) {
+            pub_path = argv[++i];
+        } else if (!strcmp(argv[i], "--public-workers") && i + 1 < argc) {
+            pub_workers = strtol(argv[++i], &e, 10);
+            if (!e || *e || pub_workers < 1 || pub_workers > 256) usage();
+        } else if (!strcmp(argv[i], "--ca-cert") && i + 1 < argc) {
+            ca_cert_path = argv[++i];
+        } else if (!strcmp(argv[i], "--revocation-db") && i + 1 < argc) {
+            rev_db_path = argv[++i];
+        } else if (!strcmp(argv[i], "--ocsp-label") && i + 1 < argc) {
+            ocsp_label = argv[++i];
+        } else if (!strcmp(argv[i], "--responder-cert") && i + 1 < argc) {
+            responder_path = argv[++i];
+        } else if (!strcmp(argv[i], "--queue-depth") && i + 1 < argc) {
+            queue_depth = strtol(argv[++i], &e, 10);
+            if (!e || *e || queue_depth < 1 || queue_depth > 65536) usage();
+        } else if (!strcmp(argv[i], "--ocsp-days") && i + 1 < argc) {
+            ocsp_days = strtol(argv[++i], &e, 10);
+            if (!e || *e || ocsp_days < 1 || ocsp_days > 365) usage();
+        } else usage();
+    }
+    if (!sock_path || proxy_uid < 0 || !policy_file) usage();
+    if (ca_cert_path && !pub_path) {
+        fprintf(stderr, "fhsm-service: --ca-cert without --public-socket.\n"
+                        "  The certificate is only served on the public\n"
+                        "  listener, so this asks for something nobody could\n"
+                        "  fetch. Refused rather than loaded and ignored.\n");
+        return 2;
+    }
+    if (ca_cert_path && ca_cert_load(ca_cert_path) != 0) {
+        fprintf(stderr, "fhsm-service: cannot read a certificate from %s\n"
+                        "  (missing, empty, or larger than %d bytes).\n",
+                ca_cert_path, CA_CERT_MAX);
+        return 2;
+    }
+
+    /* ---- the responder, refused at start rather than per request ---------
+     *
+     * Answering OCSP needs three things at once: the CA certificate, to know
+     * which questions are about this authority; a key, to sign with; and the
+     * database, to answer from. Any one of them alone is an operator who meant
+     * something this daemon would not have done, so the incomplete set is
+     * refused here rather than turned into a 404 the relying party has to
+     * interpret. */
+    if ((rev_db_path || ocsp_label || responder_path) && !pub_path) {
+        fprintf(stderr, "fhsm-service: the OCSP options need --public-socket.\n"
+                        "  A relying party has no client certificate to present,\n"
+                        "  so /ocsp is on the anonymous listener and nowhere\n"
+                        "  else. Refused rather than configured and unreachable.\n");
+        return 2;
+    }
+    if ((rev_db_path != NULL) != (ocsp_label != NULL)) {
+        fprintf(stderr, "fhsm-service: --revocation-db and --ocsp-label go\n"
+                        "  together. One without the other is a responder that\n"
+                        "  could answer but has nothing to answer from, or one\n"
+                        "  that has the answers and cannot sign them.\n");
+        return 2;
+    }
+    if (rev_db_path && !ca_cert_path) {
+        fprintf(stderr, "fhsm-service: --revocation-db without --ca-cert.\n"
+                        "  A CertID identifies a certificate by hashes of its\n"
+                        "  issuer's name and key, so without the CA certificate\n"
+                        "  every question would be answered `unknown` -- which\n"
+                        "  is a working responder that is useless.\n");
+        return 2;
+    }
+    if (responder_path && !rev_db_path) {
+        fprintf(stderr, "fhsm-service: --responder-cert without a responder.\n");
+        return 2;
+    }
+    if (rev_db_path) {
+        if (strlen(rev_db_path) >= sizeof g_ocsp_db_path ||
+            strlen(ocsp_label)  >= sizeof g_ocsp_label) {
+            fprintf(stderr, "fhsm-service: OCSP path or label too long.\n");
+            return 2;
+        }
+        snprintf(g_ocsp_db_path, sizeof g_ocsp_db_path, "%s", rev_db_path);
+        snprintf(g_ocsp_label,   sizeof g_ocsp_label,   "%s", ocsp_label);
+        g_ocsp_days = (int)ocsp_days;
+
+        if (responder_path) {
+            FILE *f = fopen(responder_path, "rb");
+            size_t n = f ? fread(g_ocsp_responder, 1, sizeof g_ocsp_responder, f) : 0;
+            int over = f && !feof(f);
+            if (f) fclose(f);
+            if (n == 0 || over) {
+                fprintf(stderr, "fhsm-service: cannot read a certificate from %s\n",
+                        responder_path);
+                return 2;
+            }
+            g_ocsp_responder_len = n;
+
+            /* Checked once, here, and not on every request: the answer cannot
+             * change while the process runs, and a verifier that will refuse
+             * these responses should stop the daemon rather than be discovered
+             * by the first relying party. */
+            char err[FHSM_REV_ERR_MAX] = "";
+            if (fhsm_ocsp_check_responder(g_ocsp_responder, g_ocsp_responder_len,
+                                          g_ca_cert, g_ca_cert_len,
+                                          responder_path, ca_cert_path,
+                                          err, sizeof err) != FHSM_REV_OK) {
+                fprintf(stderr, "fhsm-service: %s", err);
+                return 2;
+            }
+        }
+
+        /* Read now, so that a database the daemon cannot parse is the
+         * operator's problem before the socket exists rather than a tryLater
+         * the first relying party has to report. A file that does not exist
+         * yet is fine -- a CA that has revoked nothing is the ordinary case. */
+        if (rev_db_refresh() != 0) {
+            fprintf(stderr, "fhsm-service: refusing to start: the revocation\n"
+                            "  database at %s could not be read.\n", rev_db_path);
+            return 2;
+        }
+        g_ocsp_on = 1;
+    }
+    snprintf(g_policy_path, sizeof g_policy_path, "%s", policy_file);
+    {
+        int n = policy_load(g_policy_path);
+        if (n < 0) {
+            fprintf(stderr, "fhsm-service: cannot load the policy from %s.\n"
+                            "  Refusing to start: with no policy nothing is\n"
+                            "  authorised, and a service that answers every\n"
+                            "  request with a refusal is worse than one that\n"
+                            "  says why it will not run.\n", g_policy_path);
+            return 1;
+        }
+        fprintf(stderr, "fhsm-service: policy loaded, %d rule(s)\n", n);
+    }
+    /* The public workers borrow pooled sessions too, once /ocsp signs. Counting
+     * them now costs nothing and stops the bound being wrong later, silently,
+     * on the day that route is written. */
+    if (pool_max < workers + (pub_path ? pub_workers : 0)) {
+        fprintf(stderr, "fhsm-service: --pool-max (%ld) is below the total\n"
+                        "  worker count (%ld + %ld public).\n",
+                pool_max, workers, pub_path ? pub_workers : 0);
+        return 2;
+    }
+    if (pool_max < workers) {
+        /* Refused rather than silently raised. A pool smaller than the worker
+         * count means a worker that can never make progress on some request,
+         * and quietly fixing the operator's arithmetic hides the fact that
+         * they meant something we did not do. */
+        fprintf(stderr, "fhsm-service: --pool-max (%ld) is below --workers (%ld).\n"
+                        "  Every worker needs a session it can hold for the length\n"
+                        "  of a request; with fewer sessions than workers one of\n"
+                        "  them would block for as long as the service runs.\n",
+                pool_max, workers);
+        return 2;
+    }
+    /* The queue is bounded by descriptors before it is bounded by anything
+     * else: every waiting connection is one, and running out of them is a
+     * silent failure -- accept() returns EMFILE, the acceptor drops the
+     * connection, and nobody is told. So the arithmetic is done here, once,
+     * against the limit actually in force rather than the one assumed.
+     *
+     * The reserve covers what the daemon already holds: two listening
+     * sockets, the stop pipe, the audit log, the token store, stdio, and one
+     * descriptor per in-flight request. Sixty-four is generous for that and
+     * the point is the refusal, not the precision. */
+    {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+            long reserve = 64 + workers + (pub_path ? pub_workers : 0);
+            long total   = queue_depth * (pub_path ? 2 : 1) + reserve;
+            if ((rlim_t)total > rl.rlim_cur) {
+                fprintf(stderr,
+                  "fhsm-service: --queue-depth %ld needs %ld descriptors%s,\n"
+                  "  and the limit in force is %ld. Past it accept() fails with\n"
+                  "  EMFILE and the connection is dropped without a 503 and\n"
+                  "  without a line -- the silent failure the queue exists to\n"
+                  "  replace. Raise LimitNOFILE or lower --queue-depth.\n",
+                  queue_depth, total,
+                  pub_path ? " (two listeners)" : "", (long)rl.rlim_cur);
+                return 2;
+            }
+        }
+    }
+
+    g_pool_max = (int)pool_max;
+    /* Set before any worker starts, read by every worker afterwards, never
+     * written again -- so it needs no lock of its own. */
+    g_workers  = (int)workers;
+
+    /* The refusal budget, from the same directory as the token and the audit
+     * log. Loaded before the socket exists, so no request can be served
+     * against an empty budget that a crash was supposed to preserve. */
+    budget_load(getenv("FHSM_TOKENS_DIR"));
+
+    if (pipe(g_stop_pipe) != 0) { perror("fhsm-service: pipe"); return 1; }
+
+    /* sigaction, not signal(): glibc's signal() installs the handler with
+     * SA_RESTART, so accept() is restarted instead of returning EINTR and the
+     * daemon never notices it was asked to stop. Found by a test that hung
+     * waiting for the process to exit -- systemd would have reached the same
+     * conclusion with SIGKILL, and the stop would never have been recorded. */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;                     /* deliberately NOT SA_RESTART */
+    (void)sigaction(SIGINT,  &sa, NULL);
+    (void)sigaction(SIGTERM, &sa, NULL);
+
+    struct sigaction hup;
+    memset(&hup, 0, sizeof hup);
+    hup.sa_handler = on_hup;
+    sigemptyset(&hup.sa_mask);
+    hup.sa_flags = SA_RESTART;      /* HUP must not interrupt a request */
+    (void)sigaction(SIGHUP, &hup, NULL);
+
+    struct sigaction ign;
+    memset(&ign, 0, sizeof ign);
+    ign.sa_handler = SIG_IGN;
+    (void)sigaction(SIGPIPE, &ign, NULL);
+
+    /* C_Initialize runs the self-tests and opens the audit log. The service
+     * has nothing to say before the log can record it saying it. */
+    unsigned long rv = C_Initialize(NULL);
+    if (rv != FHSM_RV_OK) {
+        fprintf(stderr, "fhsm-service: C_Initialize failed (0x%lx). Nothing is\n"
+                        "  served without the module, and nothing is served\n"
+                        "  without the audit log it opens.\n", rv);
+        return 1;
+    }
+
+    /* One slot holding a token, resolved rather than assumed to be 0 -- the
+     * lesson the tools learned against p11-kit. */
+    {
+        unsigned long slots[16], n = 16;
+        if (C_GetSlotList(1, slots, &n) != 0 || n == 0) {
+            fprintf(stderr, "fhsm-service: no slot holds a token. Run"
+                            " `fhsm-token init` first.\n");
+            return 1;
+        }
+        if (n > 1) {
+            fprintf(stderr, "fhsm-service: %lu slots hold a token; this service"
+                            " serves one.\n", n);
+            return 1;
+        }
+        g_slot_id = slots[0];
+    }
+
+    if (login_once(g_slot_id, pin_file) != 0) return 1;
+
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sun_family = AF_UNIX;
+    if (strlen(sock_path) >= sizeof addr.sun_path) {
+        fprintf(stderr, "fhsm-service: socket path is longer than %zu bytes.\n",
+                sizeof addr.sun_path - 1);
+        return 2;
+    }
+    memcpy(addr.sun_path, sock_path, strlen(sock_path));
+
+    int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (lfd < 0) { perror("fhsm-service: socket"); return 1; }
+
+    (void)unlink(sock_path);
+    mode_t old = umask(0117);           /* 0660 on the socket, nothing wider */
+    if (bind(lfd, (struct sockaddr *)&addr, sizeof addr) != 0) {
+        perror("fhsm-service: bind"); umask(old); return 1;
+    }
+    umask(old);
+    if (listen(lfd, 64) != 0) { perror("fhsm-service: listen"); return 1; }
+    /* Non-blocking: several workers wake from the same poll() and only one
+     * gets the connection. The losers must not block in accept(). */
+    (void)fcntl(lfd, F_SETFL, fcntl(lfd, F_GETFL, 0) | O_NONBLOCK);
+
+    int pfd = -1;
+    if (pub_path) {
+        struct sockaddr_un pa;
+        memset(&pa, 0, sizeof pa);
+        pa.sun_family = AF_UNIX;
+        if (strlen(pub_path) >= sizeof pa.sun_path) {
+            fprintf(stderr, "fhsm-service: --public-socket path is too long\n");
+            return 2;
+        }
+        memcpy(pa.sun_path, pub_path, strlen(pub_path));
+        unlink(pub_path);
+        pfd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (pfd < 0) { perror("fhsm-service: socket"); return 1; }
+        mode_t pold = umask(0117);       /* 0660, as on the other one */
+        if (bind(pfd, (struct sockaddr *)&pa, sizeof pa) != 0) {
+            perror("fhsm-service: bind (public)"); umask(pold); return 1;
+        }
+        umask(pold);
+        if (listen(pfd, 64) != 0) { perror("fhsm-service: listen (public)"); return 1; }
+        (void)fcntl(pfd, F_SETFL, fcntl(pfd, F_GETFL, 0) | O_NONBLOCK);
+    }
+
+    /* Recorded once, at start, and never per request on the public side --
+     * see the note above serve_public(). An operator reading the log should be
+     * able to tell that an anonymous surface exists; they should not have to
+     * read a line for every relying party that ever asked a question. */
+    (void)fhsm_audit_event(FHSM_EV_SERVICE_START, -1, -1,
+                            FHSM_ROLE_NONE, FHSM_RV_OK,
+                            "socket", sock_path,
+                            "public_socket", pub_path ? pub_path : "-",
+                            "certificate", g_ca_cert_len ? "loaded" : "-",
+                            "ocsp", g_ocsp_on ? g_ocsp_label : "-",
+                            FHSM_AUDIT_END);
+    fprintf(stderr, "fhsm-service: listening on %s, uid %ld only,"
+                    " %ld workers, pool ceiling %ld\n",
+            sock_path, proxy_uid, workers, pool_max);
+
+    /* One thread short of the requested count runs the accept loop here, so
+     * that a signal lands on a thread that is in accept() and the process can
+     * be told to stop. The workers are detached from that concern. */
+    static listener_t priv, pub;
+    if (listener_init(&priv, lfd, 0, (uid_t)proxy_uid, (int)queue_depth) != 0) {
+        fprintf(stderr, "fhsm-service: out of memory\n"); return 1;
+    }
+    pthread_t *ptids = NULL, pacc = 0;
+    if (pub_path) {
+        if (listener_init(&pub, pfd, 1, (uid_t)proxy_uid, (int)queue_depth) != 0) {
+            fprintf(stderr, "fhsm-service: out of memory\n"); return 1;
+        }
+        ptids = calloc((size_t)pub_workers, sizeof *ptids);
+        if (!ptids) { fprintf(stderr, "fhsm-service: out of memory\n"); return 1; }
+        for (long i = 0; i < pub_workers; i++) {
+            if (pthread_create(&ptids[i], NULL, worker, &pub) != 0) {
+                fprintf(stderr, "fhsm-service: cannot start public worker\n");
+                return 1;
+            }
+        }
+        if (pthread_create(&pacc, NULL, acceptor, &pub) != 0) {
+            fprintf(stderr, "fhsm-service: cannot start the public acceptor\n");
+            return 1;
+        }
+        fprintf(stderr, "fhsm-service: public listener on %s, %ld worker(s),"
+                        " no identity required\n", pub_path, pub_workers);
+    }
+    /* Every worker is a worker now. The accept loop is the acceptor's, so the
+     * thread that used to double as one runs the private acceptor instead --
+     * which is also what keeps a signal landing on a thread that is in poll()
+     * rather than in the middle of a signature. */
+    pthread_t *tids = calloc((size_t)workers, sizeof *tids);
+    if (!tids) { fprintf(stderr, "fhsm-service: out of memory\n"); return 1; }
+    for (long i = 0; i < workers; i++) {
+        if (pthread_create(&tids[i], NULL, worker, &priv) != 0) {
+            fprintf(stderr, "fhsm-service: cannot start worker %ld\n", i);
+            return 1;
+        }
+    }
+    acceptor(&priv);                     /* this thread accepts */
+
+    for (long i = 0; i < workers; i++) (void)pthread_join(tids[i], NULL);
+    if (ptids) {
+        pthread_mutex_lock(&pub.mu);
+        pub.stopping = 1;
+        pthread_cond_broadcast(&pub.cv);
+        pthread_mutex_unlock(&pub.mu);
+        if (pacc) (void)pthread_join(pacc, NULL);
+        for (long i = 0; i < pub_workers; i++) (void)pthread_join(ptids[i], NULL);
+        free(ptids);
+    }
+    close(lfd);
+    if (pfd >= 0) { close(pfd); unlink(pub_path); }
+    free(tids);
+
+    pool_close_all();
+    /* After the workers have joined, so no burst can still be growing. */
+    ident_flush_bursts();
+
+    (void)fhsm_audit_event(FHSM_EV_SERVICE_STOP, -1, -1,
+                            FHSM_ROLE_NONE, FHSM_RV_OK, FHSM_AUDIT_END);
+    (void)unlink(sock_path);
+    (void)C_Finalize(NULL);
+    fprintf(stderr, "fhsm-service: stopped\n");
+    return 0;
+}

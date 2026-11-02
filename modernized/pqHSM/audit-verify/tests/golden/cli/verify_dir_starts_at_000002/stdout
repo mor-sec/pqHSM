@@ -1,0 +1,7 @@
+== tests/golden/dirs/from2/audit.log.000002
+verify: 3 records OK, chain intact
+== tests/golden/dirs/from2/audit.log.000003
+verify: 3 records OK, chain intact
+
+verify: 2 log(s), sequence 000002..000003, contiguous, every chain intact
+verify: note -- the sequence starts at 000002, not 000001; earlier logs were archived or removed

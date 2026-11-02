@@ -1,0 +1,379 @@
+# ===========================================================================
+# pkcs11-check.yml --- External behavioral harness run (#125).
+#
+# Runs Denis Mingulov's pkcs11-check against the digest-signed libfreehsm.so
+# and uploads the JSON report + log as artifacts.
+#
+# TWO REGIMES, and the report says which one produced it.
+#
+#   push          embedded corpus only, ~4,000 vectors, a few minutes.
+#                 A regression check on every commit.
+#   schedule /    full corpus, ~111,700 vectors, several hours. Runs
+#   dispatch      `pkcs11-check fetch-data` first, with the downloaded sets
+#                 cached between runs.
+#
+# This header used to describe the harness as ">100k vendor-neutral behavioral
+# checks" while the job ran four thousand of them. pkcs11-check ships the
+# harness and downloads the third-party vector sets separately; nothing here
+# ever called fetch-data, so from July until 2026-09-08 every count this job
+# published covered 4,014 of 111,739 vectors -- and neither the report, the
+# summary nor docs/PKCS11_CHECK_FINDINGS.md said so. The first full run found a
+# stack buffer overflow (GHSA-833h-crp9-f378), 267 valid signatures rejected,
+# and four invalid public keys accepted.
+#
+# The description of a tool is not a statement about what you ran with it.
+#
+# TWO JOBS.
+#
+#   pkcs11-check          default profile, integrity bypassed, default
+#                         provider. NON-GATING by design: per pkcs11-check's
+#                         own guidance, large xfail/fail counts are normal
+#                         findings, so it fails only if the harness does not
+#                         run or produce a report.
+#   pkcs11-check-signed   both build profiles, signed module, FIPS provider
+#                         loaded. GATING on node-ids: a failure not listed in
+#                         tests/pkcs11_check_known_failures.txt fails the job
+#                         (scripts/pkcs11_check_gate.py). Added 2026-09-30.
+# ===========================================================================
+name: pkcs11-check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'kat/**'
+      - 'Makefile'
+      - 'scripts/run_pkcs11_check.sh'
+      - 'scripts/pkcs11_check_gate.py'
+      - 'scripts/ci_install_openssl_fips.sh'
+      - 'scripts/diff_pkcs11_runs.py'
+      - 'scripts/pkcs11_check_summary.py'
+      - 'tests/pkcs11_check_known_failures.txt'
+      - '.github/workflows/pkcs11-check.yml'
+  workflow_dispatch:
+    inputs:
+      full_corpus:
+        description: 'Download the third-party vectors and run the full corpus (hours, not minutes)'
+        type: boolean
+        default: true
+  schedule:
+    - cron: '17 4 * * 1'   # weekly, Monday 04:17 UTC --- full corpus
+
+permissions:
+  contents: read
+
+jobs:
+  pkcs11-check:
+    runs-on: ubuntu-latest
+    # A full run took just over three hours locally. GitHub's ceiling is six.
+    timeout-minutes: 330
+    env:
+      # Scheduled and manual runs take the full corpus; pushes do not.
+      FULL_CORPUS: >-
+        ${{ (github.event_name == 'schedule'
+             || (github.event_name == 'workflow_dispatch' && inputs.full_corpus))
+            && '1' || '0' }}
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build + sign module
+        run: |
+          make clean
+          # Built at the default FHSM_MAX_OBJECTS. The -DFHSM_MAX_OBJECTS=4096
+          # override that used to be here dated from when the default was 64
+          # and the harness's object churn filled the store, cascading
+          # CKR_DEVICE_MEMORY across unrelated tests (FINDINGS I1 / F5). Both
+          # reasons are gone: session objects are destroyed on C_CloseSession
+          # since #125 -- the deeper fix the old comment asked for -- and the
+          # default is now 1024. Runs at the default show no cascade.
+          #
+          # It also has to go: since #127 the mlock'd arena must hold a full
+          # token of sensitive values, and 4096 of them would demand a 32 MiB
+          # locked arena, more than the usual RLIMIT_MEMLOCK allows.
+          make
+          make integrity
+          test -f libfreehsm.so
+
+      - name: Install harness (opensc + pkcs11-check)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq opensc python3-pip python3-venv
+          python3 -m venv /opt/p11check
+          # Pinned. Unpinned, this installed whatever PyPI had latest, so a
+          # harness release could change the reported counts on a tree nobody
+          # had touched -- and did: v0.1.9 closed three failures that v0.1.8
+          # reported, with the module unchanged (docs/PKCS11_CHECK_FINDINGS.md,
+          # 2026-09-03). A comparison whose reference version drifts on its own
+          # cannot attribute a change to anything.
+          #
+          # 0.1.9 -> 0.2.0 on 2026-09-19. This is not a routine bump: 0.2.0
+          # changed what counts as a claim -- accepting an attribute in a
+          # creation template is the claim, readback or not -- so counts from
+          # it are not comparable with counts from 0.1.9. The first full run
+          # under it removed 63 findings that were never ours and restored
+          # hard failures 0.1.9 had been classifying away.
+          #
+          # Which means the baseline this workflow compares against is reset,
+          # not continued. A run under 0.2.0 read as a delta from a 0.1.9
+          # number says nothing.
+          #
+          # 0.2.0 -> 0.2.1 on 2026-09-27. Full corpus, signed module:
+          #
+          #   passed 55199 (was 55202) · fail 2 · crash 0 · xfail 14300 (was 14299)
+          #
+          # The two failures are the same two by node-id, not merely the same
+          # count: EDDSA C_SignInit and C_VerifyInit accepting a call with the
+          # required params missing, which is the open upstream dispute
+          # mingulov#23.
+          #
+          # The -3 passed / +1 xfail is NOT attributed, and saying so is the
+          # point. There was no stored 0.2.0 report to diff by node-id -- the
+          # three archived runs are all 0.1.9 -- so the likeliest reading (0.2.1
+          # repins datasets and grows one pin test from 5 to 14 probes, moving a
+          # few cases between buckets) is a reading and not a measurement. A
+          # 0.2.1 run is archived locally now so the next bump has a baseline
+          # instead of the same gap.
+          #
+          # KMAC is still skipped, and correctly: the skip now names its remedy
+          # (--p11-vendor-mechanism KMAC_128=0x...) rather than being silent,
+          # which is the upstream improvement. It does not help here -- this
+          # module advertises no KMAC at all, the mechanisms having been removed
+          # for want of an assigned code point.
+          #
+          # 0.2.1 -> 0.2.3 on 2026-10-06, both profiles, diffed by node-id
+          # against the archived 0.2.1 runs (668 moves nist, 672 all; nearly
+          # all new or reclassified tests). Signed module, before the fixes:
+          #
+          #   nist  passed 55378 · fail 7     all  passed 55832 · fail 7
+          #
+          # Four of the failures were the module's and are fixed: AES
+          # CKA_VALUE_LEN read narrowed, Ed25519 answering a CK_EDDSA_PARAMS
+          # block (x2) with pure Ed25519, and -- an xfail, not a failure --
+          # C_EncryptFinal straight after Init. The rest are listed in
+          # tests/pkcs11_check_known_failures.txt with their reasons: the async
+          # probes that never reach the module and the Ed448 NULL-params
+          # question (mingulov#49), and the v1.5 structured oracle (#37, #49).
+          # The EDDSA #23 pair and test_decrypt_garbage no longer fail.
+          #
+          # pytest is held below 9.2. pytest 9.2.0 (2026-10-27) dropped
+          # Node._nodeid, which pytest-benchmark 5.3.0 reads when it builds its
+          # fixture, so all eight test_benchmark.py tests errored at setup in
+          # both profiles from the next run on -- the harness, not the module.
+          # pkcs11-check asks only pytest>=8.0. Lift the bound when a
+          # pytest-benchmark release reads `nodeid`.
+          /opt/p11check/bin/pip install --quiet 'pkcs11-check==0.2.3' 'pytest<9.2'
+          ln -sf /opt/p11check/bin/pkcs11-check /usr/local/bin/pkcs11-check
+          ln -sf /opt/p11check/bin/pkcs11-check-report /usr/local/bin/pkcs11-check-report
+          pkcs11-check version
+
+      # The vector sets, when this run wants them. Cached because they are
+      # large, immutable for a given harness version, and downloading them on
+      # every scheduled run would be rude to four upstream projects.
+      #
+      # The key carries the harness version: a new pkcs11-check may pin
+      # different revisions of wycheproof / cctv / acvp / x509-limbo, and a
+      # cache that outlived that would make two runs incomparable while looking
+      # identical.
+      - name: Cache third-party vectors
+        if: env.FULL_CORPUS == '1'
+        uses: actions/cache@v6
+        with:
+          path: /root/.local/share/pkcs11-check/data
+          key: p11check-data-0.2.3
+
+      - name: Fetch third-party vectors
+        if: env.FULL_CORPUS == '1'
+        run: |
+          set -o pipefail
+          pkcs11-check fetch-data all
+          # Print the outcome rather than trusting the exit status: this is the
+          # step whose absence went unnoticed for two months.
+          pkcs11-check fetch-data --status
+
+      - name: Record which corpus this run used
+        run: |
+          if [ "$FULL_CORPUS" = "1" ]; then
+            echo "corpus: full (third-party vectors fetched)" | tee corpus.txt
+          else
+            echo "corpus: embedded only (no fetch-data; run the workflow manually or wait for the weekly job for the full set)" | tee corpus.txt
+          fi
+
+      # FHSM_ALLOW_UNSIGNED keeps this job measuring what it has always
+      # measured. The module is signed above and stays signed; this only tells
+      # run_pkcs11_check.sh to take the unsigned path -- integrity check
+      # skipped, FIPS provider not loaded, EVP fetches on the default provider.
+      #
+      # It became necessary on 2026-09-03. Until then the script forced
+      # OPENSSL_CONF=/dev/null unconditionally, which silently prevented the
+      # provider from ever loading; fixing that would have flipped this job to
+      # the FIPS provider without renaming anything, and the counts recorded in
+      # docs/PKCS11_CHECK_FINDINGS.md would have stopped describing what runs
+      # here. A reference that changes meaning while keeping its name is the
+      # defect this project spent two days removing elsewhere.
+      #
+      # Running the harness against the signed module with the provider loaded
+      # is worth doing -- roughly 1700 tests where run_fips_tests.sh has 37 --
+      # but as its own deliberate job with its own baseline, not as a silent
+      # change of subject in this one.
+      #
+      # pipefail: without it `cmd | tee` reports tee's status, so a harness that
+      # aborts (FATAL: C_InitToken failed, exit 2) would leave this step green.
+      # Findings here are not a gate; a harness that never ran is not a finding.
+      - name: Run pkcs11-check (default provider, integrity check bypassed)
+        env:
+          FHSM_ALLOW_UNSIGNED: '1'
+        run: |
+          set -o pipefail
+          bash scripts/run_pkcs11_check.sh ./libfreehsm.so ./reports/pkcs11-check \
+            2>&1 | tee harness.log
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo "## pkcs11-check run"
+            echo
+            # Which corpus, first and unmissable. A count without its scope is
+            # what this workflow published for two months.
+            cat corpus.txt 2>/dev/null || echo "corpus: unknown"
+            echo
+            echo '```'
+            cat reports/pkcs11-check/provenance.txt 2>/dev/null || true
+            echo '```'
+            echo '```'
+            grep -A 20 "== Summary ==" harness.log | head -25 || true
+            echo '```'
+            echo "_Findings are evidence to investigate, not a verdict (see pkcs11-check docs/interpreting-results.md)._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkcs11-check-report
+          path: |
+            reports/pkcs11-check/
+            harness.log
+            corpus.txt
+          retention-days: 30
+
+  # The deliberate job the note above asks for: the signed module, integrity
+  # check on, FIPS provider loaded -- what a deployment runs -- in both build
+  # profiles.
+  #
+  # Two blind spots, and the week of 2026-09-27 went through both. No job built
+  # all-mechanisms, so its first corpus run found nine failures at once: EC
+  # curves below the advertised floor, 3DES keys of a size nobody asked for,
+  # 3DES-CBC accepted without an IV. And no job ran the harness against a
+  # signed module, so X25519 and X448 were advertised by every signed
+  # all-mechanisms build and failed on every call -- the FIPS provider has
+  # neither -- while every test here, run under the bypass, passed.
+  #
+  # GATING, unlike the job above, and on node-ids rather than counts:
+  # scripts/pkcs11_check_gate.py fails on any failure that is not listed, with
+  # its reason, in tests/pkcs11_check_known_failures.txt. Replayed on the
+  # 2026-09-28 run it names seven failures; on the 2026-09-29 run, none.
+  pkcs11-check-signed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [nist-approved-only, all-mechanisms]
+    env:
+      FULL_CORPUS: >-
+        ${{ (github.event_name == 'schedule'
+             || (github.event_name == 'workflow_dispatch' && inputs.full_corpus))
+            && '1' || '0' }}
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+
+      # A signed module will not start without the FIPS provider, and no CI
+      # image has one. Debian's packaged provider, set up the way the
+      # workstation has it -- see scripts/ci_install_openssl_fips.sh, including
+      # why its first version built OpenSSL from source and should not have.
+      - name: Debian OpenSSL FIPS provider, installed and activated
+        run: bash scripts/ci_install_openssl_fips.sh
+
+      # PROFILE on every make, `make integrity` included: a bare make restores
+      # the default profile, and the harness would then measure the wrong
+      # module under the right name. FHSM_EXPECT_PROFILE below catches that
+      # by reading the profile out of the module.
+      - name: Build + sign module (${{ matrix.profile }})
+        run: |
+          set -o pipefail
+          make clean
+          make PROFILE=${{ matrix.profile }}
+          make PROFILE=${{ matrix.profile }} integrity
+          test -f libfreehsm.so
+
+      - name: Install harness (opensc + pkcs11-check)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq opensc python3-pip python3-venv
+          python3 -m venv /opt/p11check
+          # Same pins as the job above; see the note there before changing them.
+          /opt/p11check/bin/pip install --quiet 'pkcs11-check==0.2.3' 'pytest<9.2'
+          ln -sf /opt/p11check/bin/pkcs11-check /usr/local/bin/pkcs11-check
+          ln -sf /opt/p11check/bin/pkcs11-check-report /usr/local/bin/pkcs11-check-report
+          pkcs11-check version
+
+      - name: Cache third-party vectors
+        if: env.FULL_CORPUS == '1'
+        uses: actions/cache@v6
+        with:
+          path: /root/.local/share/pkcs11-check/data
+          key: p11check-data-0.2.3
+
+      - name: Fetch third-party vectors
+        if: env.FULL_CORPUS == '1'
+        run: |
+          set -o pipefail
+          pkcs11-check fetch-data all
+          pkcs11-check fetch-data --status
+
+      # No FHSM_ALLOW_UNSIGNED: that is the point of this job.
+      - name: Run pkcs11-check (signed, FIPS provider, ${{ matrix.profile }})
+        env:
+          FHSM_EXPECT_PROFILE: ${{ matrix.profile }}
+        run: |
+          set -o pipefail
+          bash scripts/run_pkcs11_check.sh ./libfreehsm.so ./reports/pkcs11-check \
+            2>&1 | tee harness.log
+
+      - name: Gate on unlisted failures
+        run: |
+          python3 scripts/pkcs11_check_gate.py reports/pkcs11-check/report.jsonl \
+            --profile ${{ matrix.profile }}
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo "## pkcs11-check, signed module, ${{ matrix.profile }}"
+            echo
+            [ "$FULL_CORPUS" = "1" ] && echo "corpus: full" || echo "corpus: embedded only"
+            echo
+            echo '```'
+            cat reports/pkcs11-check/provenance.txt 2>/dev/null || true
+            grep -A 20 "== Summary ==" harness.log | head -25 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pkcs11-check-signed-${{ matrix.profile }}
+          path: |
+            reports/pkcs11-check/
+            harness.log
+          retention-days: 30

@@ -1,0 +1,8 @@
+advertised mechanisms must be operational
+
+  99 mechanisms advertised
+
+
+  167 operations probed across 99 mechanisms (0 keygen/wrap-only, 0 known gaps)
+
+all good

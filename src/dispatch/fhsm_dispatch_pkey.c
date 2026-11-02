@@ -1,0 +1,538 @@
+/* ===========================================================================
+ * Copyright 2026 Afchine Madjlessi <afchine.mad@gmail.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * ========================================================================= */
+/* ===========================================================================
+ * fhsm_dispatch_pkey.c --- RSA + EC + EdDSA + ECDH/X25519/X448 handlers.
+ *
+ *  Uses EVP_PKEY uniformly. The private/public key is loaded from a
+ *  PEM blob passed via TLV (FHSM_TLV_PEM / FHSM_TLV_PEM_PUB) until the
+ *  object store is fully wired. After that, the key handle will be
+ *  resolved to an EVP_PKEY* by the session layer.
+ *
+ *  Implemented (real EVP) :
+ *    - RSA-PSS (sign)  --- with embedded SHA-256/384/512 hash
+ *    - RSA-OAEP encrypt
+ *    - ECDSA-SHA-{256,384,512} sign
+ *    - EdDSA sign (Ed25519 / Ed448)
+ *    - ECDH1_DERIVE / X25519_DERIVE / X448_DERIVE
+ *    - Keypair generation (RSA / EC / EdDSA / X25519)
+ *
+ *  Stubbed (return FUNCTION_FAILED) :
+ *    - dispatch_rsa_pss (params-less variant, expects pre-hashed input)
+ *    - dispatch_ecdsa   (raw, expects pre-hashed input)
+ *    - dispatch_ecdh1_cofactor (rare ; co-factor variant)
+ *    - dispatch_eddsa_keypair / dispatch_ecm_keypair (need parameter set)
+ *
+ *  Output buffer convention :
+ *    - sign  : raw signature bytes (DER for ECDSA, fixed-size for EdDSA).
+ *    - encrypt : ciphertext bytes.
+ *    - derive : raw shared secret bytes.
+ *    - keypair : PEM-encoded private key in *out.
+ * ========================================================================= */
+
+#include "fhsm_dispatch_common.h"
+#include "fhsm_crypto.h"
+
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/bio.h>
+
+#include <string.h>
+
+/* ---------------------------------------------------------------------------
+ * Helpers
+ * ------------------------------------------------------------------------- */
+static EVP_PKEY *load_priv(fhsm_slice_t pem_slice) {
+    BIO *b = BIO_new_mem_buf(pem_slice.data, (int)pem_slice.len);
+    if (!b) return NULL;
+    EVP_PKEY *pk = PEM_read_bio_PrivateKey(b, NULL, NULL, NULL);
+    BIO_free(b);
+    return pk;
+}
+
+static EVP_PKEY *load_pub(fhsm_slice_t pem_slice) {
+    BIO *b = BIO_new_mem_buf(pem_slice.data, (int)pem_slice.len);
+    if (!b) return NULL;
+    EVP_PKEY *pk = PEM_read_bio_PUBKEY(b, NULL, NULL, NULL);
+    BIO_free(b);
+    return pk;
+}
+
+static const char *digest_for_alg(fhsm_hash_t h) {
+    switch (h) {
+        case FHSM_HASH_SHA384: return "SHA2-384";
+        case FHSM_HASH_SHA512: return "SHA2-512";
+        default:               return "SHA2-256";
+    }
+}
+
+/* Sign using EVP_DigestSign with the supplied digest. */
+static fhsm_rv_t pkey_sign(EVP_PKEY *pk, const char *digest,
+                             fhsm_slice_t in, uint8_t *out, size_t *outlen)
+{
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) return FHSM_RV_HOST_MEMORY;
+
+    fhsm_rv_t rv = FHSM_RV_FUNCTION_FAILED;
+    if (EVP_DigestSignInit_ex(ctx, NULL, digest, NULL, NULL, pk, NULL) != 1)
+        goto out;
+    if (EVP_DigestSign(ctx, out, outlen, in.data, in.len) != 1)
+        goto out;
+    rv = FHSM_RV_OK;
+out:
+    EVP_MD_CTX_free(ctx);
+    return rv;
+}
+
+/* ---------------------------------------------------------------------------
+ * RSA-PSS sign (with embedded hash)
+ * ------------------------------------------------------------------------- */
+static fhsm_rv_t rsa_pss_sign(fhsm_hash_t h,
+                                const void *params, size_t plen,
+                                fhsm_slice_t in,
+                                uint8_t *out, size_t *outlen)
+{
+    fhsm_slice_t pem;
+    fhsm_rv_t rv = fhsm_tlv_find(params, plen, FHSM_TLV_PEM, &pem);
+    if (rv != FHSM_RV_OK) return rv;
+    EVP_PKEY *pk = load_priv(pem);
+    if (!pk) return FHSM_RV_KEY_HANDLE_INVALID;
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) { EVP_PKEY_free(pk); return FHSM_RV_HOST_MEMORY; }
+    EVP_PKEY_CTX *pkctx = NULL;
+    fhsm_rv_t r = FHSM_RV_FUNCTION_FAILED;
+    if (EVP_DigestSignInit_ex(ctx, &pkctx, digest_for_alg(h),
+                                NULL, NULL, pk, NULL) != 1) goto out;
+    if (EVP_PKEY_CTX_set_rsa_padding(pkctx, RSA_PKCS1_PSS_PADDING) <= 0) goto out;
+    if (EVP_DigestSign(ctx, out, outlen, in.data, in.len) != 1) goto out;
+    r = FHSM_RV_OK;
+out:
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pk);
+    return r;
+}
+
+fhsm_rv_t dispatch_rsa_pss_sha256(unsigned long s, unsigned long k,
+                                    const void *p, size_t pl,
+                                    fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pss_sign(FHSM_HASH_SHA256, p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pss_sha384(unsigned long s, unsigned long k,
+                                    const void *p, size_t pl,
+                                    fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pss_sign(FHSM_HASH_SHA384, p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pss_sha512(unsigned long s, unsigned long k,
+                                    const void *p, size_t pl,
+                                    fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pss_sign(FHSM_HASH_SHA512, p, pl, in, o, ol); }
+
+/* "Raw" RSA-PSS expects the caller to provide an already-hashed value.
+ * Until the mechanism param parser supports CK_RSA_PKCS_PSS_PARAMS, we
+ * default to SHA-256.  */
+fhsm_rv_t dispatch_rsa_pss(unsigned long s, unsigned long k,
+                            const void *p, size_t pl,
+                            fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pss_sign(FHSM_HASH_SHA256, p, pl, in, o, ol); }
+
+/* RSASSA-PKCS1-v1_5 over a digest of the message (PKCS#11 v3.2 §6.1.9).
+ *
+ * Reference implementations; the operation path is C_Sign, which reads the
+ * digest from mech_hash_name() and takes PKCS#1 v1.5 padding by default.
+ *
+ * These mechanisms were reachable through C_Sign long before they were
+ * advertised: mech_hash_name(), C_SignInit and C_VerifyInit all knew
+ * CKM_SHA256_RSA_PKCS and its siblings, but fhsm_mechanism_table[] did not, so
+ * C_GetMechanismList never mentioned them. pkcs11-check gates on the advertised
+ * list, so roughly 7,600 ACVP and Wycheproof vectors were reported as "not
+ * supported by the module" against an implementation that was there all along
+ * (reported by petrn, 2026-09-09).
+ *
+ * The inverse of the #14 defect, and the same lesson: the advertised set and
+ * the implemented set are two lists, and nothing keeps them equal on its own. */
+static fhsm_rv_t rsa_pkcs_sign(const char *digest,
+                                const void *params, size_t plen,
+                                fhsm_slice_t in, uint8_t *out, size_t *outlen)
+{
+    fhsm_slice_t pem;
+    fhsm_rv_t rv = fhsm_tlv_find(params, plen, FHSM_TLV_PEM, &pem);
+    if (rv != FHSM_RV_OK) return rv;
+    EVP_PKEY *pk = load_priv(pem);
+    if (!pk) return FHSM_RV_KEY_HANDLE_INVALID;
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) { EVP_PKEY_free(pk); return FHSM_RV_HOST_MEMORY; }
+    EVP_PKEY_CTX *pkctx = NULL;
+    fhsm_rv_t r = FHSM_RV_FUNCTION_FAILED;
+    EVP_MD *md = EVP_MD_fetch(NULL, digest, NULL);
+    if (!md) goto out;
+    if (EVP_DigestSignInit_ex(ctx, &pkctx, digest, NULL, NULL, pk, NULL) != 1) goto out;
+    if (EVP_PKEY_CTX_set_rsa_padding(pkctx, RSA_PKCS1_PADDING) <= 0) goto out;
+    if (EVP_DigestSign(ctx, out, outlen, in.data, in.len) != 1) goto out;
+    r = FHSM_RV_OK;
+out:
+    if (md) EVP_MD_free(md);
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pk);
+    return r;
+}
+
+/* SHA-1 stays non-approved: SP 800-131A rev. 2 forbids it for signature
+ * generation. It is reachable in the all-mechanisms profile only, which is what
+ * legacy callers need and what nist-approved-only must refuse. */
+fhsm_rv_t dispatch_sha1_rsa(unsigned long s, unsigned long k,
+                             const void *p, size_t pl,
+                             fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA1", p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pkcs_sha256(unsigned long s, unsigned long k,
+                                    const void *p, size_t pl,
+                                    fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA256", p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pkcs_sha384(unsigned long s, unsigned long k,
+                                    const void *p, size_t pl,
+                                    fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA384", p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pkcs_sha512(unsigned long s, unsigned long k,
+                                    const void *p, size_t pl,
+                                    fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA512", p, pl, in, o, ol); }
+
+/* SHA-224 and the SHA-3 family. Unlike the three above, these were not
+ * reachable through C_Sign either: mech_hash_name() did not know them and
+ * C_SignInit refused them. Both were extended alongside this. */
+fhsm_rv_t dispatch_rsa_pkcs_sha224(unsigned long s, unsigned long k,
+                                    const void *p, size_t pl,
+                                    fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA224", p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pkcs_sha3_224(unsigned long s, unsigned long k,
+                                      const void *p, size_t pl,
+                                      fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA3-224", p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pkcs_sha3_256(unsigned long s, unsigned long k,
+                                      const void *p, size_t pl,
+                                      fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA3-256", p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pkcs_sha3_384(unsigned long s, unsigned long k,
+                                      const void *p, size_t pl,
+                                      fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA3-384", p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_rsa_pkcs_sha3_512(unsigned long s, unsigned long k,
+                                      const void *p, size_t pl,
+                                      fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return rsa_pkcs_sign("SHA3-512", p, pl, in, o, ol); }
+
+/* ---------------------------------------------------------------------------
+ * RSA-OAEP encrypt
+ * ------------------------------------------------------------------------- */
+fhsm_rv_t dispatch_rsa_oaep(unsigned long s, unsigned long k,
+                              const void *params, size_t plen,
+                              fhsm_slice_t in, uint8_t *out, size_t *outlen)
+{
+    (void)s; (void)k;
+    fhsm_slice_t pem;
+    fhsm_rv_t rv = fhsm_tlv_find(params, plen, FHSM_TLV_PEM_PUB, &pem);
+    if (rv != FHSM_RV_OK) return rv;
+    EVP_PKEY *pk = load_pub(pem);
+    if (!pk) return FHSM_RV_KEY_HANDLE_INVALID;
+
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pk, NULL);
+    fhsm_rv_t r = FHSM_RV_FUNCTION_FAILED;
+    if (!ctx) { EVP_PKEY_free(pk); return FHSM_RV_HOST_MEMORY; }
+    if (EVP_PKEY_encrypt_init(ctx) <= 0) goto out;
+    if (EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) goto out;
+    if (EVP_PKEY_encrypt(ctx, out, outlen, in.data, in.len) <= 0) goto out;
+    r = FHSM_RV_OK;
+out:
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(pk);
+    return r;
+}
+
+/* ---- RSA encryption with legacy padding (non-FIPS ; all-mechanisms only).
+ * PKCS#1 v1.5 (RSA_PKCS1_PADDING) and raw / X.509 (RSA_NO_PADDING).
+ * Reference implementations ; the operation path lives in
+ * C_Encrypt/C_Decrypt. #125. ---- */
+static fhsm_rv_t rsa_enc_pad(const void *params, size_t plen,
+                              fhsm_slice_t in, uint8_t *out, size_t *outlen,
+                              int padding)
+{
+    fhsm_slice_t pem;
+    fhsm_rv_t rv = fhsm_tlv_find(params, plen, FHSM_TLV_PEM_PUB, &pem);
+    if (rv != FHSM_RV_OK) return rv;
+    EVP_PKEY *pk = load_pub(pem);
+    if (!pk) return FHSM_RV_KEY_HANDLE_INVALID;
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(pk, NULL);
+    fhsm_rv_t r = FHSM_RV_FUNCTION_FAILED;
+    if (!ctx) { EVP_PKEY_free(pk); return FHSM_RV_HOST_MEMORY; }
+    if (EVP_PKEY_encrypt_init(ctx) <= 0) goto out;
+    if (EVP_PKEY_CTX_set_rsa_padding(ctx, padding) <= 0) goto out;
+    if (EVP_PKEY_encrypt(ctx, out, outlen, in.data, in.len) <= 0) goto out;
+    r = FHSM_RV_OK;
+out:
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(pk);
+    return r;
+}
+
+fhsm_rv_t dispatch_rsa_pkcs(unsigned long s, unsigned long k,
+                             const void *params, size_t plen,
+                             fhsm_slice_t in, uint8_t *out, size_t *outlen)
+{
+    (void)s; (void)k;
+    return rsa_enc_pad(params, plen, in, out, outlen, RSA_PKCS1_PADDING);
+}
+
+fhsm_rv_t dispatch_rsa_x509(unsigned long s, unsigned long k,
+                             const void *params, size_t plen,
+                             fhsm_slice_t in, uint8_t *out, size_t *outlen)
+{
+    (void)s; (void)k;
+    return rsa_enc_pad(params, plen, in, out, outlen, RSA_NO_PADDING);
+}
+
+/* ---------------------------------------------------------------------------
+ * RSA keypair generation
+ * ------------------------------------------------------------------------- */
+fhsm_rv_t dispatch_rsa_keypair(unsigned long s, unsigned long k,
+                                 const void *params, size_t plen,
+                                 fhsm_slice_t in,
+                                 uint8_t *out, size_t *outlen)
+{
+    (void)s; (void)k; (void)in;
+    /* Key size: 2 BE bytes in FHSM_TLV_KEY_BITS, defaulting to 3072. */
+    size_t bits = 3072;
+    fhsm_slice_t hint;
+    if (fhsm_tlv_find(params, plen, FHSM_TLV_KEY_BITS, &hint) == FHSM_RV_OK
+        && hint.len == 2) {
+        bits = ((size_t)hint.data[0] << 8) | hint.data[1];
+    }
+    if (bits < 2048 || bits > 4096) return FHSM_RV_KEY_SIZE_RANGE;
+
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(NULL, "RSA", NULL);
+    if (!ctx) return FHSM_RV_HOST_MEMORY;
+    EVP_PKEY *pk = NULL;
+    fhsm_rv_t rv = FHSM_RV_FUNCTION_FAILED;
+    if (EVP_PKEY_keygen_init(ctx) <= 0) goto out;
+    if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, (int)bits) <= 0) goto out;
+    if (EVP_PKEY_generate(ctx, &pk) <= 0) goto out;
+
+    /* Serialize private key as PEM into *out. */
+    BIO *b = BIO_new(BIO_s_mem());
+    if (!b) goto out;
+    if (PEM_write_bio_PrivateKey(b, pk, NULL, NULL, 0, NULL, NULL) != 1) {
+        BIO_free(b); goto out;
+    }
+    char *data = NULL;
+    long n = BIO_get_mem_data(b, &data);
+    if (n < 0 || (size_t)n > *outlen) { BIO_free(b); goto out; }
+    memcpy(out, data, (size_t)n);
+    *outlen = (size_t)n;
+    BIO_free(b);
+    rv = FHSM_RV_OK;
+out:
+    if (pk) EVP_PKEY_free(pk);
+    EVP_PKEY_CTX_free(ctx);
+    return rv;
+}
+
+/* ---------------------------------------------------------------------------
+ * ECDSA sign (with embedded hash)
+ * ------------------------------------------------------------------------- */
+static fhsm_rv_t ec_keypair_named(const char *curve_name,
+                                    uint8_t *out, size_t *outlen)
+{
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+    if (!ctx) return FHSM_RV_HOST_MEMORY;
+    EVP_PKEY *pk = NULL;
+    fhsm_rv_t rv = FHSM_RV_FUNCTION_FAILED;
+    OSSL_PARAM p[2] = {
+        OSSL_PARAM_construct_utf8_string("group", (char*)curve_name, 0),
+        OSSL_PARAM_construct_end()
+    };
+    if (EVP_PKEY_keygen_init(ctx) <= 0) goto out;
+    if (EVP_PKEY_CTX_set_params(ctx, p) <= 0) goto out;
+    if (EVP_PKEY_generate(ctx, &pk) <= 0) goto out;
+
+    BIO *b = BIO_new(BIO_s_mem());
+    if (!b) goto out;
+    if (PEM_write_bio_PrivateKey(b, pk, NULL, NULL, 0, NULL, NULL) != 1) {
+        BIO_free(b); goto out;
+    }
+    char *data = NULL;
+    long n = BIO_get_mem_data(b, &data);
+    if (n >= 0 && (size_t)n <= *outlen) {
+        memcpy(out, data, (size_t)n);
+        *outlen = (size_t)n;
+        rv = FHSM_RV_OK;
+    }
+    BIO_free(b);
+out:
+    if (pk) EVP_PKEY_free(pk);
+    EVP_PKEY_CTX_free(ctx);
+    return rv;
+}
+
+fhsm_rv_t dispatch_ec_keypair(unsigned long s, unsigned long k,
+                                const void *params, size_t plen,
+                                fhsm_slice_t in,
+                                uint8_t *out, size_t *outlen)
+{
+    (void)s; (void)k; (void)in;
+    fhsm_slice_t cv;
+    if (fhsm_tlv_find(params, plen, FHSM_TLV_CURVE, &cv) != FHSM_RV_OK)
+        return FHSM_RV_ARGUMENTS_BAD;
+    char curve[16] = {0};
+    size_t cn = cv.len < sizeof(curve) - 1 ? cv.len : sizeof(curve) - 1;
+    memcpy(curve, cv.data, cn);
+    return ec_keypair_named(curve, out, outlen);
+}
+
+static fhsm_rv_t ecdsa_sign(fhsm_hash_t h,
+                              const void *params, size_t plen,
+                              fhsm_slice_t in, uint8_t *out, size_t *outlen)
+{
+    fhsm_slice_t pem;
+    fhsm_rv_t rv = fhsm_tlv_find(params, plen, FHSM_TLV_PEM, &pem);
+    if (rv != FHSM_RV_OK) return rv;
+    EVP_PKEY *pk = load_priv(pem);
+    if (!pk) return FHSM_RV_KEY_HANDLE_INVALID;
+    rv = pkey_sign(pk, digest_for_alg(h), in, out, outlen);
+    EVP_PKEY_free(pk);
+    return rv;
+}
+
+fhsm_rv_t dispatch_ecdsa_sha256(unsigned long s, unsigned long k,
+                                  const void *p, size_t pl,
+                                  fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return ecdsa_sign(FHSM_HASH_SHA256, p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_ecdsa_sha384(unsigned long s, unsigned long k,
+                                  const void *p, size_t pl,
+                                  fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return ecdsa_sign(FHSM_HASH_SHA384, p, pl, in, o, ol); }
+
+fhsm_rv_t dispatch_ecdsa_sha512(unsigned long s, unsigned long k,
+                                  const void *p, size_t pl,
+                                  fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return ecdsa_sign(FHSM_HASH_SHA512, p, pl, in, o, ol); }
+
+/* "Raw" ECDSA : caller supplies pre-hashed input. Default to SHA-256. */
+fhsm_rv_t dispatch_ecdsa(unsigned long s, unsigned long k,
+                          const void *p, size_t pl,
+                          fhsm_slice_t in, uint8_t *o, size_t *ol)
+{ (void)s; (void)k; return ecdsa_sign(FHSM_HASH_SHA256, p, pl, in, o, ol); }
+
+/* ---------------------------------------------------------------------------
+ * EdDSA sign (Ed25519 / Ed448)
+ * ------------------------------------------------------------------------- */
+fhsm_rv_t dispatch_eddsa(unsigned long s, unsigned long k,
+                          const void *params, size_t plen,
+                          fhsm_slice_t in, uint8_t *out, size_t *outlen)
+{
+    (void)s; (void)k;
+    fhsm_slice_t pem;
+    fhsm_rv_t rv = fhsm_tlv_find(params, plen, FHSM_TLV_PEM, &pem);
+    if (rv != FHSM_RV_OK) return rv;
+    EVP_PKEY *pk = load_priv(pem);
+    if (!pk) return FHSM_RV_KEY_HANDLE_INVALID;
+
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) { EVP_PKEY_free(pk); return FHSM_RV_HOST_MEMORY; }
+    if (EVP_DigestSignInit_ex(ctx, NULL, NULL, NULL, NULL, pk, NULL) != 1) {
+        EVP_MD_CTX_free(ctx); EVP_PKEY_free(pk); return FHSM_RV_FUNCTION_FAILED;
+    }
+    rv = (EVP_DigestSign(ctx, out, outlen, in.data, in.len) == 1)
+          ? FHSM_RV_OK : FHSM_RV_FUNCTION_FAILED;
+    EVP_MD_CTX_free(ctx);
+    EVP_PKEY_free(pk);
+    return rv;
+}
+
+/* ---------------------------------------------------------------------------
+ * ECDH derive
+ * ------------------------------------------------------------------------- */
+static fhsm_rv_t ecdh_derive(const void *params, size_t plen,
+                               uint8_t *out, size_t *outlen)
+{
+    fhsm_slice_t priv_pem, peer_pem;
+    fhsm_rv_t rv;
+    if ((rv = fhsm_tlv_find(params, plen, FHSM_TLV_PEM,     &priv_pem)) != FHSM_RV_OK) return rv;
+    if ((rv = fhsm_tlv_find(params, plen, FHSM_TLV_PEM_PUB, &peer_pem)) != FHSM_RV_OK) return rv;
+    EVP_PKEY *priv = load_priv(priv_pem);
+    EVP_PKEY *peer = load_pub(peer_pem);
+    if (!priv || !peer) {
+        if (priv) EVP_PKEY_free(priv);
+        if (peer) EVP_PKEY_free(peer);
+        return FHSM_RV_KEY_HANDLE_INVALID;
+    }
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(priv, NULL);
+    rv = FHSM_RV_FUNCTION_FAILED;
+    if (!ctx) goto out;
+    if (EVP_PKEY_derive_init(ctx) <= 0) goto out;
+    if (EVP_PKEY_derive_set_peer(ctx, peer) <= 0) goto out;
+    if (EVP_PKEY_derive(ctx, out, outlen) <= 0) goto out;
+    rv = FHSM_RV_OK;
+out:
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(priv);
+    EVP_PKEY_free(peer);
+    return rv;
+}
+
+fhsm_rv_t dispatch_ecdh1(unsigned long s, unsigned long k,
+                          const void *p, size_t pl, fhsm_slice_t in,
+                          uint8_t *o, size_t *ol)
+{ (void)s; (void)k; (void)in; return ecdh_derive(p, pl, o, ol); }
+
+/* dispatch_x25519 / dispatch_x448 removed 2026-09-14 with
+ * CKM_X25519_DERIVE (0x1052) and CKM_X448_DERIVE (0x1054), which are
+ * CKM_ECMQV_DERIVE's and CKM_RSA_AES_KEY_WRAP's code points. Both were
+ * one-line facades over ecdh_derive(), identical to dispatch_ecdh1 above,
+ * so nothing is lost: Montgomery agreement reaches C_DeriveKey through
+ * CKM_ECDH1_DERIVE, which is how PKCS#11 expresses it. */
+
+/* ---------------------------------------------------------------------------
+ * ECDH1 with cofactor multiplication (PKCS#11 §6.4.6.3). Same wire-
+ * level operation as ECDH1_DERIVE for prime-order curves (cofactor h=1
+ * for P-256/P-384/P-521) ; the cofactor multiplication only differs
+ * for composite-order curves which are not approved in FIPS mode. We
+ * delegate to ecdh_derive and let OpenSSL handle the cofactor flag if
+ * the curve requires it.
+ * ----------------------------------------------------------------------- */
+fhsm_rv_t dispatch_ecdh1_cofactor(unsigned long s, unsigned long k,
+                                    const void *p, size_t pl, fhsm_slice_t in,
+                                    uint8_t *o, size_t *ol)
+{ (void)s; (void)k; (void)in; return ecdh_derive(p, pl, o, ol); }
+
+fhsm_rv_t dispatch_eddsa_keypair(unsigned long s, unsigned long k,
+                                   const void *p, size_t pl, fhsm_slice_t in,
+                                   uint8_t *o, size_t *ol)
+{ (void)s;(void)k;(void)p;(void)pl;(void)in;
+  return ec_keypair_named("Ed25519", o, ol); }
+
+fhsm_rv_t dispatch_ecm_keypair(unsigned long s, unsigned long k,
+                                 const void *p, size_t pl, fhsm_slice_t in,
+                                 uint8_t *o, size_t *ol)
+{ (void)s;(void)k;(void)p;(void)pl;(void)in;
+  return ec_keypair_named("X25519", o, ol); }

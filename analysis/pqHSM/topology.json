@@ -1,0 +1,1665 @@
+{
+ "system": "pqHSM (FreeHSM 2.6.0)",
+ "root": {
+  "id": "sys",
+  "name": "pqHSM (FreeHSM 2.6.0)",
+  "kind": "system",
+  "children": [
+   {
+    "id": "dom:D1",
+    "name": "D1 PKCS#11 API & object model",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "src/fhsm_create_attrs.c",
+      "name": "fhsm_create_attrs.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 267,
+      "file": "src/fhsm_create_attrs.c"
+     },
+     {
+      "id": "src/fhsm_ecdsa_raw.c",
+      "name": "fhsm_ecdsa_raw.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 50,
+      "file": "src/fhsm_ecdsa_raw.c"
+     },
+     {
+      "id": "src/fhsm_pkcs11.c",
+      "name": "fhsm_pkcs11.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 8010,
+      "file": "src/fhsm_pkcs11.c"
+     },
+     {
+      "id": "src/fhsm_pq_params.c",
+      "name": "fhsm_pq_params.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 29,
+      "file": "src/fhsm_pq_params.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D2",
+    "name": "D2 Lifecycle, sessions, concurrency",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "src/fhsm_apilock.c",
+      "name": "fhsm_apilock.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 113,
+      "file": "src/fhsm_apilock.c"
+     },
+     {
+      "id": "src/fhsm_session.c",
+      "name": "fhsm_session.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 160,
+      "file": "src/fhsm_session.c"
+     },
+     {
+      "id": "src/fhsm_state.c",
+      "name": "fhsm_state.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 74,
+      "file": "src/fhsm_state.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D3",
+    "name": "D3 Token store + TPM sealing",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "src/fhsm_token.c",
+      "name": "fhsm_token.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 1784,
+      "file": "src/fhsm_token.c"
+     },
+     {
+      "id": "src/fhsm_token_tpm.c",
+      "name": "fhsm_token_tpm.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 80,
+      "file": "src/fhsm_token_tpm.c"
+     },
+     {
+      "id": "src/fhsm_tpm.c",
+      "name": "fhsm_tpm.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 178,
+      "file": "src/fhsm_tpm.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D4",
+    "name": "D4 Crypto core, DRBG, secure heap, config",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "src/fhsm_conf.c",
+      "name": "fhsm_conf.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 57,
+      "file": "src/fhsm_conf.c"
+     },
+     {
+      "id": "src/fhsm_crypto.c",
+      "name": "fhsm_crypto.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 325,
+      "file": "src/fhsm_crypto.c"
+     },
+     {
+      "id": "src/fhsm_drbg.c",
+      "name": "fhsm_drbg.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 244,
+      "file": "src/fhsm_drbg.c"
+     },
+     {
+      "id": "src/fhsm_memory.c",
+      "name": "fhsm_memory.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 129,
+      "file": "src/fhsm_memory.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D5",
+    "name": "D5 Mechanism registry & dispatch",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "scripts/gen_p11_thunks.py",
+      "name": "gen_p11_thunks.py",
+      "kind": "module",
+      "language": "python",
+      "loc": 752,
+      "file": "scripts/gen_p11_thunks.py"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_aes.c",
+      "name": "fhsm_dispatch_aes.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 336,
+      "file": "src/dispatch/fhsm_dispatch_aes.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_common.c",
+      "name": "fhsm_dispatch_common.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 40,
+      "file": "src/dispatch/fhsm_dispatch_common.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_composite.c",
+      "name": "fhsm_dispatch_composite.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 54,
+      "file": "src/dispatch/fhsm_dispatch_composite.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_concat.c",
+      "name": "fhsm_dispatch_concat.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 63,
+      "file": "src/dispatch/fhsm_dispatch_concat.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_digest.c",
+      "name": "fhsm_dispatch_digest.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 84,
+      "file": "src/dispatch/fhsm_dispatch_digest.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_hmac.c",
+      "name": "fhsm_dispatch_hmac.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 29,
+      "file": "src/dispatch/fhsm_dispatch_hmac.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_hybrid.c",
+      "name": "fhsm_dispatch_hybrid.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 194,
+      "file": "src/dispatch/fhsm_dispatch_hybrid.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_kdf.c",
+      "name": "fhsm_dispatch_kdf.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 111,
+      "file": "src/dispatch/fhsm_dispatch_kdf.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_legacy.c",
+      "name": "fhsm_dispatch_legacy.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 38,
+      "file": "src/dispatch/fhsm_dispatch_legacy.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_pkey.c",
+      "name": "fhsm_dispatch_pkey.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 378,
+      "file": "src/dispatch/fhsm_dispatch_pkey.c"
+     },
+     {
+      "id": "src/dispatch/fhsm_dispatch_pq.c",
+      "name": "fhsm_dispatch_pq.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 204,
+      "file": "src/dispatch/fhsm_dispatch_pq.c"
+     },
+     {
+      "id": "src/fhsm_mode.c",
+      "name": "fhsm_mode.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 81,
+      "file": "src/fhsm_mode.c"
+     },
+     {
+      "id": "src/gen/fhsm_dispatch.c",
+      "name": "fhsm_dispatch.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 858,
+      "file": "src/gen/fhsm_dispatch.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D6",
+    "name": "D6 Self-tests & integrity",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "kat/cavp_extended.c",
+      "name": "cavp_extended.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 1376,
+      "file": "kat/cavp_extended.c"
+     },
+     {
+      "id": "kat/fhsm_kat_rsp.c",
+      "name": "fhsm_kat_rsp.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 386,
+      "file": "kat/fhsm_kat_rsp.c"
+     },
+     {
+      "id": "kat/fhsm_kat_vectors.c",
+      "name": "fhsm_kat_vectors.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 241,
+      "file": "kat/fhsm_kat_vectors.c"
+     },
+     {
+      "id": "scripts/sign_module.sh",
+      "name": "sign_module.sh",
+      "kind": "module",
+      "language": "shell",
+      "loc": 51,
+      "file": "scripts/sign_module.sh"
+     },
+     {
+      "id": "src/fhsm_integrity.c",
+      "name": "fhsm_integrity.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 199,
+      "file": "src/fhsm_integrity.c"
+     },
+     {
+      "id": "src/fhsm_pairwise.c",
+      "name": "fhsm_pairwise.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 148,
+      "file": "src/fhsm_pairwise.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D7",
+    "name": "D7 Audit trail",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "src/fhsm_audit.c",
+      "name": "fhsm_audit.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 499,
+      "file": "src/fhsm_audit.c"
+     },
+     {
+      "id": "tools/freehsm_audit.c",
+      "name": "freehsm_audit.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 279,
+      "file": "tools/freehsm_audit.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D8",
+    "name": "D8 Composite / PKI encoding / revocation",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "src/fhsm_composite.c",
+      "name": "fhsm_composite.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 2150,
+      "file": "src/fhsm_composite.c"
+     },
+     {
+      "id": "src/fhsm_revocation.c",
+      "name": "fhsm_revocation.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 455,
+      "file": "src/fhsm_revocation.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D9",
+    "name": "D9 HTTP signing & OCSP service",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "route:private/certificates",
+      "name": "/certificates (private listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "route:private/health",
+      "name": "/health (private listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "route:private/ocsp",
+      "name": "/ocsp (private listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "route:private/sign",
+      "name": "/sign (private listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "route:private/token",
+      "name": "/token (private listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "route:private/verify",
+      "name": "/verify (private listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "route:public/certificates",
+      "name": "/certificates (public listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "route:public/health",
+      "name": "/health (public listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "route:public/ocsp",
+      "name": "/ocsp (public listener)",
+      "kind": "screen"
+     },
+     {
+      "id": "service/fhsm_service.c",
+      "name": "fhsm_service.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 1659,
+      "file": "service/fhsm_service.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D10",
+    "name": "D10 PKI CLI tools & GTK GUI",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "gui:CA",
+      "name": "GUI tab: CA",
+      "kind": "screen"
+     },
+     {
+      "id": "gui:Certificates",
+      "name": "GUI tab: Certificates",
+      "kind": "screen"
+     },
+     {
+      "id": "gui:Encryption",
+      "name": "GUI tab: Encryption",
+      "kind": "screen"
+     },
+     {
+      "id": "gui:Issue",
+      "name": "GUI tab: Issue",
+      "kind": "screen"
+     },
+     {
+      "id": "gui:Revocation",
+      "name": "GUI tab: Revocation",
+      "kind": "screen"
+     },
+     {
+      "id": "gui:Revoke",
+      "name": "GUI tab: Revoke",
+      "kind": "screen"
+     },
+     {
+      "id": "gui:Signing",
+      "name": "GUI tab: Signing",
+      "kind": "screen"
+     },
+     {
+      "id": "gui:Token",
+      "name": "GUI tab: Token",
+      "kind": "screen"
+     },
+     {
+      "id": "tools/cms_env.c",
+      "name": "cms_env.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 349,
+      "file": "tools/cms_env.c"
+     },
+     {
+      "id": "tools/fhsm_ca.c",
+      "name": "fhsm_ca.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 334,
+      "file": "tools/fhsm_ca.c"
+     },
+     {
+      "id": "tools/fhsm_crypt.c",
+      "name": "fhsm_crypt.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 192,
+      "file": "tools/fhsm_crypt.c"
+     },
+     {
+      "id": "tools/fhsm_csr.c",
+      "name": "fhsm_csr.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 97,
+      "file": "tools/fhsm_csr.c"
+     },
+     {
+      "id": "tools/fhsm_gui.c",
+      "name": "fhsm_gui.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 2675,
+      "file": "tools/fhsm_gui.c"
+     },
+     {
+      "id": "tools/fhsm_sign.c",
+      "name": "fhsm_sign.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 238,
+      "file": "tools/fhsm_sign.c"
+     },
+     {
+      "id": "tools/fhsm_token.c",
+      "name": "fhsm_token.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 115,
+      "file": "tools/fhsm_token.c"
+     },
+     {
+      "id": "tools/p11_util.h",
+      "name": "p11_util.h",
+      "kind": "module",
+      "language": "c",
+      "loc": 402,
+      "file": "tools/p11_util.h"
+     },
+     {
+      "id": "tools/pkiops.c",
+      "name": "pkiops.c",
+      "kind": "module",
+      "language": "c",
+      "loc": 2076,
+      "file": "tools/pkiops.c"
+     }
+    ]
+   },
+   {
+    "id": "dom:D11",
+    "name": "D11 Build, deploy & verification",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "job:ci",
+      "name": "CI (10 GitHub workflows)",
+      "kind": "job"
+     },
+     {
+      "id": "job:generate",
+      "name": "make generate",
+      "kind": "job"
+     },
+     {
+      "id": "job:install",
+      "name": "make install",
+      "kind": "job"
+     },
+     {
+      "id": "job:integrity",
+      "name": "make integrity (sign)",
+      "kind": "job"
+     },
+     {
+      "id": "job:systemd",
+      "name": "systemd fhsm-service.service",
+      "kind": "job"
+     },
+     {
+      "id": "job:tests",
+      "name": "make tests",
+      "kind": "job"
+     }
+    ]
+   },
+   {
+    "id": "dom:data",
+    "name": "Data stores",
+    "kind": "domain",
+    "children": [
+     {
+      "id": "ds:audit_key",
+      "name": "audit.key / audit.key.tpm",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:audit_log",
+      "name": "audit log (HMAC-chained JSON lines)",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:cavp_vectors",
+      "name": "CAVP .rsp vectors",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:conf",
+      "name": "freehsm.conf",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:module_digest",
+      "name": ".fhsm_digest (module signature)",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:pin_credential",
+      "name": "service PIN credential",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:pki_files",
+      "name": "PKI files (certs, CSRs, CRLs, signatures)",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:refusal_budget",
+      "name": "service refusal budget",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:revocation_db",
+      "name": "revocation DB",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:service_certs",
+      "name": "CA + OCSP responder certificates",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:service_policy",
+      "name": "service signing policy",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:token_file",
+      "name": "slotN.tok token file",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:token_tpm_blob",
+      "name": "slotN.tok.tpm sealed DEK",
+      "kind": "datastore"
+     },
+     {
+      "id": "ds:tpm",
+      "name": "TPM via tpm2 CLI",
+      "kind": "datastore"
+     }
+    ]
+   }
+  ]
+ },
+ "edges": [
+  {
+   "source": "gui:CA",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "GTK notebook tab"
+  },
+  {
+   "source": "gui:Certificates",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "GTK notebook tab"
+  },
+  {
+   "source": "gui:Encryption",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "GTK notebook tab"
+  },
+  {
+   "source": "gui:Issue",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "GTK notebook tab"
+  },
+  {
+   "source": "gui:Revocation",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "GTK notebook tab"
+  },
+  {
+   "source": "gui:Revoke",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "GTK notebook tab"
+  },
+  {
+   "source": "gui:Signing",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "GTK notebook tab"
+  },
+  {
+   "source": "gui:Token",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "GTK notebook tab"
+  },
+  {
+   "source": "job:ci",
+   "target": "job:tests",
+   "kind": "call"
+  },
+  {
+   "source": "job:generate",
+   "target": "scripts/gen_p11_thunks.py",
+   "kind": "call"
+  },
+  {
+   "source": "job:install",
+   "target": "ds:cavp_vectors",
+   "kind": "write",
+   "label": "copies vectors"
+  },
+  {
+   "source": "job:install",
+   "target": "ds:conf",
+   "kind": "write",
+   "label": "writes default conf"
+  },
+  {
+   "source": "job:integrity",
+   "target": "scripts/sign_module.sh",
+   "kind": "call"
+  },
+  {
+   "source": "job:systemd",
+   "target": "ds:pin_credential",
+   "kind": "write",
+   "label": "LoadCredentialEncrypted"
+  },
+  {
+   "source": "job:systemd",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "ExecStart"
+  },
+  {
+   "source": "job:tests",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "shell harness"
+  },
+  {
+   "source": "job:tests",
+   "target": "src/fhsm_pkcs11.c",
+   "kind": "dispatch",
+   "label": "83 C tests drive the ABI"
+  },
+  {
+   "source": "job:tests",
+   "target": "tools/fhsm_ca.c",
+   "kind": "dispatch",
+   "label": "shell harness"
+  },
+  {
+   "source": "job:tests",
+   "target": "tools/fhsm_crypt.c",
+   "kind": "dispatch",
+   "label": "shell harness"
+  },
+  {
+   "source": "job:tests",
+   "target": "tools/fhsm_csr.c",
+   "kind": "dispatch",
+   "label": "shell harness"
+  },
+  {
+   "source": "job:tests",
+   "target": "tools/fhsm_gui.c",
+   "kind": "dispatch",
+   "label": "shell harness"
+  },
+  {
+   "source": "job:tests",
+   "target": "tools/fhsm_sign.c",
+   "kind": "dispatch",
+   "label": "shell harness"
+  },
+  {
+   "source": "job:tests",
+   "target": "tools/fhsm_token.c",
+   "kind": "dispatch",
+   "label": "shell harness"
+  },
+  {
+   "source": "kat/cavp_extended.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "kat/fhsm_kat_vectors.c",
+   "target": "ds:cavp_vectors",
+   "kind": "read"
+  },
+  {
+   "source": "kat/fhsm_kat_vectors.c",
+   "target": "kat/cavp_extended.c",
+   "kind": "call"
+  },
+  {
+   "source": "kat/fhsm_kat_vectors.c",
+   "target": "src/fhsm_crypto.c",
+   "kind": "call"
+  },
+  {
+   "source": "kat/fhsm_kat_vectors.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "route:private/certificates",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve"
+  },
+  {
+   "source": "route:private/health",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve"
+  },
+  {
+   "source": "route:private/ocsp",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve"
+  },
+  {
+   "source": "route:private/sign",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve"
+  },
+  {
+   "source": "route:private/token",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve"
+  },
+  {
+   "source": "route:private/verify",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve"
+  },
+  {
+   "source": "route:public/certificates",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve_public"
+  },
+  {
+   "source": "route:public/health",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve_public"
+  },
+  {
+   "source": "route:public/ocsp",
+   "target": "service/fhsm_service.c",
+   "kind": "dispatch",
+   "label": "router in serve_public"
+  },
+  {
+   "source": "scripts/gen_p11_thunks.py",
+   "target": "src/gen/fhsm_dispatch.c",
+   "kind": "write",
+   "label": "generates"
+  },
+  {
+   "source": "scripts/sign_module.sh",
+   "target": "ds:module_digest",
+   "kind": "write"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "ds:pin_credential",
+   "kind": "read"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "ds:refusal_budget",
+   "kind": "read"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "ds:refusal_budget",
+   "kind": "write"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "ds:service_certs",
+   "kind": "read"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "ds:service_policy",
+   "kind": "read"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "src/fhsm_audit.c",
+   "kind": "call"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "src/fhsm_pkcs11.c",
+   "kind": "call"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "src/fhsm_revocation.c",
+   "kind": "call"
+  },
+  {
+   "source": "service/fhsm_service.c",
+   "target": "src/gen/fhsm_dispatch.c",
+   "kind": "call",
+   "label": "reads fhsm_build_fips_strict"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_aes.c",
+   "target": "src/dispatch/fhsm_dispatch_common.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_aes.c",
+   "target": "src/fhsm_crypto.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_aes.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_composite.c",
+   "target": "src/dispatch/fhsm_dispatch_common.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_composite.c",
+   "target": "src/fhsm_composite.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_concat.c",
+   "target": "src/dispatch/fhsm_dispatch_common.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_hybrid.c",
+   "target": "src/dispatch/fhsm_dispatch_common.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_hybrid.c",
+   "target": "src/fhsm_audit.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_hybrid.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_kdf.c",
+   "target": "src/dispatch/fhsm_dispatch_common.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_kdf.c",
+   "target": "src/fhsm_crypto.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_pkey.c",
+   "target": "src/dispatch/fhsm_dispatch_common.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_pq.c",
+   "target": "src/dispatch/fhsm_dispatch_common.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/dispatch/fhsm_dispatch_pq.c",
+   "target": "src/fhsm_audit.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_apilock.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "ds:audit_key",
+   "kind": "read"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "ds:audit_key",
+   "kind": "write"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "ds:audit_log",
+   "kind": "write"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "src/fhsm_crypto.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "src/fhsm_drbg.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "src/fhsm_state.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "src/fhsm_token_tpm.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_audit.c",
+   "target": "src/fhsm_tpm.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_conf.c",
+   "target": "ds:conf",
+   "kind": "read"
+  },
+  {
+   "source": "src/fhsm_crypto.c",
+   "target": "kat/fhsm_kat_vectors.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_crypto.c",
+   "target": "src/fhsm_drbg.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_crypto.c",
+   "target": "src/fhsm_integrity.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_crypto.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_crypto.c",
+   "target": "src/fhsm_state.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_drbg.c",
+   "target": "src/fhsm_state.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_integrity.c",
+   "target": "ds:module_digest",
+   "kind": "read"
+  },
+  {
+   "source": "src/fhsm_integrity.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_integrity.c",
+   "target": "src/fhsm_state.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_memory.c",
+   "target": "src/fhsm_conf.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_mode.c",
+   "target": "src/fhsm_conf.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_apilock.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_audit.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_composite.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_create_attrs.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_crypto.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_ecdsa_raw.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_pairwise.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_pq_params.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_session.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_state.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/fhsm_token.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_pkcs11.c",
+   "target": "src/gen/fhsm_dispatch.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_revocation.c",
+   "target": "ds:revocation_db",
+   "kind": "read"
+  },
+  {
+   "source": "src/fhsm_revocation.c",
+   "target": "ds:revocation_db",
+   "kind": "write"
+  },
+  {
+   "source": "src/fhsm_revocation.c",
+   "target": "src/fhsm_composite.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_session.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_session.c",
+   "target": "src/fhsm_token.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_state.c",
+   "target": "src/fhsm_audit.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_token.c",
+   "target": "ds:token_file",
+   "kind": "read"
+  },
+  {
+   "source": "src/fhsm_token.c",
+   "target": "ds:token_file",
+   "kind": "write"
+  },
+  {
+   "source": "src/fhsm_token.c",
+   "target": "src/fhsm_apilock.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_token.c",
+   "target": "src/fhsm_audit.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_token.c",
+   "target": "src/fhsm_crypto.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_token.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_token.c",
+   "target": "src/fhsm_token_tpm.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_token_tpm.c",
+   "target": "ds:token_tpm_blob",
+   "kind": "read"
+  },
+  {
+   "source": "src/fhsm_token_tpm.c",
+   "target": "ds:token_tpm_blob",
+   "kind": "write"
+  },
+  {
+   "source": "src/fhsm_token_tpm.c",
+   "target": "src/fhsm_memory.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_token_tpm.c",
+   "target": "src/fhsm_tpm.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/fhsm_tpm.c",
+   "target": "ds:tpm",
+   "kind": "read"
+  },
+  {
+   "source": "src/fhsm_tpm.c",
+   "target": "ds:tpm",
+   "kind": "write"
+  },
+  {
+   "source": "src/gen/fhsm_dispatch.c",
+   "target": "src/dispatch/fhsm_dispatch_legacy.c",
+   "kind": "call"
+  },
+  {
+   "source": "src/gen/fhsm_dispatch.c",
+   "target": "src/dispatch/fhsm_dispatch_legacy.c",
+   "kind": "dispatch",
+   "label": "function pointer"
+  },
+  {
+   "source": "src/gen/fhsm_dispatch.c",
+   "target": "src/fhsm_mode.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_ca.c",
+   "target": "ds:pki_files",
+   "kind": "read"
+  },
+  {
+   "source": "tools/fhsm_ca.c",
+   "target": "ds:pki_files",
+   "kind": "write"
+  },
+  {
+   "source": "tools/fhsm_ca.c",
+   "target": "src/fhsm_revocation.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_ca.c",
+   "target": "tools/pkiops.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_crypt.c",
+   "target": "tools/pkiops.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_csr.c",
+   "target": "ds:pki_files",
+   "kind": "write"
+  },
+  {
+   "source": "tools/fhsm_csr.c",
+   "target": "tools/pkiops.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_gui.c",
+   "target": "ds:pki_files",
+   "kind": "read"
+  },
+  {
+   "source": "tools/fhsm_gui.c",
+   "target": "src/fhsm_revocation.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_gui.c",
+   "target": "tools/pkiops.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_gui.c",
+   "target": "tools/pkiops.c",
+   "kind": "dispatch",
+   "label": "function pointer"
+  },
+  {
+   "source": "tools/fhsm_sign.c",
+   "target": "ds:pki_files",
+   "kind": "read"
+  },
+  {
+   "source": "tools/fhsm_sign.c",
+   "target": "ds:pki_files",
+   "kind": "write"
+  },
+  {
+   "source": "tools/fhsm_sign.c",
+   "target": "tools/pkiops.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_token.c",
+   "target": "tools/pkiops.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/fhsm_token.c",
+   "target": "tools/pkiops.c",
+   "kind": "dispatch",
+   "label": "function pointer"
+  },
+  {
+   "source": "tools/freehsm_audit.c",
+   "target": "ds:audit_log",
+   "kind": "read"
+  },
+  {
+   "source": "tools/p11_util.h",
+   "target": "src/fhsm_pkcs11.c",
+   "kind": "dispatch",
+   "label": "PKCS#11 function list (dlopen)"
+  },
+  {
+   "source": "tools/pkiops.c",
+   "target": "ds:pki_files",
+   "kind": "read"
+  },
+  {
+   "source": "tools/pkiops.c",
+   "target": "ds:pki_files",
+   "kind": "write"
+  },
+  {
+   "source": "tools/pkiops.c",
+   "target": "src/fhsm_composite.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/pkiops.c",
+   "target": "src/fhsm_pkcs11.c",
+   "kind": "dispatch",
+   "label": "PKCS#11 function list (dlopen)"
+  },
+  {
+   "source": "tools/pkiops.c",
+   "target": "src/fhsm_revocation.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/pkiops.c",
+   "target": "tools/cms_env.c",
+   "kind": "call"
+  },
+  {
+   "source": "tools/pkiops.c",
+   "target": "tools/p11_util.h",
+   "kind": "call"
+  },
+  {
+   "source": "tools/pkiops.c",
+   "target": "tools/p11_util.h",
+   "kind": "dispatch",
+   "label": "function pointer"
+  }
+ ],
+ "entryPoints": [
+  "job:ci",
+  "job:generate",
+  "job:install",
+  "job:integrity",
+  "job:systemd",
+  "job:tests",
+  "route:private/certificates",
+  "route:private/health",
+  "route:private/ocsp",
+  "route:private/sign",
+  "route:private/token",
+  "route:private/verify",
+  "route:public/certificates",
+  "route:public/health",
+  "route:public/ocsp",
+  "service/fhsm_service.c",
+  "src/fhsm_pkcs11.c",
+  "tools/fhsm_ca.c",
+  "tools/fhsm_crypt.c",
+  "tools/fhsm_csr.c",
+  "tools/fhsm_gui.c",
+  "tools/fhsm_sign.c",
+  "tools/fhsm_token.c",
+  "tools/freehsm_audit.c"
+ ],
+ "deadEnds": [
+  "kat/fhsm_kat_rsp.c",
+  "src/dispatch/fhsm_dispatch_aes.c",
+  "src/dispatch/fhsm_dispatch_common.c",
+  "src/dispatch/fhsm_dispatch_composite.c",
+  "src/dispatch/fhsm_dispatch_concat.c",
+  "src/dispatch/fhsm_dispatch_digest.c",
+  "src/dispatch/fhsm_dispatch_hmac.c",
+  "src/dispatch/fhsm_dispatch_hybrid.c",
+  "src/dispatch/fhsm_dispatch_kdf.c",
+  "src/dispatch/fhsm_dispatch_legacy.c",
+  "src/dispatch/fhsm_dispatch_pkey.c",
+  "src/dispatch/fhsm_dispatch_pq.c",
+  "src/fhsm_mode.c"
+ ],
+ "observations": [
+  "Hub: src/fhsm_pkcs11.c (8,010 code lines, 29% of mapped C) is the only module external consumers reach. It calls into 13 modules and is called by 3. Every token, crypto, audit and lifecycle path crosses it, so it is the coupling cluster to split first in Rust.",
+  "Dead dispatch layer: the generated mechanism table holds 71 handler addresses, but no code invokes its `handler` field (verified by this script). 11 dispatch modules (1,531 code lines) are unreachable from every production entry point; only the unbuilt tests/test_dispatch.c calls them. This is verified dead code, not an unresolved dynamic call.",
+  "Three link models in one codebase: 6 tool binaries dlopen() the module and reach it only through the PKCS#11 function list (23 entry points resolved from the dlsym table in tools/p11_util.h); fhsm-service statically links all 33 module objects (it calls non-exported audit functions); those same tool binaries also link fhsm_composite.c and fhsm_revocation.c directly. The Rust cdylib must keep the first; the other two are choices to revisit.",
+  "Revocation DB has several writers and no single owner: live code in fhsm-ca, fhsm-gui writes it through fhsm_revocation.c, and fhsm-service reads it to answer OCSP. This is a service-extraction candidate: one revocation component owning the file.",
+  "Key-custody single point of failure: unlocking the token (slotN.tok.tpm) and loading the audit key both go through fhsm_tpm.c, which shells out to the tpm2 CLI from inside the library process. A missing or slow tpm2 binary blocks login and auditing together.",
+  "Deployment gap: no Makefile install rule produces the binary named in the systemd unit's ExecStart, so the service's entry point exists in deployment config with no install path.",
+  "Not linked into any binary (dead by build graph): kat/fhsm_kat_rsp.c."
+ ],
+ "flows": [
+  {
+   "name": "A business application gets a document signed",
+   "persona": "Relying application (calls the signing service)",
+   "description": "An internal application sends data to the signing service and receives a signature made with a key that never leaves the HSM.",
+   "steps": [
+    {
+     "label": "Service starts, reads its PIN from an encrypted systemd credential and logs in to the token",
+     "nodes": [
+      "job:systemd",
+      "service/fhsm_service.c",
+      "ds:pin_credential",
+      "src/fhsm_token.c",
+      "src/fhsm_token_tpm.c",
+      "src/fhsm_tpm.c",
+      "ds:tpm",
+      "ds:token_file"
+     ]
+    },
+    {
+     "label": "Application posts the data to be signed",
+     "nodes": [
+      "route:private/sign",
+      "service/fhsm_service.c"
+     ]
+    },
+    {
+     "label": "Service checks the signing policy and request budget",
+     "nodes": [
+      "service/fhsm_service.c",
+      "ds:service_policy",
+      "ds:refusal_budget"
+     ]
+    },
+    {
+     "label": "HSM signs with the token's private key",
+     "nodes": [
+      "src/fhsm_pkcs11.c",
+      "src/fhsm_crypto.c",
+      "src/fhsm_token.c"
+     ]
+    },
+    {
+     "label": "The signing event is written to the tamper-evident audit log",
+     "nodes": [
+      "src/fhsm_audit.c",
+      "ds:audit_log"
+     ]
+    },
+    {
+     "label": "Signature is returned to the application",
+     "nodes": [
+      "service/fhsm_service.c"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "A PKI operator issues a certificate",
+   "persona": "PKI operator (CA administrator)",
+   "description": "An operator turns a certificate request into a signed certificate using the CA key held in the HSM.",
+   "steps": [
+    {
+     "label": "Operator runs the CA tool with a certificate request",
+     "nodes": [
+      "tools/fhsm_ca.c",
+      "ds:pki_files"
+     ]
+    },
+    {
+     "label": "Tool loads the HSM module and opens a session",
+     "nodes": [
+      "tools/pkiops.c",
+      "tools/p11_util.h",
+      "src/fhsm_pkcs11.c"
+     ]
+    },
+    {
+     "label": "Operator logs in and the token's keys are decrypted",
+     "nodes": [
+      "src/fhsm_pkcs11.c",
+      "src/fhsm_token.c",
+      "ds:token_file"
+     ]
+    },
+    {
+     "label": "Certificate is built and signed by the CA key",
+     "nodes": [
+      "tools/pkiops.c",
+      "src/fhsm_composite.c",
+      "src/fhsm_pkcs11.c",
+      "src/fhsm_crypto.c"
+     ]
+    },
+    {
+     "label": "Signed certificate is written out and the operation audited",
+     "nodes": [
+      "ds:pki_files",
+      "src/fhsm_audit.c",
+      "ds:audit_log"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "A relying party checks whether a certificate was revoked",
+   "persona": "Relying party (any client validating a certificate)",
+   "description": "After an operator revokes a certificate, any client can ask the public OCSP endpoint and get a signed answer.",
+   "steps": [
+    {
+     "label": "Operator revokes the certificate",
+     "nodes": [
+      "tools/fhsm_ca.c",
+      "src/fhsm_revocation.c",
+      "ds:revocation_db"
+     ]
+    },
+    {
+     "label": "Client asks the public OCSP endpoint",
+     "nodes": [
+      "route:public/ocsp",
+      "service/fhsm_service.c"
+     ]
+    },
+    {
+     "label": "Service looks the serial number up in the revocation DB",
+     "nodes": [
+      "service/fhsm_service.c",
+      "src/fhsm_revocation.c",
+      "ds:revocation_db"
+     ]
+    },
+    {
+     "label": "Answer is built and signed by the OCSP responder key",
+     "nodes": [
+      "src/fhsm_revocation.c",
+      "src/fhsm_composite.c",
+      "service/fhsm_service.c",
+      "src/fhsm_pkcs11.c",
+      "ds:service_certs",
+      "ds:token_file"
+     ]
+    },
+    {
+     "label": "Signed status is returned to the client",
+     "nodes": [
+      "service/fhsm_service.c"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "An auditor verifies the HSM's activity record",
+   "persona": "Auditor / compliance officer",
+   "description": "An auditor confirms that the record of every key use is complete and has not been altered.",
+   "steps": [
+    {
+     "label": "Every login, key use and admin action appends a chained record",
+     "nodes": [
+      "src/fhsm_pkcs11.c",
+      "src/fhsm_audit.c",
+      "ds:audit_log"
+     ]
+    },
+    {
+     "label": "The chaining key is kept sealed",
+     "nodes": [
+      "src/fhsm_audit.c",
+      "ds:audit_key",
+      "src/fhsm_tpm.c",
+      "ds:tpm"
+     ]
+    },
+    {
+     "label": "Auditor runs the standalone verifier over the log",
+     "nodes": [
+      "tools/freehsm_audit.c",
+      "ds:audit_log"
+     ]
+    }
+   ]
+  }
+ ]
+}

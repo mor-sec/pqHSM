@@ -1,0 +1,8 @@
+Usage:
+  freehsm-audit dump   <path.audit.log> [path...]
+  freehsm-audit verify <path.audit.log> <audit_key_hex_64>
+  freehsm-audit verify <directory>         <audit_key_hex_64>
+
+  A directory verifies every base.NNNNNN log in it and
+  reports holes in the numbering, which is how a removed
+  log becomes visible.

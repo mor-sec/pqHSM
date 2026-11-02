@@ -1,0 +1,6 @@
+# tests/golden/logs/key16.log
+# timestamp                  seq     event                  slot session role result                         params
+  2026-10-29T16:22:01.287482Z 1       module_init              -1      -1 NONE CKR_OK                         {}
+  2026-10-29T16:22:01.293839Z 2       login_ok                  0       1 USER CKR_OK                         {}
+  2026-10-29T16:22:01.301265Z 3       sign                      0       1 USER CKR_OK                         {"alg":"mldsa65"}
+# total : 3 events

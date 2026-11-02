@@ -1,0 +1,2 @@
+{"seq":+1,"ts":1700000000000000000,"event":"sign","slot":0,"session":1,"role":"USER","actor":"","result":"OK","rv":0,"params":{},"prev_hmac":"98baf27df823f03e90c267d0a8c12351e5c00f4a5a2357c9e0398c16beffbee2","hmac":"71295f7bd4d422263dab503e9cf73353e2a6a478ff7f7e077ec24b25f48bc2de"}
+{"seq": 2,"ts":1700000000000000000,"event":"sign","slot":0,"session":1,"role":"USER","actor":"","result":"OK","rv":0,"params":{},"prev_hmac":"71295f7bd4d422263dab503e9cf73353e2a6a478ff7f7e077ec24b25f48bc2de","hmac":"427c6a1e8101a6a2308ceb623802950872997cf2a7623c9347db0a85625a93e9"}

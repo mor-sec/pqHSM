@@ -1,0 +1,6 @@
+line 3 : missing hmac, prev_hmac or seq field
+line 4 : seq is not 4 (records missing)
+line 5 : seq is not 5 (records missing)
+line 6 : seq is not 6 (records missing)
+line 7 : seq is not 7 (records missing)
+verify: 5/7 records FAILED

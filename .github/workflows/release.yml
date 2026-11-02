@@ -1,0 +1,249 @@
+# ===========================================================================
+# .github/workflows/release.yml
+#
+# Tagged release builder. Triggered on push of a tag matching v*.
+#
+#   1. Verify the tag is GPG-signed by an approved maintainer.
+#   2. Build the .so reproducibly inside the pinned Docker image
+#      ghcr.io/<owner>/freehsm-c-build:debian13-20261006
+#      (built by .github/workflows/build-image.yml from Dockerfile.build).
+#   3. Sign the digest, embed it, re-sign.
+#   4. Produce source tarball + binary tarball.
+#   5. Sign both with the release GPG key.
+#   6. Publish to GitHub Releases.
+#
+# NOTE on reproducibility (FIPS 140-3 / CC EAL4+) :
+#   v1.1.x uses Debian 13 trixie tagged base + apt versions in the image.
+#   For v2.0 / formal CST submission : pin the Debian digest, freeze apt
+#   versions, document the SBOM in docs/REPRODUCIBLE_BUILD.md.
+# ===========================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      options: --user root
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Mark workspace as safe
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Verify tag is signed
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "Verifying tag $TAG..."
+          # Make sure the annotated tag object is in the local object DB
+          # (actions/checkout sometimes only resolves the commit, not the
+          # tag object).
+          git fetch --force --tags origin "refs/tags/${TAG}:refs/tags/${TAG}" || true
+          # Import the maintainer public key from the repo so gpg trusts
+          # the signing key during verification.
+          gpg --import afchine-pubkey.asc
+          # Confirm we actually have an annotated tag (not a lightweight one).
+          OBJ_TYPE=$(git cat-file -t "$TAG")
+          if [ "$OBJ_TYPE" != "tag" ]; then
+            echo "ERROR : refs/tags/$TAG points to a $OBJ_TYPE, not an annotated tag."
+            echo "        Re-create the tag with: git tag -s -a $TAG -m '...'"
+            exit 1
+          fi
+          git verify-tag "$TAG" || {
+            echo "ERROR : tag $TAG is not GPG-signed by a known maintainer."
+            exit 1
+          }
+
+      - name: Build reproducibly
+        env:
+          # Inert here: the Makefile reads SOURCE_DATE_EPOCH only in the
+          # `dist` target (tar mtime), and the .so gets its determinism from
+          # REPRO_FLAGS, which redact __DATE__/__TIME__ outright. It also
+          # contradicts the image's own ENV (1735689600). Left untouched in
+          # this commit, which is about the swallowed failure below; see
+          # docs/ROADMAP.md for the reproducibility anchor that has to
+          # settle it.
+          SOURCE_DATE_EPOCH: '1717977600'
+        run: |
+          # Defensive : restore the exec bit in case actions/checkout
+          # dropped it on the way in. The release container is one of
+          # the few places where shell scripts must actually run.
+          chmod +x scripts/*.sh tests/*.sh tests/wycheproof/*.sh \
+                   tests/wycheproof/*.py 2>/dev/null || true
+          make clean
+          make
+          test -f libfreehsm.so
+
+      # Signing is not a nicety here and its failure must not be a warning.
+      #
+      # This step used to read
+      #     make integrity || echo "WARN: ... (expected outside Docker image)"
+      # and the parenthetical was false: this job runs INSIDE the image
+      # (see `container:` above), so there is no "outside" for it to excuse.
+      # What the `||` actually did was publish an UNSIGNED module whenever
+      # signing failed, for any reason. An unsigned module carries the
+      # all-zero .fhsm_digest, so do_verify() returns INTEGRITY_FAILED and
+      # C_Initialize refuses -- the release would be a brick, shipped
+      # silently, with a digest computed over it as if all were well.
+      - name: Sign the module
+        run: make integrity
+
+      # And then check the property, not the command. `make integrity` runs
+      # scripts/sign_module.sh, which exits 3 -- not 0 -- when the module is
+      # ALREADY signed, so a zero exit is not by itself the assurance wanted
+      # here. Read the section back instead: it is the same question a
+      # relying party would ask of the published file.
+      # readelf and objcopy come from binutils, od from coreutils -- both are
+      # in Dockerfile.build's install list. `xxd` is NOT: on Debian trixie it
+      # is its own package, and the first draft of this step used it, which
+      # would have failed every release with a verification unable to run.
+      # Checked against the Dockerfile rather than assumed.
+      - name: Verify the module is really signed
+        run: |
+          readelf -SW libfreehsm.so | grep -q '\.fhsm_digest' || {
+              echo "::error::no .fhsm_digest section in the release artefact"
+              exit 1
+          }
+          d=$(objcopy --dump-section .fhsm_digest=/dev/stdout \
+                      libfreehsm.so /dev/null 2>/dev/null \
+              | od -An -tx1 -v | tr -d ' \n')
+          case "$d" in
+            "")      echo "::error::.fhsm_digest section is empty"; exit 1 ;;
+            *[!0]*)  echo "signed: $d" ;;
+            *)       echo "::error::release artefact carries the all-zero placeholder: unsigned"; exit 1 ;;
+          esac
+
+      # The anchor. Everything above proves this build is internally sound;
+      # this is the only step that says it is the SAME build a reference was
+      # taken from. Without it the .sha256 published below is a receipt --
+      # "the file you downloaded is the file we built" -- and reproducibility
+      # is asserted in the Security Target and demonstrated nowhere.
+      #
+      # A missing reference is a failure, not a skip. `if [ -f ... ]` here
+      # would recreate exactly the situation this closes: a step that is
+      # available, never required, and therefore never happens. Six releases
+      # went out that way. Produce one with the "Reproducibility baseline"
+      # workflow, commit it, then tag.
+      - name: Compare against the reproducibility reference
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          V="${TAG#v}"
+          HDR=$(awk -F'"' '/FHSM_VERSION_STRING/{print $2; exit}' include/fhsm_common.h)
+          # Defensive: the -FIPS suffix was dropped from the header in
+          # v2.0.0. Comparing raw would have failed this release on its
+          # first attempt back when the suffix was there.
+          HDR="${HDR%-FIPS}"
+          if [ "$V" != "$HDR" ]; then
+            echo "::error::tag $TAG says v$V, include/fhsm_common.h says $HDR"
+            exit 1
+          fi
+          REF="dist/refs/v${V}.sha256"
+          if [ ! -f "$REF" ]; then
+            echo "::error::no reproducibility reference at $REF."
+            echo "::error::Run the 'Reproducibility baseline' workflow on this"
+            echo "::error::commit, commit the file it produces, and re-tag."
+            exit 1
+          fi
+          ref=$(awk '{print $1}' "$REF")
+          got=$(sha256sum libfreehsm.so | awk '{print $1}')
+          echo "reference : $ref"
+          echo "this build: $got"
+          if [ "$ref" != "$got" ]; then
+            echo "::error::this build does not reproduce the reference for v$V."
+            echo "::error::Either the source changed without a version bump, or"
+            echo "::error::the toolchain drifted. Do not publish until it is known"
+            echo "::error::which."
+            exit 1
+          fi
+          echo "reproduces the reference for v$V"
+
+      - name: Compute digests
+        run: |
+          sha256sum libfreehsm.so > libfreehsm.so.sha256
+          sha256sum tests/test_smoke   > test_smoke.sha256
+
+      - name: Build source tarball
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          mkdir -p dist
+          # git archive only knows tar (or tar.gz/zip) natively. Pipe through
+          # xz for .tar.xz output.
+          git archive --format=tar \
+              --prefix="freehsm-c-${TAG}/" \
+              HEAD \
+            | xz -9 > dist/freehsm-c-${TAG}-src.tar.xz
+          # Compute sha256 from inside dist/ so the .sha256 file references
+          # the basename only -- downstream users can run
+          # `sha256sum -c file.sha256` without recreating the dist/ directory.
+          ( cd dist && sha256sum "freehsm-c-${TAG}-src.tar.xz" > "freehsm-c-${TAG}-src.tar.xz.sha256" )
+
+      - name: Build binary tarball
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          mkdir -p dist/freehsm-c-${TAG}/lib dist/freehsm-c-${TAG}/include
+          cp libfreehsm.so dist/freehsm-c-${TAG}/lib/
+          cp include/*.h         dist/freehsm-c-${TAG}/include/
+          cp NOTICE LICENSE README.md CHANGELOG.md SECURITY.md dist/freehsm-c-${TAG}/
+          tar -cJf dist/freehsm-c-${TAG}-bin.tar.xz \
+              -C dist freehsm-c-${TAG}
+          ( cd dist && sha256sum "freehsm-c-${TAG}-bin.tar.xz" > "freehsm-c-${TAG}-bin.tar.xz.sha256" )
+
+      - name: GPG-sign artefacts
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_KEY }}
+          GPG_PASSPHRASE:  ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+        run: |
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "WARNING : RELEASE_GPG_KEY secret missing — signatures will be skipped."
+            exit 0
+          fi
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          for f in dist/*.tar.xz; do
+            gpg --batch --pinentry-mode loopback \
+                --passphrase "$GPG_PASSPHRASE" \
+                --armor --detach-sign "$f"
+          done
+
+      # The release notes for this version are written by hand, in the repo, and
+      # until v2.0.0 no workflow had ever read them: `generate_release_notes`
+      # alone produced a commit list, and RELEASE_vX.Y.Z.md was published
+      # nowhere. v2.0.0 shipped without its own strongest warning -- that a
+      # token these tools build does not enumerate from OpenSSL -- because the
+      # warning was in the file and the file was not on the path.
+      #
+      # Missing file is a hard failure. A release whose notes silently fall
+      # back to a commit list is the defect this step exists to prevent, and a
+      # warning in a green log would not be read.
+      - name: The hand-written notes must exist
+        id: notes
+        run: |
+          N="RELEASE_${GITHUB_REF_NAME}.md"
+          [ -f "$N" ] || { echo "::error::$N not found; write the notes before tagging"; exit 1; }
+          echo "path=$N" >> "$GITHUB_OUTPUT"
+          echo "notes: $N ($(wc -l < "$N") lines)"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Both: the file is the body, and GitHub appends its generated
+          # changelog and compare link underneath it.
+          body_path: ${{ steps.notes.outputs.path }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.xz
+            dist/*.sha256
+            dist/*.asc
+            libfreehsm.so
+            libfreehsm.so.sha256

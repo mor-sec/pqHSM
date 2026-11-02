@@ -1,0 +1,67 @@
+%% pqHSM (FreeHSM 2.6.0) — domain-level dependencies, from Makefile build graph + symbol references.
+%% Dashed edges are runtime-only (dlopen) or non-calls (dead / format-contract). See ASSESSMENT.md.
+graph TD
+  subgraph MOD["libfreehsm.so (LIB_SRC)"]
+    API["D1 PKCS#11 API & object model"]
+    LIFE["D2 Lifecycle / sessions / API lock"]
+    TOK["D3 Token store + TPM sealing"]
+    CRY["D4 Crypto core / DRBG / secure heap / conf"]
+    DISP["D5 Mechanism registry & dispatch + runtime mode"]
+    SELF["D6 Self-tests & integrity"]
+    AUD["D7 Audit trail"]
+    COMP["D8a Composite / PKI encoders"]
+  end
+  subgraph SHARED["Shared, outside the module"]
+    REV["D8b Revocation DB / OCSP lookup"]
+  end
+  subgraph APPS["Applications"]
+    SVC["D9 fhsm-service (HTTP sign/OCSP)"]
+    TOOLS["D10 PKI CLI tools (pkiops)"]
+    GUI["D10 fhsm-gui (GTK4)"]
+    AUDV["D7 freehsm-audit verifier"]
+  end
+  subgraph BUILD["D11 Build / verification"]
+    GEN["scripts/gen_p11_thunks.py"]
+    TEST["tests / fuzz / probes / CI"]
+  end
+  subgraph EXT["External"]
+    OSSL["OpenSSL 3.5 + FIPS provider"]
+    TPM2["tpm2 CLI / TPM"]
+    GTK["GTK 4"]
+  end
+  API --> LIFE
+  API --> TOK
+  API --> CRY
+  API -->|"advertisement lookup only"| DISP
+  API -->|"pairwise test"| SELF
+  API --> AUD
+  API -->|"composite keygen/sign"| COMP
+  LIFE --> TOK
+  LIFE --> AUD
+  TOK --> CRY
+  TOK --> AUD
+  TOK --> TPM2
+  AUD --> CRY
+  AUD -->|"audit key seal"| TOK
+  CRY -->|"KAT + integrity at init"| SELF
+  CRY -->|"error latch"| LIFE
+  SELF --> CRY
+  DISP -->|"conf / handlers"| CRY
+  DISP -.->|"handlers never called"| COMP
+  CRY --> OSSL
+  COMP --> OSSL
+  REV --> COMP
+  SVC -->|"static link LIB_OBJ"| API
+  SVC -->|"audit actor/events"| AUD
+  SVC --> REV
+  TOOLS -->|"link .o"| COMP
+  TOOLS --> REV
+  TOOLS -.->|"dlopen libfreehsm.so"| API
+  GUI -->|"pkiops"| TOOLS
+  GUI --> GTK
+  AUDV -.->|"log format contract"| AUD
+  GEN -->|"generates table + header"| DISP
+  GEN -->|"CKM header"| COMP
+  TEST --> API
+  TEST --> TOOLS
+  TEST --> SVC
