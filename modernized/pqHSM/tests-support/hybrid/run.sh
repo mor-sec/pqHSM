@@ -19,9 +19,17 @@ tar -C "$REPO" --exclude=./analysis --exclude=./.obj --exclude=./modernized/pqHS
 # seccomp=unconfined: only for `setarch -R` in the TSan step (personality(ADDR_NO_RANDOMIZE)).
 # FIPS_DEBS: a directory holding the openssl, libssl3t64 and openssl-provider-fips .debs of the
 # image's OpenSSL version; with it, step 9 runs the FIPS-provider suite offline (BASELINE.md).
+# WYCHEPROOF_CACHE: a directory holding wheels/ (python-pkcs11) and wycheproof-vectors/; with
+# it, step 10 runs Wycheproof on both modules offline (BASELINE.md).
+# The tree copy (about 1 GB) is removed afterwards unless KEEP_WORK=1; results/ stays.
+rc=0
 podman run --rm --user root --security-opt seccomp=unconfined \
     -v "$OUT/work":/work:Z -v "$OUT/results":/out:Z -v "$C_BUILD":/c:ro,Z \
     -v "$REPO/analysis/pqHSM/baseline":/fixture:ro,Z -v "$REGISTRY":/opt/rust/cargo/registry:Z \
     ${FIPS_DEBS:+-v "$FIPS_DEBS":/debs:ro,Z} \
-    -v "$HERE/inner.sh":/inner.sh:ro,Z "$IMAGE" sh /inner.sh
+    ${WYCHEPROOF_CACHE:+-v "$WYCHEPROOF_CACHE":/wyche:ro,Z} \
+    -v "$HERE/inner.sh":/inner.sh:ro,Z "$IMAGE" sh /inner.sh || rc=$?
+# files the container created belong to subordinate ids, hence unshare
+[ "${KEEP_WORK:-}" = 1 ] || podman unshare rm -rf "$OUT/work"
 cat "$OUT/results/summary.txt"
+exit $rc

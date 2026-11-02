@@ -1,0 +1,5 @@
+[freehsm-c] FATAL : this file has no .fhsm_digest section.
+  It was not built with the integrity check compiled in, so it
+  cannot be a FreeHSM module -- most likely the wrong library is
+  on your path or in --module. Check with :
+    readelf -SW <file> | grep fhsm_digest

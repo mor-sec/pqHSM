@@ -54,3 +54,21 @@ gen_core: $(GEN_DIR)/gen_core.c $(OBJDIR)/src/fhsm_crypto.o $(OBJDIR)/src/fhsm_m
 	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_crypto.o $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o \
 	    $(LDFLAGS) -lpthread -Wl,--wrap=OSSL_PROVIDER_load -Wl,--wrap=OSSL_PROVIDER_unload \
 	    -Wl,--wrap=EVP_default_properties_enable_fips -Wl,--wrap=RAND_status -Wl,--wrap=RAND_add
+
+# Phase 3 slice 4: the legacy integrity check on the ELF files make_integrity_elf.py lays out;
+# the self-locate is the --wrap seam in gen_integrity.c. Used only by regen_selftest.sh.
+gen_integrity: $(GEN_DIR)/gen_integrity.c $(OBJDIR)/src/fhsm_integrity.o $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o
+	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_integrity.o $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o \
+	    $(LDFLAGS) -lpthread -Wl,--wrap=dl_iterate_phdr -Wl,--wrap=EVP_MD_fetch
+
+# Phase 3 slice 4: the legacy KAT sources, #included by gen_kat.c (so -I.), with the crypto-core
+# primitives they call defined there. Used only by regen_selftest.sh.
+gen_kat: $(GEN_DIR)/gen_kat.c kat/fhsm_kat_vectors.c kat/cavp_extended.c $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o
+	$(CC) $(CFLAGS) -I. -o $@ $< $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o \
+	    $(LDFLAGS) -lpthread -Wl,--wrap=fopen -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestSign \
+	    -Wl,--wrap=EVP_PKEY_encrypt
+
+# Phase 3 slice 4: the legacy pair-wise check, on keys gen_pairwise.c builds. Used only by
+# regen_selftest.sh.
+gen_pairwise: $(GEN_DIR)/gen_pairwise.c $(OBJDIR)/src/fhsm_pairwise.o
+	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_pairwise.o $(LDFLAGS)

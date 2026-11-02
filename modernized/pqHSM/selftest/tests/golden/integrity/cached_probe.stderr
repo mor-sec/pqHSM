@@ -1,0 +1,6 @@
+[freehsm-c] FATAL : this module does not match its signature.
+  .fhsm_digest carries a digest, and it is not the digest of this
+  file. The binary has changed since it was signed.
+  This is not a missing build step. Do not run it. Reinstall from
+  a verified download and check the detached GPG signature that
+  ships beside it.

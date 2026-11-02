@@ -5,4 +5,5 @@
 extern crate pqhsm_audit;
 extern crate pqhsm_crypto;
 extern crate pqhsm_pki;
+extern crate pqhsm_selftest;
 extern crate pqhsm_token;

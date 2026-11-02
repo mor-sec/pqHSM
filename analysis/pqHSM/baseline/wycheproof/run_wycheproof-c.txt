@@ -1,0 +1,112 @@
+[freehsm-c] NOTE : integrity bypass active --- FHSM_INTEGRITY_ALLOW_UNSIGNED is set, so this
+  process skipped the integrity check and did not load the OpenSSL FIPS provider ;
+  EVP fetches are served by the default provider. This RUN is not FIPS-conformant.
+  The binary is unchanged : the same file, run without the variable, loads the
+  provider. Unset it to run inside the evaluated configuration --- or set
+  FHSM_EVIDENCE=1 if you are running the Wycheproof harness, which sets the
+  bypass itself.
+[aes_gcm] viol tcId=68 keyBits=128 ivBits=64 tagBits=128 comment='' expected=valid rv=0x00000071 pt_match=False
+[aes_gcm] viol tcId=69 keyBits=128 ivBits=64 tagBits=128 comment='small IV sizes' expected=valid rv=0x00000071 pt_match=True
+[aes_gcm] viol tcId=70 keyBits=128 ivBits=64 tagBits=128 comment='small IV sizes' expected=valid rv=0x00000071 pt_match=False
+[aes_gcm] viol tcId=277 keyBits=128 ivBits=8 tagBits=128 comment='small IV sizes' expected=valid rv=0x00000071 pt_match=True
+[aes_gcm] viol tcId=278 keyBits=128 ivBits=8 tagBits=128 comment='small IV sizes' expected=valid rv=0x00000071 pt_match=False
+[aes_gcm] viol tcId=279 keyBits=128 ivBits=16 tagBits=128 comment='small IV sizes' expected=valid rv=0x00000071 pt_match=True
+
+========================================================================
+WYCHEPROOF SUMMARY
+========================================================================
+  module    : /c/libfreehsm.so
+  mode      : full
+
+  aes_cmac      match=   306  viol=   0  skip=    5
+  aes_gcm       match=   310  viol=   0  skip=    6
+  aes_gmac      match=   414  viol=   0  skip=    0
+  ecdsa         match=  3098  viol=   0  skip=18794
+  eddsa         match=   236  viol=   0  skip=    0
+  hmac          match=   522  viol=   0  skip=    0
+  mldsa         match=   629  viol=   0  skip=    0
+  mlkem         match=    21  viol=   0  skip=    0
+  rsa_oaep      match=   788  viol=   0  skip=  420
+  rsa_pss       match=  1083  viol=   0  skip= 1323
+
+  --- aes_cmac DER classification ---
+    key_128_seen                        102
+    key_192_seen                        102
+    key_256_seen                        102
+    tag_128_seen                        306
+    unsupported_key                       5
+
+  --- aes_gcm DER classification ---
+    key_128_seen                        106
+    key_192_seen                        101
+    key_256_seen                        103
+    iv_96_seen                          197
+    iv_other_seen                       113
+    tag_128_seen                        310
+    iv_over_openssl_limit                 6
+    _logged_viols                         6
+    iv_non96_fips_rejected               37
+    iv_skip_1024_bits                     3
+    iv_skip_2056_bits                     3
+
+  --- aes_gmac DER classification ---
+    key_128_seen                        138
+    key_192_seen                        138
+    key_256_seen                        138
+    iv_96_seen                          207
+    iv_other_seen                       207
+    tag_128_seen                        414
+
+  --- ecdsa DER classification ---
+    der_canonical_valid                1236
+    der_canonical_invalid               364
+    der_noncanonical_other              219
+    der_hard_fail                      1279
+
+  --- eddsa DER classification ---
+    ed25519_seen                        150
+    ed448_seen                           86
+
+  --- hmac DER classification ---
+    hmac_sha256_seen                    174
+    hmac_sha384_seen                    174
+    hmac_sha512_seen                    174
+    tag_truncated_seen                  261
+    tag_full_seen                       261
+
+  --- mldsa DER classification ---
+    ml_dsa_44_seen                      180
+    ml_dsa_65_seen                      210
+    ml_dsa_87_seen                      239
+    ctx_empty                           608
+    ctx_nonempty_seen                     6
+    ctx_oversize                         15
+    key_import_failed                    12
+
+  --- mlkem DER classification ---
+    param_set_512                         7
+    param_set_768                         7
+    param_set_1024                        7
+    key_import_failed                    12
+    decaps_rv_nonzero                     6
+
+  --- rsa_oaep DER classification ---
+    sha256_seen                         330
+    sha384_seen                         141
+    sha512_seen                         255
+    sha1_seen                           120
+    label_empty                         737
+    label_nonempty                       51
+    unsupported_sha                     299
+    unsupported_mgf                      63
+    constructed_edge_case_skip           58
+
+  --- rsa_pss DER classification ---
+    salt_eq_hashlen                     788
+    salt_neq_hashlen                    295
+    unsupported_sha                    1143
+    unsupported_mgf                     180
+
+  report    : tests/wycheproof/results/full.json
+========================================================================
+rc=0

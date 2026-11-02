@@ -1,0 +1,1 @@
+[freehsm-c] WARNING : FHSM_INTEGRITY_ALLOW_UNSIGNED active --- integrity verify failed (rv=0x00000006) but the ERROR latch is suppressed. This is INVALID for any FIPS 140-3 / CC EAL4+ deployment.

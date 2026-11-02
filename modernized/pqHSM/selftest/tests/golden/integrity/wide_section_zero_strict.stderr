@@ -1,0 +1,8 @@
+[freehsm-c] FATAL : this module is unsigned.
+  Its .fhsm_digest section is the all-zero placeholder a fresh
+  build leaves, so the integrity self-test has nothing to verify
+  against and the module refuses to start (FIPS 140-3 7.10.2).
+  If you built it yourself :   make integrity
+  If you downloaded it, it was published unsigned -- do not use
+  it, and do not set FHSM_INTEGRITY_ALLOW_UNSIGNED to get past
+  this. See SECURITY.md, "v1.4.0 published unsigned".

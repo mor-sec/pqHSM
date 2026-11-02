@@ -7,7 +7,8 @@
 # reaches it. Phase 3 slice 1: src/fhsm_memory.c and src/fhsm_conf.c (the arena size and minimum
 # block are fixed too: -DFHSM_SECURE_HEAP_BYTES= and -DFHSM_SECURE_HEAP_MINSIZE= no longer reach them).
 # Slice 2: src/fhsm_drbg.c. Slice 3: src/fhsm_crypto.c; the staticlib is built with dev-bypass,
-# because every `make tests` recipe sets FHSM_INTEGRITY_ALLOW_UNSIGNED (DIV-034).
+# because every `make tests` recipe sets FHSM_INTEGRITY_ALLOW_UNSIGNED (DIV-034). Slice 4:
+# src/fhsm_integrity.c; its digest array stays C, where scripts/sign_module.sh patches it.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -27,6 +28,7 @@ PQHSM_HOOKS_LIB := $(PQHSM_DIR)/target-hooks/release/libpqhsm_module.a
 PQHSM_SHIM := $(PQHSM_DIR)/audit/shim/audit_event.c
 PQHSM_EMPTY := $(PQHSM_DIR)/module/empty.c
 PQHSM_KAT_SHIM := $(PQHSM_DIR)/crypto/shim/kat_results.c
+PQHSM_DIGEST_SHIM := $(PQHSM_DIR)/selftest/shim/integrity_digest.c
 # Cargo is incremental, so depending on every source is cheap and never misses one (review L2).
 PQHSM_SRC  := $(shell find $(PQHSM_DIR) -path $(PQHSM_DIR)/target -prune -o -path $(PQHSM_DIR)/target-hooks -prune \
                 -o \( -name '*.rs' -o -name Cargo.toml \) -print) $(PQHSM_DIR)/Cargo.lock
@@ -53,12 +55,18 @@ $(OBJDIR)/src/fhsm_audit.o: $(PQHSM_SHIM) $(PQHSM_LIB)
 
 # Objects whose code is now in the staticlib: an empty object keeps every $(LIB_OBJ) rule as is.
 $(OBJDIR)/src/fhsm_tpm.o $(OBJDIR)/src/fhsm_token_tpm.o $(OBJDIR)/src/fhsm_token.o \
-$(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o $(OBJDIR)/src/fhsm_drbg.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
+$(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o $(OBJDIR)/src/fhsm_drbg.o \
+$(OBJDIR)/kat/fhsm_kat_vectors.o $(OBJDIR)/kat/cavp_extended.o $(OBJDIR)/src/fhsm_pairwise.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # fhsm_crypto.o keeps the module's one non-PKCS#11 export, which --exclude-libs would hide.
 $(OBJDIR)/src/fhsm_crypto.o: $(PQHSM_KAT_SHIM) $(PQHSM_LIB)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# fhsm_integrity.o keeps the .fhsm_digest section the signing script patches.
+$(OBJDIR)/src/fhsm_integrity.o: $(PQHSM_DIGEST_SHIM) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

@@ -8,7 +8,12 @@ pub mod drbg;
 mod ffi;
 pub mod lifecycle;
 pub mod mem;
+#[cfg(feature = "ffi")]
+pub use ffi::KatRecord;
 pub use ffi::prim;
+/// The module locks that a fork child takes afresh; the self-test crate uses it too.
+#[cfg(feature = "ffi")]
+pub use ffi::sys::ForkMutex;
 
 /// `fhsm_rv_t` codes (`include/fhsm_common.h:150-214`).
 pub mod rv {

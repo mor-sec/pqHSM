@@ -300,6 +300,7 @@ dependencies = [
  "pqhsm-audit",
  "pqhsm-crypto",
  "pqhsm-pki",
+ "pqhsm-selftest",
  "pqhsm-token",
 ]
 
@@ -310,6 +311,16 @@ dependencies = [
  "libc",
  "openssl-sys",
  "tempfile",
+]
+
+[[package]]
+name = "pqhsm-selftest"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "openssl-sys",
+ "pqhsm-crypto",
+ "zeroize",
 ]
 
 [[package]]

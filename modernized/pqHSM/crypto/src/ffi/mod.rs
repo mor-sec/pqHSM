@@ -13,3 +13,6 @@ pub(crate) mod entropy;
 
 #[cfg(feature = "ffi")]
 mod c_abi;
+/// The KAT report entry the self-test crate writes.
+#[cfg(feature = "ffi")]
+pub use c_abi::KatRecord;

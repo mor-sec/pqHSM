@@ -48,6 +48,19 @@ nm libfreehsm.so | grep -cE ' [tT] pqhsm_audit_event_v$' > /out/rust_linked.txt
 { printf 'C object defines only: %s; ' "$(nm --defined-only .obj/src/fhsm_crypto.o | awk '$2 ~ /[TtDdBb]/ {print $3}' | tr '\n' ' ')"
   printf 'module fhsm_crypto_init: %s; rust core code in module: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_crypto_init$')" "$(nm libfreehsm.so | grep -c 'pqhsm_crypto[0-9]*\(lifecycle\|ffi4prim\)')"
 } > /out/core_swap.txt
+# Phase 3 slice 4: the integrity check; its object keeps only the digest array the signer patches.
+{ printf 'C object defines only: %s; ' "$(nm --defined-only .obj/src/fhsm_integrity.o | awk '$2 ~ /[TtDdBbRr]/ {print $3}' | tr '\n' ' ')"
+  printf 'rust integrity code in module: %s' "$(nm libfreehsm.so | grep -c 'pqhsm_selftest[0-9]*integrity')"
+} > /out/integrity_swap.txt
+# ... and the KATs, wholly in Rust.
+{ printf 'C objects with code: %s; ' "$(nm --defined-only .obj/kat/fhsm_kat_vectors.o .obj/kat/cavp_extended.o | grep -c ' [TtDdBbRr] ')"
+  printf 'rust kat code in module: %s' "$(nm libfreehsm.so | grep -c 'pqhsm_selftest[0-9]*kat')"
+} > /out/kat_swap.txt
+# ... and the pair-wise check after key generation.
+{ printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_pairwise.o | grep -c ' [TtDdBbRr] ')"
+  printf 'module fhsm_pairwise_check: %s; ' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_pairwise_check$')"
+  printf 'rust pairwise code in module: %s' "$(nm libfreehsm.so | grep -c 'pqhsm_selftest3ffi8pairwise')"
+} > /out/pairwise_swap.txt
 # fhsm-ca end to end over the revocation DB (not in `make tests`). ocsp-delegated is left out:
 # it runs `make clean` and rebuilds the tree under another PROFILE.
 $M revocation-db > /out/revocation_db.txt 2>&1; echo "rc=$?" >> /out/revocation_db.txt
@@ -116,6 +129,17 @@ for d in /tmp/cb /work; do
 done
 printf 'probe_keygen_drbg: C %s, hybrid %s, output %s' "$(tail -1 /out/drbg_probe_c.txt)" "$(tail -1 /out/drbg_probe_hybrid.txt)" \
   "$(cmp -s /out/drbg_probe_c.txt /out/drbg_probe_hybrid.txt && echo same || echo DIFF)" > /out/drbg_tests.txt
+
+# 4d. Phase 3 slice 4: `make test-integrity` (not in `make tests`, Makefile:568) signs and
+#     tampers a statically linked binary and runs the check without the bypass, on C and hybrid.
+for d in /tmp/cb /work; do
+  tag=$([ "$d" = /work ] && echo hybrid || echo c)
+  (cd $d && if [ $d = /work ]; then $M test-integrity; else make test-integrity; fi > /out/integrity_test_$tag.txt 2>&1
+   echo "rc=$?" >> /out/integrity_test_$tag.txt)
+done
+pass() { grep -E '^(test_integrity|  |\[)' "$1" | grep -v -e '^cc ' -e '^\[gen_p11_thunks\]'; }
+printf 'test-integrity: C %s, hybrid %s, output %s' "$(tail -1 /out/integrity_test_c.txt)" "$(tail -1 /out/integrity_test_hybrid.txt)" \
+  "$(pass /out/integrity_test_c.txt > /tmp/a; pass /out/integrity_test_hybrid.txt > /tmp/b; cmp -s /tmp/a /tmp/b && echo same || echo DIFF)" > /out/integrity_tests.txt
 
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
@@ -193,6 +217,33 @@ pub() {  # reader, run dir: one sorted line per token file, keyed by command num
 (cd /tmp/cwork && pub $CG hybrid) > /out/tok_c_reads_rust.txt
 (cd /work && pub $RG c) > /out/tok_rust_reads_c.txt
 
+# 10. Wycheproof (PHASE3_PLAN.md §5.2, BASELINE.md § Wycheproof), from Phase 3 slice 4: the
+#     legacy runner, full mode, as CI's nightly job, on the C and the hybrid module. Offline:
+#     python-pkcs11 from the cached wheel, the vectors from the one-time fetch (run.sh,
+#     WYCHEPROOF_CACHE). Before step 9, which replaces the libcrypto configuration.
+if [ -d /wyche/wheels ]; then
+  python3 -m venv /tmp/venv > /dev/null && /tmp/venv/bin/pip install -q --no-index --find-links /wyche/wheels python-pkcs11 > /out/wycheproof_install.log 2>&1
+  rm -rf /tmp/wy && cp -a /work/tests/wycheproof /tmp/wy && rm -rf /tmp/wy/vectors && cp -a /wyche/wycheproof-vectors /tmp/wy/vectors
+  for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+    tag=$([ $lib = /c/libfreehsm.so ] && echo c || echo hybrid)
+    (cd $(dirname $lib) && env FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_KAT_ALLOW_FAIL=1 OPENSSL_CONF=/dev/null FHSM_TOKENS_DIR=$(mktemp -d) \
+      /tmp/venv/bin/python3 /tmp/wy/run_wycheproof.py --module $lib) > /out/wycheproof_$tag.txt 2>&1
+    echo "rc=$?" >> /out/wycheproof_$tag.txt
+  done
+  rm -rf /tmp/wy /tmp/venv
+  wsum() { sed -n '/WYCHEPROOF SUMMARY/,$p' "$1" | sed -E '/elapsed   :|module    :|report    :/d'; }
+  wsum /fixture/wycheproof/run_wycheproof-c.txt > /tmp/w_base.txt
+  for t in c hybrid; do wsum /out/wycheproof_$t.txt > /tmp/w_$t.txt; done
+  printf 'C %s, hybrid %s; violations C %s, hybrid %s; C vs baseline %s, hybrid vs C %s' \
+    "$(tail -1 /out/wycheproof_c.txt)" "$(tail -1 /out/wycheproof_hybrid.txt)" \
+    "$(awk '/viol=/{sub(/.*viol= */,""); v+=$1} END{print v+0}' /tmp/w_c.txt)" \
+    "$(awk '/viol=/{sub(/.*viol= */,""); v+=$1} END{print v+0}' /tmp/w_hybrid.txt)" \
+    "$(cmp -s /tmp/w_base.txt /tmp/w_c.txt && echo same || echo DIFF)" \
+    "$(cmp -s /tmp/w_c.txt /tmp/w_hybrid.txt && echo same || echo DIFF)" > /out/wycheproof.txt
+else
+  echo "skipped: no WYCHEPROOF_CACHE" > /out/wycheproof.txt
+fi
+
 # 9. The FIPS provider (PHASE3_PLAN.md §4.3, BASELINE.md § FIPS), from Phase 3 slice 3, which
 #    moves the provider loads to Rust: both profiles, the hybrid module signed and run under
 #    scripts/run_fips_tests.sh as CI's test-fips-provider job runs it, plus the three reports the
@@ -244,8 +295,12 @@ fi
   echo "crypto swap (heap, conf): $(cat /out/crypto_swap.txt)"
   echo "drbg swap: $(cat /out/drbg_swap.txt)"
   echo "core swap: $(cat /out/core_swap.txt)"
+  echo "integrity swap: $(cat /out/integrity_swap.txt)"
+  echo "kat swap: $(cat /out/kat_swap.txt)"
+  echo "pairwise swap: $(cat /out/pairwise_swap.txt)"
   echo "secure heap: $(cat /out/heap_tests.txt)"
   echo "drbg: $(cat /out/drbg_tests.txt)"
+  echo "integrity: $(cat /out/integrity_tests.txt)"
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"
@@ -257,6 +312,7 @@ fi
   echo "fork, parent log: $(tr '\n' ';' < /out/fork_parent_log.txt)"
   echo "corpus: $(awk -F'\t' '$3>0' /out/corpus.tsv | wc -l) commands wrote audit logs ($(awk -F'\t' '{r+=$4} END{print r}' /out/corpus.tsv) records); same $(awk -F'\t' '$5=="same" && $3>0' /out/corpus.tsv | wc -l), order-only $(grep -c 'order-only$' /out/corpus.tsv), DIFF $(grep -c 'DIFF$' /out/corpus.tsv)"
   echo "tsan: $(grep -c 'rc=0' /out/tsan_build.log) build ok; $(awk -F'\t' '{printf "%s rc=%s races=%s; ", $1, $2, $3}' /out/tsan.tsv)"
+  echo "wycheproof: $(cat /out/wycheproof.txt)"
   echo "fips: $(grep 'install rc' /out/fips_install.log 2>/dev/null)"; sed 's/^/  /' /out/fips.txt
   echo "cross_impl (C tool on Rust logs): $(grep -E 'test result|rc=' /out/x_cross_impl.txt | tr '\n' ' ')"
 } > /out/summary.txt

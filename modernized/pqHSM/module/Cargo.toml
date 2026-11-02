@@ -15,10 +15,11 @@ crate-type = ["staticlib"]
 # The test_tpm build only, into its own --target-dir (PHASE2_PLAN.md §3(d), review H6).
 tpm-test-hooks = ["pqhsm-token/tpm-test-hooks"]
 # The self-test bypass variables (DIV-034): the hybrid harness only, never a release build.
-dev-bypass = ["pqhsm-crypto/dev-bypass"]
+dev-bypass = ["pqhsm-crypto/dev-bypass", "pqhsm-selftest/dev-bypass"]
 
 [dependencies]
 pqhsm-audit = { path = "../audit", features = ["ffi"] }
 pqhsm-token = { path = "../token", features = ["ffi"] }
 pqhsm-pki = { path = "../pki", features = ["ffi"] }
 pqhsm-crypto = { path = "../crypto", features = ["ffi"] }
+pqhsm-selftest = { path = "../selftest", features = ["ffi"] }

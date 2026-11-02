@@ -1,0 +1,62 @@
+{
+  "aes_cmac": {
+    "match": 306,
+    "violation": 0,
+    "skip": 5,
+    "violations": []
+  },
+  "aes_gcm": {
+    "match": 310,
+    "violation": 0,
+    "skip": 6,
+    "violations": []
+  },
+  "aes_gmac": {
+    "match": 414,
+    "violation": 0,
+    "skip": 0,
+    "violations": []
+  },
+  "ecdsa": {
+    "match": 3098,
+    "violation": 0,
+    "skip": 18794,
+    "violations": []
+  },
+  "eddsa": {
+    "match": 236,
+    "violation": 0,
+    "skip": 0,
+    "violations": []
+  },
+  "hmac": {
+    "match": 522,
+    "violation": 0,
+    "skip": 0,
+    "violations": []
+  },
+  "mldsa": {
+    "match": 629,
+    "violation": 0,
+    "skip": 0,
+    "violations": []
+  },
+  "mlkem": {
+    "match": 21,
+    "violation": 0,
+    "skip": 0,
+    "violations": []
+  },
+  "rsa_oaep": {
+    "match": 788,
+    "violation": 0,
+    "skip": 420,
+    "violations": []
+  },
+  "rsa_pss": {
+    "match": 1083,
+    "violation": 0,
+    "skip": 1323,
+    "violations": []
+  }
+}

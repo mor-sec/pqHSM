@@ -39,10 +39,29 @@ Run in a throwaway root container from the pinned image, on a copy of the C tree
 
 Not covered: the other refusal tests (`test_fips_*`, `test_*_refusal`) appear only as pass lines in `run_fips_tests-*.txt`, with no output kept. Timings vary from run to run and are not a fixture.
 
+## Wycheproof (recorded 2026-11-02, Phase 3 slice 4 start)
+
+The pure-C module (`baseline/src`) under `tests/wycheproof/run_wycheproof.py`, full mode, as CI's nightly job runs it (`FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_KAT_ALLOW_FAIL=1 OPENSSL_CONF=/dev/null`). Offline: `python-pkcs11` 0.10.1 from the cached wheel, the vectors from the one-time fetch (PHASE3_PLAN.md §5.2), in `localhost/pqhsm-rust:1.99.1`. Kept: `baseline/wycheproof/run_wycheproof-c.txt` (elapsed time removed) and `full-c.json`.
+
+| Adapter | match | viol | skip |
+|---|---|---|---|
+| aes_cmac | 306 | 0 | 5 |
+| aes_gcm | 310 | 0 | 6 |
+| aes_gmac | 414 | 0 | 0 |
+| ecdsa | 3,098 | 0 | 18,794 |
+| eddsa | 236 | 0 | 0 |
+| hmac | 522 | 0 | 0 |
+| mldsa | 629 | 0 | 0 |
+| mlkem | 21 | 0 | 0 |
+| rsa_oaep | 788 | 0 | 420 |
+| rsa_pss | 1,083 | 0 | 1,323 |
+
+0 violations. The hybrid must print the same summary (harness step 10).
+
 ## Not recorded here, and why
 
 - ~~FIPS-provider baseline~~: recorded 2026-11-02, above.
-- **Wycheproof:** needs `python-pkcs11` and a vector download (`.github/workflows/wycheproof.yml`); neither is in the image. Phase 3 is the phase that needs it.
+- ~~Wycheproof~~: recorded 2026-11-02, below.
 - **Per-test timings:** the image has no `bc`, so the runner's timing column is empty. The earlier full `make tests` run took 213 s (PREFLIGHT).
 - **all-mechanisms profile:** recorded under the FIPS provider (above). The default-provider `make tests` run covers only the default profile.
 

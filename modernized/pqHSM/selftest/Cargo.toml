@@ -1,0 +1,31 @@
+[package]
+name = "pqhsm-selftest"
+description = "pqHSM power-on self-tests (replaces src/fhsm_integrity.c)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# The C ABI of include/fhsm_integrity.h. Off for `cargo test`, on for the hybrid build.
+ffi = ["pqhsm-crypto/ffi"]
+# Honour FHSM_INTEGRITY_ALLOW_UNSIGNED (DIV-034). Off in a release build.
+dev-bypass = ["pqhsm-crypto/dev-bypass"]
+
+[dependencies]
+libc.workspace = true
+openssl-sys.workspace = true
+pqhsm-crypto = { path = "../crypto" }
+zeroize.workspace = true
+
+# The C ABI on the test binary itself: a release-feature build latches on an unsigned module.
+[[test]]
+name = "integrity_abi"
+required-features = ["ffi"]
+
+[[test]]
+name = "kat_abi"
+required-features = ["ffi"]

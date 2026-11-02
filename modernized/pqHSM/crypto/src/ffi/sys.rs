@@ -43,7 +43,7 @@ pub(crate) fn core_once(init: extern "C" fn()) {
 /// child forked by the holder itself (fork+exec inside the locked section) keeps the lock its
 /// own stack still holds (slice 3 review L2).
 #[cfg(feature = "ffi")]
-pub(crate) struct ForkMutex<T> {
+pub struct ForkMutex<T> {
     lock: std::cell::UnsafeCell<libc::pthread_mutex_t>,
     owner: std::sync::atomic::AtomicUsize,
     data: std::cell::UnsafeCell<T>,
@@ -61,7 +61,7 @@ fn this_thread() -> usize {
 
 #[cfg(feature = "ffi")]
 impl<T> ForkMutex<T> {
-    pub(crate) const fn new(data: T) -> Self {
+    pub const fn new(data: T) -> Self {
         Self {
             lock: std::cell::UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER),
             owner: std::sync::atomic::AtomicUsize::new(0),
@@ -70,7 +70,7 @@ impl<T> ForkMutex<T> {
     }
 
     /// Runs `f` with the lock held. Not re-entrant: a nested call aborts.
-    pub(crate) fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
         use std::sync::atomic::Ordering::Relaxed;
         struct Unlock<'a>(
             *mut libc::pthread_mutex_t,
@@ -101,7 +101,7 @@ impl<T> ForkMutex<T> {
     ///
     /// # Safety
     /// Only from a fork child handler: one thread, so no other holder and no other reference.
-    pub(crate) unsafe fn after_fork(&self, f: impl FnOnce(&mut T)) {
+    pub unsafe fn after_fork(&self, f: impl FnOnce(&mut T)) {
         if self.owner.load(std::sync::atomic::Ordering::Relaxed) == this_thread() {
             return;
         }

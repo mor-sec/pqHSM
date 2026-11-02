@@ -33,7 +33,7 @@ static STATE_CALLS: AtomicU32 = AtomicU32::new(0);
 static STATE_BLOCK_AT: AtomicU32 = AtomicU32::new(0);
 
 #[unsafe(no_mangle)]
-extern "C" fn fhsm_integrity_verify() -> u32 {
+extern "C" fn pqhsm_integrity_run() -> u32 {
     INTEGRITY_RUNS.fetch_add(1, Ordering::SeqCst);
     if HOLD.load(Ordering::SeqCst) {
         wait_for_pipe();

@@ -194,7 +194,8 @@ pub unsafe extern "C" fn fhsm_drbg_get_stats(out: *mut Stats) {
 
 unsafe extern "C" {
     // src/fhsm_integrity.c and kat/fhsm_kat_vectors.c, C until slice 4
-    fn fhsm_integrity_verify() -> u32;
+    // selftest/src/ffi/c_abi.rs: uncached, so a re-initialisation re-runs it (DIV-035)
+    fn pqhsm_integrity_run() -> u32;
     fn fhsm_kat_run_all(out: *mut KatRecord, cap: usize, count: *mut usize) -> u32;
     // libcrypto and glibc
     fn ERR_print_errors_fp(fp: *mut libc::FILE);
@@ -213,10 +214,10 @@ pub struct Slice {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KatRecord {
-    algorithm: *const c_char,
-    vector_id: *const c_char,
-    passed: c_int,
-    duration_us: u32,
+    pub algorithm: *const c_char,
+    pub vector_id: *const c_char,
+    pub passed: c_int,
+    pub duration_us: u32,
 }
 
 const NO_KAT: KatRecord = KatRecord {
@@ -248,7 +249,7 @@ impl Platform for OsPlatform {
 
     fn integrity(&mut self) -> u32 {
         // SAFETY: no arguments
-        unsafe { fhsm_integrity_verify() }
+        unsafe { pqhsm_integrity_run() }
     }
 
     fn load(&mut self, name: &CStr) -> Option<Provider> {
