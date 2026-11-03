@@ -807,3 +807,30 @@ Closed 2026-11-03 (user: "Close Phase 3 (Recommended)"). Final hybrid run `p3x2`
 Also in `p3x2`: 106/106, `nm -D` (63 symbols) and NEEDED identical, all swaps, TSan 0 races, corpus 64 same / 4 explained, FIPS identical on both profiles. Workspace 877 pass, 0 fail; fmt and clippy `-D warnings` clean in the three feature sets. Token files: 64 of 66 identical. The other two are the pair Phase 2 explained, whose size follows the DER length of freshly generated keys: `test_pkiops_envelope_rsa` at 5,741 bytes, inside the C-only range, and `test_pkiops_algs` at 51,962, one byte under the 51,963–51,966 that three C runs gave. Every field but the size is identical.
 
 **Not done in Phase 3, and why:** the token crate's crypto seam still declares the `fhsm_*` primitives as externs. In the hybrid they resolve to the Rust exports, so the token already runs on Rust crypto. Collapsing the seam into the crate would bypass those exports' check of the module state, which is C until Phase 4. It moves with the state, in Phase 4.
+
+# Phase 4: PKCS#11 API layer (PHASE4_PLAN.md, approved 2026-11-03)
+
+## Slice 0: takeover of the function tables
+
+### What was replaced
+
+`src/fhsm_pkcs11.c:13050-13386`: the v2.40, v3.0 and v3.2 function tables and `C_GetFunctionList`, `C_GetInterfaceList`, `C_GetInterface`. New crate `pqhsm-p11` (`p11/src/ffi.rs`). The tables are constants; C filled them at run time under `pthread_once`. Every other slot still names the C entry point, which `fhsm_pkcs11.o` still exports.
+
+`hybrid.mk` makes C's three table calls local in `fhsm_pkcs11.o` (`objcopy --localize-symbol`) and links `p11/shim/interface.c` into the same object with `ld -r`. The shim defines the three exports, because `--exclude-libs,ALL` hides every symbol from the staticlib; neither a version script nor `--export-dynamic-symbol` overrides that (checked with GNU ld 2.44).
+
+### How equivalence was proved
+
+- `tests-support/hybrid/p11_tables.c`, harness step 4f: every slot of the three tables by exported symbol name ("unexported" for the not-supported stub), the stub's return code, and the argument checks of the three calls: NULL outputs, interface names, versions 3.2, 3.0, 2.40, 3.1, 3.3 and 0.0, flags, a short buffer, and that a returned record is not rewritten by a later call. C: 292 lines, 84 not-supported slots (0x54), one stub address. Hybrid: identical (run `p4s0b`).
+- Mutation: slots 50 and 51 swapped in the Rust table; the probe reports both lines in all three tables.
+- `p4s0b`: 106/106, `nm -D` (63 symbols) and NEEDED identical, TSan 0 races in the four tests (`test_concurrency_store --tables` among them), Wycheproof 0 violations hybrid = C, all-mechanisms FIPS identical. Token, fork-log and corpus lines as in `p3x2`.
+- **Open:** in the nist-approved-only FIPS run, `test_composite_cms` was filed under "opens the signed .so" instead of "signed copy" (`run_fips_tests.sh` decides by the binary's `.fhsm_digest` section), so the OK lines differ from the baseline; 99 OK and 93 of 93 against the provider either way. Two strict-profile builds of the same tree (parallel, and serial with `make integrity`) give the section in that binary and 28 embedded tests, as the baseline. Not reproduced; the rerun (`p4s0c`) was stopped by the system for low memory before it finished.
+- Workspace: 877 pass, 0 fail; the three clippy sets clean.
+
+### Deliberate deviations
+
+The tables are read-only statics; C's were writable. No legacy test, tool or script writes to them (grep of `tests/`, `tools/`).
+
+### Follow-ups
+
+- The first commit of the shim (`294e3d6`) lacks prototypes, and the legacy `-Werror=missing-prototypes` breaks the build; fixed in the working tree (uncommitted).
+- The FIPS classification line above.

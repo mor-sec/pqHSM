@@ -10,6 +10,11 @@ CK_RV pqhsm_p11_get_function_list(void *out);
 CK_RV pqhsm_p11_get_interface_list(void *list, unsigned long *count);
 CK_RV pqhsm_p11_get_interface(const char *name, const void *version, void *out, unsigned long flags);
 
+/* The legacy CFLAGS make -Wmissing-prototypes an error. */
+CK_RV C_GetFunctionList(void *out);
+CK_RV C_GetInterfaceList(void *list, unsigned long *count);
+CK_RV C_GetInterface(const char *name, const void *version, void *out, unsigned long flags);
+
 __attribute__((visibility("default")))
 CK_RV C_GetFunctionList(void *out) {
     return pqhsm_p11_get_function_list(out);
