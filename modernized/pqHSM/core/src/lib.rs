@@ -2,5 +2,6 @@
 //! later slices, objects, templates and operations. No `unsafe`: the C ABI is `pqhsm-p11`'s.
 #![forbid(unsafe_code)]
 
+pub mod p11;
 pub mod session;
 pub mod state;

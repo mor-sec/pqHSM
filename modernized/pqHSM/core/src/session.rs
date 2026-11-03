@@ -30,7 +30,7 @@ pub const ROLE_NONE: c_int = 0;
 pub const ROLE_SO: c_int = 1;
 
 /// `CKF_RW_SESSION`.
-const RW_SESSION: c_ulong = 0x2;
+pub const RW_SESSION: c_ulong = 0x2;
 
 /// The token calls the table makes. `Pin` is handed to the token untouched: the C ABI passes
 /// C's pointer and length, so the token, not the table, decides what a NULL PIN means.

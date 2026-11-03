@@ -12,7 +12,8 @@
 # Slice 5: src/fhsm_composite.c, in the module and in every PKI tool and test_pkiops* link.
 # Phase 4 slice 0: the function tables and C_GetFunctionList, C_GetInterfaceList, C_GetInterface.
 # Slice 1a: src/fhsm_session.c (the session table; its cap is fixed at 128, as the store's).
-# Slice 1b: src/fhsm_state.c. Slice 1c: src/fhsm_apilock.c.
+# Slice 1b: src/fhsm_state.c. Slice 1c: src/fhsm_apilock.c. Slice 1d: C_Initialize to C_SetPIN
+# (fifteen entry points of src/fhsm_pkcs11.c) and the slot registry.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -76,15 +77,20 @@ $(OBJDIR)/src/fhsm_integrity.o: $(PQHSM_DIGEST_SHIM) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# fhsm_pkcs11.o: C's three table calls are made local, and the shim exporting Rust's is linked
-# into the same object, so every $(LIB_OBJ) link picks it up unchanged. The other C_* stay C's
-# and the Rust tables point at them.
+# fhsm_pkcs11.o: the C entry points Rust now has are made local, and the shim exporting Rust's
+# is linked into the same object, so every $(LIB_OBJ) link picks it up unchanged. The other C_*
+# stay C's and the Rust tables point at them. From slice 1d the C is compiled through
+# pkcs11_tu.c, which appends the accessors to its statics that the Rust entry points call.
 PQHSM_P11_SHIM := $(PQHSM_DIR)/p11/shim/interface.c
-$(OBJDIR)/src/fhsm_pkcs11.o: src/fhsm_pkcs11.c $(PQHSM_P11_SHIM) $(PQHSM_LIB)
+PQHSM_P11_TU   := $(PQHSM_DIR)/p11/shim/pkcs11_tu.c
+PQHSM_P11_RUST := C_GetFunctionList C_GetInterfaceList C_GetInterface \
+                  C_Initialize C_Finalize C_GetInfo C_GetSlotList C_GetSlotInfo C_GetTokenInfo \
+                  C_InitToken C_OpenSession C_CloseSession C_CloseAllSessions C_GetSessionInfo \
+                  C_Login C_Logout C_InitPIN C_SetPIN
+$(OBJDIR)/src/fhsm_pkcs11.o: src/fhsm_pkcs11.c $(PQHSM_P11_TU) $(PQHSM_P11_SHIM) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@.c.o $<
-	objcopy --localize-symbol=C_GetFunctionList --localize-symbol=C_GetInterfaceList \
-	    --localize-symbol=C_GetInterface $@.c.o
+	$(CC) $(CFLAGS) -c -o $@.c.o $(PQHSM_P11_TU)
+	objcopy $(addprefix --localize-symbol=,$(PQHSM_P11_RUST)) $@.c.o
 	$(CC) $(CFLAGS) -c -o $@.shim.o $(PQHSM_P11_SHIM)
 	$(LD) -r -o $@ $@.c.o $@.shim.o
 

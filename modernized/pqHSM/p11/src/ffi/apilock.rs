@@ -31,8 +31,9 @@ pub struct Guard {
     taken: c_int,
 }
 
+use super::sys::fhsm_zeroize;
+
 unsafe extern "C" {
-    fn fhsm_zeroize(p: *mut c_void, n: usize);
     fn fhsm_secure_free(p: *mut c_void);
 }
 
@@ -223,4 +224,31 @@ pub unsafe extern "C" fn fhsm_api_free_value(p: *mut c_void, len: usize, secure:
 #[unsafe(no_mangle)]
 pub extern "C" fn fhsm_api_retired_count() -> usize {
     retired_len()
+}
+
+/// `FHSM_API_SHARED()` / `FHSM_API_EXCLUSIVE()` for the Rust entry points: the lock is held
+/// until the guard drops at the end of the call, after the return value is computed, as C's
+/// cleanup attribute did.
+pub(crate) struct Held(Guard);
+
+impl Held {
+    pub(crate) fn shared() -> Self {
+        Self::enter(SHARED)
+    }
+    pub(crate) fn exclusive() -> Self {
+        Self::enter(EXCLUSIVE)
+    }
+    fn enter(mode: c_int) -> Self {
+        let mut g = Held(Guard { taken: 0 });
+        // SAFETY: a guard of our own, left by Drop
+        unsafe { fhsm_api_enter(&mut g.0, mode) };
+        g
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // SAFETY: the guard fhsm_api_enter filled
+        unsafe { fhsm_api_leave(&mut self.0) }
+    }
 }

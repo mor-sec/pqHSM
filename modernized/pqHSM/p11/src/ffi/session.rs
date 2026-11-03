@@ -4,30 +4,20 @@
 //!
 //! One difference, unreachable from C: `fhsm_session_open` with a NULL out pointer is
 //! `ARGUMENTS_BAD`; C wrote through it. Its one caller, `C_OpenSession`, refuses a NULL first.
-#![allow(non_camel_case_types, clippy::missing_safety_doc)]
+#![allow(clippy::missing_safety_doc)]
 
 use std::ffi::{c_char, c_int, c_ulong};
 use std::ptr::NonNull;
 
 use pqhsm_core::session::{OK, Table, Token};
 
+use super::sys::{fhsm_token_current_role, fhsm_token_login, fhsm_token_logout, fhsm_token_t};
+
 const ARGUMENTS_BAD: u32 = 0x7;
-
-/// `struct fhsm_token_s`, opaque.
-#[repr(C)]
-pub struct fhsm_token_t {
-    _opaque: [u8; 0],
-}
-
-unsafe extern "C" {
-    fn fhsm_token_login(t: *mut fhsm_token_t, role: c_int, pin: *const c_char, len: usize) -> u32;
-    fn fhsm_token_logout(t: *mut fhsm_token_t);
-    fn fhsm_token_current_role(t: *const fhsm_token_t) -> c_int;
-}
 
 /// A token the slot registry owns; the table only names it, as C's pointer did.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct Tok(NonNull<fhsm_token_t>);
+pub(crate) struct Tok(pub(crate) NonNull<fhsm_token_t>);
 
 // SAFETY: the pointer is only compared and handed to fhsm_token_*, which lock the token
 // themselves; C shared the same pointers between threads.
@@ -49,7 +39,7 @@ impl Token for Tok {
     }
 }
 
-static TABLE: Table<Tok> = Table::new();
+pub(crate) static TABLE: Table<Tok> = Table::new();
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fhsm_session_open(

@@ -1,6 +1,10 @@
 //! The C ABI: every `unsafe` and `extern "C"` of the PKCS#11 layer (PHASE4_PLAN.md §3).
 
 mod apilock;
+mod lifecycle;
+mod login;
 mod session;
+mod slots;
 mod state;
+mod sys;
 mod tables;

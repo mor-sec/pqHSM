@@ -10,20 +10,23 @@ use std::ptr::null;
 
 use pqhsm_core::state::State;
 
+use super::sys::fhsm_audit_event;
+
 /// `FHSM_EV_STATE_TRANSITION`.
 const EV_STATE_TRANSITION: c_int = 6;
 const OK: u32 = 0;
 const FUNCTION_FAILED: u32 = 0x6;
-
-unsafe extern "C" {
-    fn fhsm_audit_event(ev: c_int, slot: c_int, session: c_int, role: c_int, rv: u32, ...) -> u32;
-}
 
 static STATE: State = State::new();
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fhsm_state_get() -> c_int {
     STATE.get()
+}
+
+/// The entry points' `fhsm_state_get() == FHSM_STATE_ERROR`.
+pub(crate) fn in_error() -> bool {
+    STATE.get() == pqhsm_core::state::ERROR
 }
 
 #[unsafe(no_mangle)]

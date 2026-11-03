@@ -204,6 +204,39 @@ printf 'p11 tables: C %s, hybrid %s, %s lines, %s' "$(tail -1 /out/p11_tables_c.
   "$(wc -l < /out/p11_tables_c.txt)" \
   "$(cmp -s /out/p11_tables_c.txt /out/p11_tables_hybrid.txt && echo identical || echo "DIFFER: $(diff /out/p11_tables_c.txt /out/p11_tables_hybrid.txt | grep -c '^[<>]') lines")" > /out/p11_tables.txt
 
+# 4g. Phase 4 slice 1d: p11_lifecycle.c drives C_Initialize ... C_SetPIN through fifteen
+#     scenarios on C and hybrid: return codes, output bytes and the module's stderr, then every
+#     scenario's audit log normalised as in step 6. Both must match. One base path for both runs,
+#     because the messages print it.
+cc -o /tmp/p11_lifecycle modernized/pqHSM/tests-support/hybrid/p11_lifecycle.c -ldl
+for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+  tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
+  mkdir /tmp/p11lc
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_lifecycle $lib /tmp/p11lc > /out/p11_lifecycle_$tag.txt 2>&1; echo "rc=$?" >> /out/p11_lifecycle_$tag.txt
+  python3 modernized/pqHSM/tests-support/hybrid/corpus_norm.py /tmp/p11lc > /out/p11_lifecycle_audit_$tag.txt
+  mv /tmp/p11lc /tmp/p11lc_$tag
+done
+# Recorded differences, suppressed and nothing else: DIV-035 (a forked child or a restart
+# re-runs the self-tests, so the integrity-bypass NOTE prints again), the Phase 1 key-message
+# prefix (TRANSFORMATION_NOTES.md, Phase 1), and DIV-009 (the fork scenario's child writes its
+# own log, not the parent's; step 5 checks it), so scenario 5's logs are left out.
+pl_norm() {
+  awk '/^\[freehsm-c\] NOTE : integrity bypass active/ {skip=7} skip {skip--; next} {print}' "$1" \
+    | sed 's/^\[pqhsm\] audit key :/[freehsm-c] audit key :/'
+}
+pl_same() { if cmp -s "$1" "$2"; then echo identical; else echo "DIFFER: $(diff "$1" "$2" | grep -c '^[<>]') lines"; fi; }
+for tag in c hybrid; do
+  pl_norm /out/p11_lifecycle_$tag.txt > /out/p11_lifecycle_${tag}_norm.txt
+  mv /tmp/p11lc_$tag/5 /tmp/p11lc_${tag}_fork
+  python3 modernized/pqHSM/tests-support/hybrid/corpus_norm.py /tmp/p11lc_$tag > /out/p11_lifecycle_audit_${tag}_nofork.txt
+done
+printf 'p11 lifecycle: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s; audit %s records, less the fork scenario %s' \
+  "$(tail -1 /out/p11_lifecycle_c.txt)" "$(tail -1 /out/p11_lifecycle_hybrid.txt)" \
+  "$(grep -c "$(printf '\t')" /out/p11_lifecycle_c.txt)" "$(pl_same /out/p11_lifecycle_c.txt /out/p11_lifecycle_hybrid.txt)" \
+  "$(pl_same /out/p11_lifecycle_c_norm.txt /out/p11_lifecycle_hybrid_norm.txt)" \
+  "$(grep -vc '^=== log' /out/p11_lifecycle_audit_c.txt)" \
+  "$(pl_same /out/p11_lifecycle_audit_c_nofork.txt /out/p11_lifecycle_audit_hybrid_nofork.txt)" > /out/p11_lifecycle.txt
+
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
@@ -386,6 +419,7 @@ rm -rf /tmp/wy /tmp/venv
   echo "integrity: $(cat /out/integrity_tests.txt)"
   echo "pki: $(cat /out/pki_tests.txt)"
   echo "$(cat /out/p11_tables.txt)"
+  echo "$(cat /out/p11_lifecycle.txt)"
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"
