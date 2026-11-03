@@ -834,3 +834,37 @@ The tables are read-only statics; C's were writable. No legacy test, tool or scr
 
 - The first commit of the shim (`294e3d6`) lacks prototypes, and the legacy `-Werror=missing-prototypes` breaks the build; fixed in the working tree (uncommitted).
 - The FIPS classification line above.
+
+## Slice 1: lifecycle, sessions and login (the pilot)
+
+Split as slice 5 of Phase 3 was: 1a the session table, 1b the module state, 1c the API lock, then the entry points. Each support file's code moves to `pqhsm-core` (safe) with its C ABI in `pqhsm-p11/src/ffi/`, and `hybrid.mk` empties its object; the C callers in `fhsm_pkcs11.c` and the Rust crates' externs reach the same symbols.
+
+### 1a: the session table (`src/fhsm_session.c`, 267 lines)
+
+`core/src/session.rs`, generic over the token it names (a trait with `login`, `logout`, `role`); `p11/src/ffi/session.rs` instantiates it with the C token pointer and calls `fhsm_token_*`. The PIN passes through as C's pointer and length, so the token still decides what a NULL PIN means. The cap is fixed at 128: no build sets `-DFHSM_MAX_SESSIONS`.
+
+- Golden: `tests-support/golden/gen_session.c` links the legacy file alone against a scripted stub token and records 274 calls, results and token calls (`core/tests/golden/session.tsv`, `regen_session.sh`). It covers handles 0, 128, 129 and `ULONG_MAX` on every call, the lowest-free reuse, the cap, the read-only refusal of an SO login, the last close logging the token out, the post-fork reset, and the two quirks below. Rust replays all 274.
+- Mutation: 12 mutants, 12 killed. The first run let one survive (setting the entry's role on `USER_ALREADY_LOGGED_IN`), because the role is visible only once the token is detached; the generator gained that case.
+- Quirks kept: an unattached session keeps its own role field, which `role` and `info` show; `logout` on it clears the field and still returns `USER_NOT_LOGGED_IN`.
+- Unreachable difference: `fhsm_session_open` with a NULL out pointer returns `ARGUMENTS_BAD`; C wrote through it. `C_OpenSession`, its one caller, refuses NULL first.
+
+### 1b: the module state (`src/fhsm_state.c`, 143 lines)
+
+`core/src/state.rs` (the whitelist, the latch, the fork reset); `p11/src/ffi/state.rs` emits the transition events through `fhsm_audit_event` after the lock is released, as C did.
+
+- Golden: `gen_state.c` links the legacy file alone against a recording `fhsm_audit_event`: every from/to pair of states 0-3 plus 4, 5 and -1, the fork reset from each state, and the latch with NULL (in a forked child, marked by `fork`/`join` rows), a 200-byte reason and an empty one. 186 rows with their events (`core/tests/golden/state.tsv`); Rust replays all.
+- Mutation: 10 mutants, 9 killed. The survivor is equivalent: no whitelisted transition starts from ERROR, so the explicit latch check in `set` never changes a result. It stays, because it states the FIPS latch directly.
+- Not carried over: `g_error_reason`, a copy of the latch reason that nothing reads.
+- Harness `p4s1ab` (1a and 1b swapped): 106/106, `nm -D` (63 symbols) and NEEDED identical, p11 tables identical, TSan 0 races in the four tests, corpus 64 same / 4 explained, token and fork-log lines as in `p3x2`. Wycheproof and FIPS skipped: the `.deb` and vector caches of the earlier runs are gone, and re-fetching them needs the user (Phase 3 approved them "once").
+
+### 1c: the API lock (`src/fhsm_apilock.c`, 178 lines)
+
+`p11/src/ffi/apilock.rs`, all of it: the lock is taken in `fhsm_api_enter` and released in `fhsm_api_leave`, two C calls apart, which no `std` guard spans, so it stays a pthread rwlock (writer-preferring, `PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP`, defined locally because the libc crate has it only for uClibc). Nothing safe is left for `pqhsm-core::apilock`, which the plan named. Kept from C: the per-thread mode (a nested call takes nothing), the drain at each EXCLUSIVE entry and at a SHARED exit that wins `trywrlock`, the fork-child reset (fresh lock and mutex; parked values zeroized, non-secure ones freed), newest-first release, and the leak when the parking list cannot grow.
+
+- No new golden: `tests/test_apilock.c` already drives the API directly (mode nesting, parking, the drain on the last SHARED exit) and runs in `make tests` and under TSan, with `test_concurrency_store --destroy` for the use-after-free it exists to prevent.
+- Harness `p4s1c` (1a, 1b and 1c swapped): as `p4s1ab`, with `test_apilock` passing plain and under TSan (0 races, as the other three). Token files: the Phase 2 pair only (`envrsa` 5,740 C / 5,741 Rust-written, `algs` 51,964 / 51,962; C alone gave 51,963 in `p4s1ab`), size only.
+- Workspace: 879 pass, 0 fail (877 plus the two goldens), run as the harness does: root without `DAC_OVERRIDE`/`DAC_READ_SEARCH`, with `analysis/` mounted for the DIV-table tests. Clippy `-D warnings` clean for p11 and core in both feature sets and for the module.
+
+### Next: 1d, the entry points
+
+`C_Initialize` to `C_SetPIN` (`fhsm_pkcs11.c:393-1830`) reach C statics that later slices own: the slot registry, the operation tables (`fhsm_session_ops_reset`, `fhsm_session_has_active_op`, `fhsm_session_ctx_auth_grant`) and the find state. Slice 1's DIVs (050's logout half, 051, 052's latch, 053's gate, 054, 055, 059) all live there. Needs a decision on how the Rust entry points reach those statics before the C that owns them moves.

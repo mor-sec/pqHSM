@@ -82,3 +82,13 @@ gen_composite: $(GEN_DIR)/gen_composite.c $(OBJDIR)/src/fhsm_composite.o
 # regen_composite.sh.
 gen_x509: $(GEN_DIR)/gen_x509.c $(OBJDIR)/src/fhsm_composite.o
 	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_composite.o $(LDFLAGS)
+
+# Phase 4 slice 1a (session table) goldens: the legacy src/fhsm_session.c alone, against the
+# generator's stub token. Used only by regen_session.sh.
+gen_session: $(GEN_DIR)/gen_session.c src/fhsm_session.c
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+
+# Phase 4 slice 1b (module state) goldens: the legacy src/fhsm_state.c alone, against the
+# generator's recording fhsm_audit_event. Used only by regen_state.sh.
+gen_state: $(GEN_DIR)/gen_state.c src/fhsm_state.c
+	$(CC) $(CFLAGS) -o $@ $^ -lpthread

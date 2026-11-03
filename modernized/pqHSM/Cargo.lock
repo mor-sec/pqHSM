@@ -284,6 +284,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pqhsm-core"
+version = "0.1.0"
+
+[[package]]
 name = "pqhsm-crypto"
 version = "0.1.0"
 dependencies = [
@@ -308,6 +312,10 @@ dependencies = [
 [[package]]
 name = "pqhsm-p11"
 version = "0.1.0"
+dependencies = [
+ "libc",
+ "pqhsm-core",
+]
 
 [[package]]
 name = "pqhsm-pki"

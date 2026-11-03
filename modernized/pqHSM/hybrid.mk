@@ -11,6 +11,8 @@
 # src/fhsm_integrity.c; its digest array stays C, where scripts/sign_module.sh patches it.
 # Slice 5: src/fhsm_composite.c, in the module and in every PKI tool and test_pkiops* link.
 # Phase 4 slice 0: the function tables and C_GetFunctionList, C_GetInterfaceList, C_GetInterface.
+# Slice 1a: src/fhsm_session.c (the session table; its cap is fixed at 128, as the store's).
+# Slice 1b: src/fhsm_state.c. Slice 1c: src/fhsm_apilock.c.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -59,7 +61,8 @@ $(OBJDIR)/src/fhsm_audit.o: $(PQHSM_SHIM) $(PQHSM_LIB)
 $(OBJDIR)/src/fhsm_tpm.o $(OBJDIR)/src/fhsm_token_tpm.o $(OBJDIR)/src/fhsm_token.o \
 $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o $(OBJDIR)/src/fhsm_drbg.o \
 $(OBJDIR)/kat/fhsm_kat_vectors.o $(OBJDIR)/kat/cavp_extended.o $(OBJDIR)/src/fhsm_pairwise.o \
-$(OBJDIR)/src/fhsm_composite.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
+$(OBJDIR)/src/fhsm_composite.o $(OBJDIR)/src/fhsm_session.o $(OBJDIR)/src/fhsm_state.o \
+$(OBJDIR)/src/fhsm_apilock.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

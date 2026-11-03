@@ -1,0 +1,187 @@
+# src/fhsm_state.c with a recording audit; see tests-support/golden/gen_state.c
+get	0	-
+reset_after_fork	-	-
+set 0	0x6	-
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+get	1	-
+reset_after_fork	-	-
+set 2	0x6	-
+get	0	-
+reset_after_fork	-	-
+set 3	0x6	-
+get	0	-
+reset_after_fork	-	-
+set 4	0x6	-
+get	0	-
+reset_after_fork	-	-
+set 5	0x6	-
+get	0	-
+reset_after_fork	-	-
+set -1	0x6	-
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 0	0x6	-
+get	1	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 1	0x6	-
+get	1	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+get	2	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 3	0x6	-
+get	1	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 4	0x6	-
+get	1	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 5	0x6	-
+get	1	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set -1	0x6	-
+get	1	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 0	0	ev6:rv=0:from=2:to=0
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 1	0x6	-
+get	2	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 2	0x6	-
+get	2	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+get	3	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 4	0x6	-
+get	2	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 5	0x6	-
+get	2	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set -1	0x6	-
+get	2	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set 0	0	ev6:rv=0:from=3:to=0
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set 1	0x6	-
+get	3	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set 2	0	ev6:rv=0:from=3:to=2
+get	2	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set 3	0x6	-
+get	3	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set 4	0x6	-
+get	3	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set 5	0x6	-
+get	3	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set -1	0x6	-
+get	3	-
+reset_after_fork	-	-
+reset_after_fork	-	-
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+reset_after_fork	-	-
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+reset_after_fork	-	-
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+reset_after_fork	-	-
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set 2	0	ev6:rv=0:from=3:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+set 0	0	ev6:rv=0:from=3:to=0
+get	0	-
+fork	-	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+latch NULL	-	ev6:rv=0x6:to=ERROR:reason=(none)
+get	4	-
+latch NULL	-	-
+latch later	-	-
+set 0	0x6	-
+reset_after_fork	-	-
+get	4	-
+join	-	-
+get	0	-
+reset_after_fork	-	-
+set 1	0	ev6:rv=0:from=0:to=1
+set 2	0	ev6:rv=0:from=1:to=2
+set 3	0	ev6:rv=0:from=2:to=3
+latch rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr	-	ev6:rv=0x6:to=ERROR:reason=rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
+get	4	-
+latch again	-	-
+get	4	-
+set 0	0x6	-
+set 1	0x6	-
+set 2	0x6	-
+set 3	0x6	-
+set 4	0x6	-
+set 5	0x6	-
+set -1	0x6	-
+reset_after_fork	-	-
+get	4	-
+set 1	0x6	-
+latch 	-	-
+get	4	-

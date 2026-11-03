@@ -14,3 +14,7 @@ crate-type = ["rlib"]
 # The C ABI. Off for `cargo test`, on for the hybrid build: the tables name the C entry points
 # still defined in src/fhsm_pkcs11.c, which only the module link provides.
 ffi = []
+
+[dependencies]
+libc.workspace = true
+pqhsm-core = { path = "../core" }
