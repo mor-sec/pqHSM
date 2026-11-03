@@ -281,7 +281,6 @@ if [ -d /wyche/wheels ]; then
       /tmp/venv/bin/python3 /tmp/wy/run_wycheproof.py --module $lib) > /out/wycheproof_$tag.txt 2>&1
     echo "rc=$?" >> /out/wycheproof_$tag.txt
   done
-  rm -rf /tmp/wy /tmp/venv
   wsum() { sed -n '/WYCHEPROOF SUMMARY/,$p' "$1" | sed -E '/elapsed   :|module    :|report    :/d'; }
   wsum /fixture/wycheproof/run_wycheproof-c.txt > /tmp/w_base.txt
   for t in c hybrid; do wsum /out/wycheproof_$t.txt > /tmp/w_$t.txt; done
@@ -300,7 +299,10 @@ fi
 #    scripts/run_fips_tests.sh as CI's test-fips-provider job runs it, plus the three reports the
 #    baseline kept. The provider is installed offline from /debs (run.sh, FIPS_DEBS). Last,
 #    because it replaces the container's libcrypto configuration. A GNUmakefile makes every plain
-#    `make` in the scripts the hybrid build.
+#    `make` in the scripts the hybrid build. Phase 3 exit: Wycheproof again with the provider
+#    active, on a C and a hybrid build of each profile, signed, with no bypass; hybrid must equal C.
+#    FHSM_EVIDENCE=1: without it the runner sets the integrity bypass itself, and the module then
+#    never loads the provider (tests/wycheproof/adapters/_p11.py).
 if ls /debs/*.deb > /dev/null 2>&1; then
   { dpkg -i /debs/*.deb && sed '/^apt-get /d' scripts/ci_install_openssl_fips.sh | bash; echo "install rc=$?"; } > /out/fips_install.log 2>&1
   F=/fixture/fips
@@ -326,6 +328,22 @@ if ls /debs/*.deb > /dev/null 2>&1; then
         "$(cmp -s /out/fips_probe_$p.txt $F/probe_advertised_operational-$p.txt && echo same || echo DIFF)" \
         "$(cmp -s /out/fips_curve_$p.txt $F/ec_curve_refusal-$p.txt && echo same || echo DIFF)"
     } >> /out/fips.txt
+    if [ -d /tmp/wy ]; then
+      rm -rf /tmp/cfips && cp -a /c /tmp/cfips
+      (cd /tmp/cfips && { make clean && make && make integrity; echo "build rc=$?"; }) > /out/fips_cbuild_$p.log 2>&1
+      for t in c hybrid; do
+        d=$([ $t = c ] && echo /tmp/cfips || echo /tmp/fips)
+        (cd $d && FHSM_EVIDENCE=1 FHSM_TOKENS_DIR=$(mktemp -d) /tmp/venv/bin/python3 /tmp/wy/run_wycheproof.py --module $d/libfreehsm.so) > /out/fips_wycheproof_${t}_$p.txt 2>&1
+        echo "rc=$?" >> /out/fips_wycheproof_${t}_$p.txt
+        wsum /out/fips_wycheproof_${t}_$p.txt > /tmp/fw_$t.txt
+      done
+      printf '%s: wycheproof with the provider: C %s (%s), hybrid %s; violations C %s, hybrid %s; hybrid vs C %s\n' "$p" \
+        "$(tail -1 /out/fips_wycheproof_c_$p.txt)" "$(tail -1 /out/fips_cbuild_$p.log)" "$(tail -1 /out/fips_wycheproof_hybrid_$p.txt)" \
+        "$(awk '/viol=/{sub(/.*viol= */,""); v+=$1} END{print v+0}' /tmp/fw_c.txt)" \
+        "$(awk '/viol=/{sub(/.*viol= */,""); v+=$1} END{print v+0}' /tmp/fw_hybrid.txt)" \
+        "$(cmp -s /tmp/fw_c.txt /tmp/fw_hybrid.txt && echo same || echo DIFF)" >> /out/fips.txt
+      rm -rf /tmp/cfips
+    fi
     cd /work
   done
   rm -rf /tmp/fips
@@ -333,6 +351,7 @@ if ls /debs/*.deb > /dev/null 2>&1; then
 else
   echo "skipped: no FIPS_DEBS" > /out/fips.txt
 fi
+rm -rf /tmp/wy /tmp/venv
 
 { echo "build: $(grep -c 'build rc=0' /out/build.log) ok"
   echo "tests: $(awk -F'\t' '$3==0' /out/results.tsv | wc -l)/$(wc -l < /out/results.tsv) pass"

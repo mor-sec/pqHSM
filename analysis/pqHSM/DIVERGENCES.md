@@ -557,3 +557,123 @@ Drafted 2026-11-02 for the Phase 3 entry gate ("a decision for every suspected-d
 | RULE-022 | The comment at `tools/fhsm_ca.c:398-402` is wrong (no number is consumed on a signing failure); thisUpdate is not backdated. | Preserve. |
 | RULE-073 (Phase 3 part) | The crypto primitives already refuse in ERROR (`src/fhsm_crypto.c:388`, `:432`, `:480`, `:508`, `:546`; `fhsm_drbg.c:373`). The calls that keep working in ERROR are in `fhsm_pkcs11.c`. | Preserve the Phase 3 checks; the rest is Phase 4 (Q13). |
 | RULE-076(a), (c) | `pReserved` is not checked; Finalize in POWER_OFF returns OK. Both are in `fhsm_pkcs11.c`. | Phase 4. |
+
+## Phase 4 — PKCS#11 API layer, lifecycle and sessions (`src/fhsm_pkcs11.c`, `fhsm_session.c`, `fhsm_state.c`, `fhsm_apilock.c`, …)
+
+Drafted 2026-11-03 for the Phase 4 entry gate ("a decision for every suspected-defect rule gated at Phase 4; every intended divergence lists the exact expected harness diff, as return code and call"). Brief answers Q12–Q15 (2026-11-03) settle DIV-050 to DIV-058. DIV-053's scope, DIV-054's no-rotation, DIV-059 and the table at the end were proposed and then decided by the user (2026-11-03, quoted in each). Q17 needs no entry: C already refuses the composite in the strict build, and Phase 4 keeps that. Each expected diff was found by reading every `make tests` test that calls the changed entry point (106 commands, `p3x2/results/commands.txt`). "None" means no legacy test reaches the changed branch, and the harness run confirms it. Return codes: `CKR_KEY_HANDLE_INVALID` 0x60, `CKR_KEY_UNEXTRACTABLE` 0x6A, `CKR_OBJECT_HANDLE_INVALID` 0x82, `CKR_PIN_LEN_RANGE` 0xA2, `CKR_TEMPLATE_INCONSISTENT` 0xD1, `CKR_USER_NOT_LOGGED_IN` 0x101, `CKR_CRYPTOKI_NOT_INITIALIZED` 0x190.
+
+### DIV-050 · RULE-056, RULE-086, RULE-092(c) Keys need a USER login, and logout drops decrypted objects (SEC-001)
+
+- **Status:** DECIDED, Fix (2026-11-03, Q12, user: "SEC-001: require login before a key can be used, and drop decrypted objects at logout.").
+- **Legacy:** `fhsm_require_key` checks only that the handle exists among loaded objects (`src/fhsm_pkcs11.c:9017-9024`), so every key-use Init (`:9761`, `:10165`, `:10793`, `:11487`, and the wrap, unwrap, derive and KEM paths) accepts a private key while nobody, or the SO, is logged in. `fhsm_token_logout` zeroises the DEK but leaves `objects_loaded` set and every decrypted value in memory (`src/fhsm_token.c:1645-1654`). Reproduced: after `C_Logout`, `C_EncryptInit` + `C_Encrypt` with the user's AES token key return CKR_OK. `C_DestroyObject` applies no visibility check either, so the SO can destroy the user's keys.
+- **Target:** an object of class CKO_SECRET_KEY or CKO_PRIVATE_KEY (the classes RULE-055 already hides) is usable only while the token's role is USER. Otherwise every key-use Init, `C_WrapKey`'s wrapping key and target, `C_UnwrapKey`'s key, `C_DeriveKey`'s base, `C_EncapsulateKey`'s and `C_DecapsulateKey`'s key, and `C_DestroyObject` return `CKR_KEY_HANDLE_INVALID` (0x60; `C_DestroyObject` 0x82, per the table). That is what C already returns for such a handle in a fresh process with no login. At logout (explicit, last session closed, or forced by re-init), every private token object's value is zeroised and unloaded, public objects stay usable, and operations active on a private key in any session of that token end (the next call returns `CKR_OPERATION_NOT_INITIALIZED`, 0x91). Private session objects stay, unusable until USER logs in again.
+- **Test:** the SEC-001 reproduction (fails on C, passes on Rust); the SO's `C_SignInit` on a user key; an operation started before logout and continued after it.
+- **Expected harness diff:** none. No legacy test uses a key after `C_Logout` or as SO. Every logout in the nine tests that call it is the SO stepping out during setup, before the user logs in.
+
+### DIV-051 · RULE-072, RULE-076(a)(c), RULE-077(b) "Not initialized" is enforced
+
+- **Status:** DECIDED, Fix (2026-11-03, Q13, user: "Fix the five reproduced lifecycle defects."). RULE-076(a) and RULE-077(b) are the same gate and are included.
+- **Legacy:** `FHSM_RV_CRYPTOKI_NOT_INITIALIZED` is defined (`include/fhsm_common.h:198`) and never returned. Every `C_*` checks only `== FHSM_STATE_ERROR`. Reproduced: after `C_Finalize`, `C_OpenSession` and `C_Login(CKU_USER)` return CKR_OK, with self-tests and audit bypassed. `C_Finalize` returns OK in POWER_OFF and ignores `pReserved`. A forked child that never calls `C_Initialize` keeps the parent's sessions and login.
+- **Target:** while the state is POWER_OFF, or the caller is a forked child that has not called `C_Initialize` (`getpid() != g_init_pid`), every `C_*` except `C_Initialize`, `C_GetFunctionList`, `C_GetInterfaceList` and `C_GetInterface` returns 0x190, `C_Finalize` included. `C_Finalize` with a non-NULL `pReserved` returns `CKR_ARGUMENTS_BAD` (0x7) before the state check.
+- **Test:** each entry point before `C_Initialize`, after `C_Finalize`, and in an uninitialised child.
+- **Expected harness diff:** none. Every test, both fork tests' children and the harness helpers (`atexit_finalize.c`, `fork_parent_log.c`) call `C_Initialize` first.
+
+### DIV-052 · RULE-075 A pairwise failure latches ERROR
+
+- **Status:** DECIDED, Fix (2026-11-03, Q13).
+- **Legacy:** a failed pairwise check frees the key and returns 0x6, but calls `fhsm_state_set(FHSM_STATE_ERROR)` (`src/fhsm_pkcs11.c:6783`), which the transition table refuses (INITIALIZED→ERROR is not whitelisted, `src/fhsm_state.c:40-47`). The module stays usable, against its own comment at `:6766`.
+- **Target:** `fhsm_state_latch_error("pairwise consistency failure")`; the call still returns 0x6 and writes the KAT_REPORT event; afterwards the module is in ERROR (DIV-053 says what that refuses).
+- **Test:** fault injection on the pairwise check.
+- **Expected harness diff:** none; no legacy key pair fails its check.
+
+### DIV-053 · RULE-073 What ERROR refuses
+
+- **Status:** DECIDED, Fix (2026-11-03, Q13). Scope DECIDED as proposed (2026-11-03, user: "Status calls only (Recommended)").
+- **Legacy:** about 25 entry points refuse in ERROR with 0x6; signing, verification, encryption, decryption, every `*Update`/`*Final`, digests, `C_DestroyObject`, `C_GetAttributeValue` and `C_FindObjects*` keep running (`:11309`, `:9761`, `:4140`). Asymmetric signing calls EVP directly and still produces signatures. The Phase 3 primitives already refuse (DIV-041).
+- **Target:** in ERROR every `C_*` returns `CKR_FUNCTION_FAILED` (0x6, C's existing code) except `C_Finalize` and the status calls that output no key material: `C_GetInfo`, `C_GetFunctionList`, `C_GetInterfaceList`, `C_GetInterface`, `C_GetSlotList`, `C_GetSlotInfo`, `C_GetTokenInfo`, `C_GetMechanismList`, `C_GetMechanismInfo`. An operation already active refuses at its next call. FIPS 140-3 §7.10.5: no data output in the error state.
+- **Test:** latch ERROR, then call every entry point.
+- **Expected harness diff:** none. No legacy test continues with crypto after ERROR (`test_audit_fsync` drives the audit library, not the API; `audit_switch.sh mandatory` checks only that `C_Initialize` refuses).
+
+### DIV-054 · RULE-082, RULE-005 `C_SetPIN` works
+
+- **Status:** DECIDED, Fix (2026-11-03, Q13). No DEK rotation DECIDED (2026-11-03, user: "Re-wrap only (Recommended)").
+- **Legacy:** `C_SetPIN` requires the session's role to hold the token, then `fhsm_token_set_pin` calls `fhsm_token_login` for that role, which returns `CKR_USER_ALREADY_LOGGED_IN` (0x100). The PIN can never change. Reproduced. The comments and `docs/EAL4_PLUS.md:20` say an SO `C_SetPIN` rotates the DEK; no code does.
+- **Target:** with USER logged in, `C_SetPIN` changes the user PIN; with SO, the SO PIN. The old PIN is verified against that role with the RULE-084 counter, throttle and lock, without logging in again; a wrong one is `CKR_PIN_INCORRECT` (0xA0). The DEK is re-wrapped under a fresh salt and nonce and written through the DIV-012 locked transaction; a SET_PIN audit event records the result. Nobody logged in: 0x101, as C. A read-only session: `CKR_SESSION_READ_ONLY` (0xB5), per PKCS#11. The new PIN's length follows DIV-059.
+- **No DEK rotation.** A PIN change is not a key compromise, and rotation means re-encrypting every object and the user wrap in one atomic write. The stale comments are not carried over, and `docs/EAL4_PLUS.md:20` goes on the documentation list for the cutover.
+- **Test:** user and SO PIN changes, the old PIN refused and the new accepted afterwards, a wrong old PIN counted.
+- **Expected harness diff:** none; no legacy test calls `C_SetPIN`.
+
+### DIV-055 · RULE-090 `C_CloseAllSessions` takes any valid slot, and closes only that slot's sessions
+
+- **Status:** DECIDED, Fix (2026-11-03, Q13).
+- **Legacy:** only slot 0 is accepted (`C_CloseAllSessions(1..3)` returns `CKR_SLOT_ID_INVALID`, 0x3; reproduced), and slot 0 closes every session on every slot. `C_OpenSession` accepts slots 0–3.
+- **Target:** slots 0–3 are accepted; only that slot's sessions close, with RULE-090's per-session cleanup and the last-session logout of that slot's token. A slot ≥ 4 is 0x3.
+- **Test:** sessions on two slots, close one slot, the other's sessions survive.
+- **Expected harness diff:** none. `test_apilock`, the only caller, opens sessions on slot 0 only.
+
+RULE-080(a), the `.tpm` file on re-init (the fifth Q13 item), is already fixed in the token layer: DIV-015, done in Phase 2. Phase 4 calls that code.
+
+### DIV-056 · RULE-041, RULE-037(b) A copy keeps its source's usage and policy
+
+- **Status:** DECIDED, Fix (2026-11-03, Q14, user: "C_CopyObject should keep the source's usage and policy unchanged (RULE-041).").
+- **Legacy:** `C_CopyObject` copies the flag bytes, dates and label (`src/fhsm_pkcs11.c:7995-8292`) but not the usage byte, so a key with `CKA_SIGN` FALSE yields a copy that signs. It copies only the "present" bits of the allowed-mechanism list and the nested templates, so the copy's templates are empty and pass every check, and `CKA_ALLOWED_MECHANISMS` in the copy template replaces the source's list. The read-only check reads only the template, while `CKA_TOKEN` is inherited from the source (`:8193-8204`).
+- **Target:** the copy carries the usage byte, the allowed-mechanism list and the three nested templates in full. A copy template may only narrow: a usage attribute FALSE→TRUE, or a `CKA_ALLOWED_MECHANISMS` that is not a subset of the source's, is `CKR_ATTRIBUTE_READ_ONLY` (0x10), the code C already uses for SENSITIVE 1→0 and EXTRACTABLE 0→1. A nested template in a copy template is 0xD1, as C does for CKA_CLASS. A copy that will be a token object (inherited or asked for) from a read-only session is 0xB5.
+- **Test:** a `CKA_SIGN`=FALSE key's copy refuses to sign; a widened mechanism list is refused; the copy's wrap template is enforced.
+- **Expected harness diff:** none. `test_copyable_oneway` and `test_encap_flags` already require a copy to be as restricted as its source.
+
+### DIV-057 · RULE-064 Derived keys inherit sensitivity; CKO_DATA only from `CKM_HKDF_DATA`
+
+- **Status:** DECIDED, Fix (2026-11-03, Q14, user: "Derived keys must inherit SENSITIVE and ALWAYS_SENSITIVE, and CKO_DATA is allowed only for CKM_HKDF_DATA (RULE-064).").
+- **Legacy:** a derived key defaults to SENSITIVE FALSE whatever its base (`src/fhsm_pkcs11.c:4824-4834`), and any derive mechanism accepts `CKA_CLASS=CKO_DATA`, whose value anyone can read without login (`:4789-4860`). A secret derived from a sensitive key can therefore be read in clear.
+- **Target:** a key derived from a SENSITIVE base is SENSITIVE; a template asking for `CKA_SENSITIVE` FALSE from such a base is 0xD1. ALWAYS_SENSITIVE of the derived key is the base's ALWAYS_SENSITIVE and its own SENSITIVE (PKCS#11 §4.10), kept as stored history (table: RULE-059). `CKA_CLASS=CKO_DATA` is 0xD1 for every mechanism but `CKM_HKDF_DATA`. Recorded: as decided, `CKM_HKDF_DATA` from a sensitive base still yields a readable data object.
+- **Test:** each derive mechanism from a sensitive and a non-sensitive base; CKO_DATA with `CKM_HKDF_DERIVE`.
+- **Expected harness diff (intended, two tests):**
+  - `test_ecdh_peer_point`: `C_DeriveKey(CKM_ECDH1_DERIVE, base = a generated EC private key, template CKA_SENSITIVE=FALSE)` returns 0xD1 instead of CKR_OK (`tests/test_ecdh_peer_point.c:83-86`). Its value checks fail, and the test exits 1 instead of 0.
+  - `probe_ecdh_curves`: the same call returns 0xD1 on every curve, for the generated key (`:143-146`) and the imported one (`:180-183`, a private key, always sensitive under RULE-058). Its table prints 0xd1 in both derive columns, the X25519 agreement prints FAIL, and the probe exits 1 instead of 0 (`:194-196`, `:290`).
+  - The harness carries a patched copy of each, deriving with the template's SENSITIVE left out, so the peer-point checks still run. The unpatched originals are the DIV tests: they fail on Rust as recorded and pass on C.
+  - The HKDF, concatenation and nested-template tests derive from bases created non-sensitive and are unchanged.
+
+### DIV-058 · RULE-063 `C_WrapKey` refuses a non-extractable key (SEC-003)
+
+- **Status:** DECIDED, Fix (2026-11-03, Q15, user: "SEC-003: refuse C_WrapKey whenever EXTRACTABLE is false.").
+- **Legacy:** only SENSITIVE=TRUE with EXTRACTABLE=FALSE is refused (`src/fhsm_pkcs11.c:4984-5030`). A key that is neither sensitive nor extractable (the derive and KEM default) wraps under a key the caller imported, and leaves the token. The comment at `:7215-7217` claims otherwise.
+- **Target:** a target with EXTRACTABLE=FALSE is `CKR_KEY_UNEXTRACTABLE` (0x6A), at the position of today's check.
+- **Test:** wrap a non-sensitive, non-extractable key.
+- **Expected harness diff:** none. Every wrap target in the five tests that call `C_WrapKey` is created with `CKA_EXTRACTABLE` TRUE.
+
+### DIV-059 · RULE-036, RULE-079(a) PIN minimum
+
+- **Status:** DECIDED, Fix (2026-11-03, Q7's Phase 4 half, user: "8 everywhere (Recommended)").
+- **Legacy:** 4 for `C_InitPIN`, `C_SetPIN`, a re-init's SO PIN and `C_GetTokenInfo`'s `ulMinPinLen`; 8 for a fresh token's SO PIN, reported as `CKR_PIN_INCORRECT` (0xA0) instead of 0xA2. `docs/FIPS_140_3.md:63` says 8.
+- **Target:** a new PIN under 8 bytes is 0xA2 on every path (`C_InitToken` fresh and re-init, `C_InitPIN`, `C_SetPIN`'s new PIN); `ulMinPinLen` is 8. `C_Login` is unchanged, so an existing token whose PIN is 4–7 bytes still logs in.
+- **Expected harness diff (intended, one test):** `test_input_validation` checks `ti.ulMinPinLen != 4 || ti.ulMaxPinLen != 64` after `C_GetTokenInfo` (`tests/test_input_validation.c:197`), and fails with 8. Every PIN in the legacy tests and scripts is 8 bytes or more. The alternative, 4 everywhere, changes the fresh-token SO PIN instead and has no harness diff.
+
+### DIV-001 in Phase 4
+
+The 45 `fhsm_pkcs11.c` and 2 `fhsm_state.c` audit call sites stop discarding the result (DIV-001, decided Q3): an operation whose audit record cannot be made durable returns `CKR_DEVICE_ERROR` (0x30) with its effect suppressed. **Expected harness diff:** none; the one test that fails an audit write (`test_audit_fsync`) drives the audit library directly, with no PKCS#11 call.
+
+### Phase 4 rules kept as C does them, fixed, or deferred (decision: as below, 2026-11-03, user: "Approve as drafted (Recommended)")
+
+| Rule | Suspected defect | Proposed | Expected harness diff |
+|---|---|---|---|
+| RULE-006 | `(uint32_t)p.iterations` narrows before the floor check (`:2829`): 2^32 + 2000 runs 2000 iterations | Fix: a count over 0xFFFFFFFF is `CKR_MECHANISM_PARAM_INVALID` (0x71) | none |
+| RULE-014 | GENERIC_SECRET of 1–13 bytes in the strict build (< 112 bits, SP 800-131A) | Fix in `nist-approved-only` only: `CKR_KEY_SIZE_RANGE` (0x62) | none found; the FIPS step confirms |
+| RULE-015 | A requested public exponent is replaced by 65537 and CKR_OK returned; e = 3 accepted | Fix: generate with the requested e when odd and 2^16 < e < 2^256 (FIPS 186-5), else `CKR_ATTRIBUTE_VALUE_INVALID` (0x13); absent stays 65537 | none (`test_rsa_oaep` sets the exponent on import only) |
+| RULE-017 | A string `CKA_PARAMETER_SET` is checked against all 18 names, not the family: ML-KEM keygen with "ML-DSA-65" stores an ML-DSA key as CKK_ML_KEM | Fix: a name outside the mechanism's family is 0x13 | none |
+| RULE-018 | GCM tags of 8–88 bits in the strict build | Preserve. SP 800-38D allows 32 and 64 under conditions the module cannot check; `test_gmac_params` uses 32 | none |
+| RULE-020 | ML-KEM truncation checks 1..32 but not the key type: CKK_AES of 5 bytes is stored | Fix: an AES length other than 16, 24, 32 is 0x62 | none |
+| RULE-035 | A read-only session opened during the SO's PBKDF2 is missed | Fix by construction: Rust re-checks under the API lock when the login commits | none |
+| RULE-037(a) | `C_EncapsulateKey` and `C_DecapsulateKey` create token objects from a read-only session | Fix: 0xB5 ((b) is DIV-056) | none |
+| RULE-055 | `CKA_PRIVATE` is not stored; visibility follows the class (a private CKO_DATA is public) | Preserve in Phase 4: storing it changes every object record and every visibility path. Recorded for after the cutover | none |
+| RULE-058 | KEM secrets default to SENSITIVE FALSE, against the comment at `:5459`; a decapsulated secret from a sensitive private key is readable | Preserve, and drop the comment. Applying DIV-057's rule to `C_DecapsulateKey` would fail `mlkem_e2e`, which reads the secret. Say if you want it anyway | none |
+| RULE-059 | ALWAYS_SENSITIVE and NEVER_EXTRACTABLE are computed from current flags, not history | Fix (DIV-057 needs it): two history bits in the free part of `flags3`, set when a key is ever non-sensitive or ever extractable. Both are 0 in every existing file, so old objects read as today (Q5); unwrapped and imported keys start with them set, per PKCS#11 | none (`test_attributes` reads a generated key: TRUE, TRUE as before) |
+| RULE-061 (Phase 2 candidate 4) | `fhsm_token_mech_allowed` answers OK for an unknown handle or nothing loaded | Fix: the policy check refuses what it cannot find; its callers check the handle first, so no reachable result changes | none |
+| RULE-065 | The strict build's `fhsm-service` always signs with the composite mechanism, so `/sign` returns 500 | Phase 6, with the service | none |
+| RULE-070 | AUTHENTICATED is whitelisted but never set | Preserve; nothing changes behaviour | none |
+| RULE-071 | A second `C_Initialize` returns 0x6, not `CKR_CRYPTOKI_ALREADY_INITIALIZED` (0x191) | Fix: 0x191 | none (no test initialises twice; a forked child's `C_Initialize` is a fresh initialisation) |
+| RULE-079 (VAL-12) | A locked SO cannot re-initialise; `docs/FIPS_140_3.md:63` says `C_InitToken` clears the lock | Preserve: the lock is the control, deleting the file the recovery. The doc goes on the cutover list | none |
+| RULE-083 | 0x101 where PKCS#11 says `CKR_USER_PIN_NOT_INITIALIZED` (0x102) | Fix: 0x102 | none |
+| RULE-084 | `CKF_*_PIN_COUNT_LOW` and `CKF_*_PIN_FINAL_TRY` never set; `PIN_THROTTLED` is mapped but never returned | Fix: COUNT_LOW while 1 ≤ failures < 5, FINAL_TRY at 4, for USER and SO; the dead mapping is not carried over | none |
+| RULE-090 (Phase 2 candidate 5) | `fhsm_token_destroy_session_objects` checks no login | Preserve: closing a session must clean up whoever is logged in | none |
+| RULE-091 | A session object's marking result is ignored (`:2554`), so a failed rewrite leaves it a token object; 128 sessions advertised, 127 possible | Fix: a failed marking destroys the object and returns the error; 128 sessions open | none |
+| RULE-092 | No ERROR check; no session ownership check; no visibility check; an unknown handle is 0x60 | ERROR: DIV-053. Visibility: DIV-050. Ownership: preserve (PKCS#11 shares session objects among the application's sessions). Unknown handle: Fix, `CKR_OBJECT_HANDLE_INVALID` (0x82) | none (no test destroys an unknown handle) |

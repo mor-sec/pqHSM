@@ -790,3 +790,20 @@ Recorded for later:
 - **Phase 5:** DIV-021/069 clamping (the plan's slice 5 row) is still Phase 5.
 - The harness has no gate: its summary is read, not asserted. Step 4e's tampered line now says UNEXPECTED when wrong, like the others say DIFF.
 - Still open from earlier slices: the token crate's crypto seam consolidation; slice 4's L2 and N1.
+
+## Phase 3 exit criteria: status
+
+Closed 2026-11-03 (user: "Close Phase 3 (Recommended)"). Final hybrid run `p3x2`, after slice 5's commit (`2e1fedb`) and the two additions below.
+
+| Brief exit criterion | Evidence | Status |
+|---|---|---|
+| KAT, CAVP and Wycheproof byte for byte, default mode and FIPS provider | The KAT goldens (slice 4) replay in default mode. The FIPS step's KAT report (62 vectors, CAVP and extended set included) is the same as `BASELINE.md` on both profiles. Wycheproof: hybrid = C = baseline in default mode, 0 violations. **New:** Wycheproof again on a C and a hybrid build of each profile, signed, with the provider active: hybrid = C on both, 0 violations. The runner needs `FHSM_EVIDENCE=1` for this; without it, it sets the integrity bypass itself, and the module never loads the provider (the first try, run `p3x1`, measured that by mistake). Without a bypass, init loads the provider and makes it the default for every fetch, or fails (`crypto/src/lifecycle.rs:128-161`, as C). The counts equal default mode's, as `docs/PQC_VEILLE.md` found for C | ✅ |
+| Composite, X.509, CSR, CRL, OCSP: `make tests` and the `openssl` CLI | The 17 `test_composite_*`, `test_pki_classic` and `test_pkiops*` tests pass. PKI step: 21 DER files C = hybrid; the CLI verifies all 18 artifacts on both builds; the tampered set is refused | ✅ |
+| DRBG health tests pass property tests at their cutoffs | **New:** four `proptest` properties in `crypto/src/drbg.rs`: the RCT fails exactly at a run of 6 wherever it sits; the APT fails exactly at the window's 19th occurrence and counts each 512-sample window afresh; the CRNGT fails exactly on a block equal to the one before. The cutoffs are written out, not the constants under test: a first version that read the constants missed both RCT mutants. 7 of 7 mutants killed (RCT 5 and 7, APT 18 and 20, the window doubled, the CRNGT off, the CRNGT not carried over) | ✅ |
+| Self-test bypasses as Q11; integrity against the Rust module | Slice 4: DIV-034, DIV-035, DIV-046; integrity swap and FIPS step | ✅ |
+| Secure heap mlocked and zeroed on free | Slice 1, harness step 4b | ✅ |
+| Every P0 rule gated at Phase 3 | All 15 are covered. RULE-001, 002: core goldens, the token's vectors, DIV-011, DIV-045. RULE-006: core rows (999 iterations, output 0 and 257, the PRF codes); its PKCS#11 part is Phase 4. RULE-009: integrity goldens. RULE-010 to 013: DRBG goldens, the properties above, DIV-032/033/036/037/042 to 044. RULE-021, 022: x509 rows (days, serials, CRL numbers 0 to 6), byte for byte with the clock pinned; the `fhsm-ca` database parts are Phase 5. RULE-025: composite rows (M′ 127, signature lengths, ctx 256), DIV-048. RULE-069: DIV-049. RULE-073: DIV-041. RULE-074: KAT runs, DIV-034, DIV-046, DIV-047. RULE-076: lifecycle goldens, DIV-035 | ✅ |
+
+Also in `p3x2`: 106/106, `nm -D` (63 symbols) and NEEDED identical, all swaps, TSan 0 races, corpus 64 same / 4 explained, FIPS identical on both profiles. Workspace 877 pass, 0 fail; fmt and clippy `-D warnings` clean in the three feature sets. Token files: 64 of 66 identical. The other two are the pair Phase 2 explained, whose size follows the DER length of freshly generated keys: `test_pkiops_envelope_rsa` at 5,741 bytes, inside the C-only range, and `test_pkiops_algs` at 51,962, one byte under the 51,963–51,966 that three C runs gave. Every field but the size is identical.
+
+**Not done in Phase 3, and why:** the token crate's crypto seam still declares the `fhsm_*` primitives as externs. In the hybrid they resolve to the Rust exports, so the token already runs on Rust crypto. Collapsing the seam into the crate would bypass those exports' check of the module state, which is C until Phase 4. It moves with the state, in Phase 4.

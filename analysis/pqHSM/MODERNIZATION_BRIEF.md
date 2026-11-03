@@ -213,12 +213,12 @@ About 2.6 KSLOC (the dead dispatch layer, `fhsm_mode.c` and `kat/fhsm_kat_rsp.c`
   - [x] *(2026-11-02: `BASELINE.md` § FIPS-provider baseline, both profiles, fixtures in `baseline/fips/`)* `BASELINE.md` contains the FIPS-provider baseline: the power-on self-test, KAT and approved-mode refusal outputs from a build with the FIPS provider active.
   - [x] `DIVERGENCES.md` has a decision for every suspected-defect rule gated at Phase 3. *(2026-11-02: DIV-032 to DIV-037, plus the preserve/defer table)*
 - **Exit criteria:**
-  - [ ] Every KAT, CAVP and Wycheproof vector matches byte for byte, in default mode and with the FIPS provider active.
-  - [ ] Composite ML-DSA, X.509, CSR, CRL and OCSP outputs pass `make tests` (`test_composite_*`, `test_pki_classic`, `test_pkiops*`) and cross-verify with the `openssl` CLI.
-  - [ ] DRBG health tests (RCT, APT, CRNGT) pass property tests at their configured cutoffs.
-  - [ ] Self-test bypasses behave as Q11 decided. Integrity is checked against the Rust-built module's digest.
+  - [x] *(2026-11-03: see TRANSFORMATION_NOTES § Phase 3 exit criteria; harness run p3x2: KAT and CAVP report same as BASELINE on both profiles; Wycheproof hybrid = C in default mode and, signed with the provider active (`FHSM_EVIDENCE=1`), on both profiles)* Every KAT, CAVP and Wycheproof vector matches byte for byte, in default mode and with the FIPS provider active.
+  - [x] *(2026-11-03: see TRANSFORMATION_NOTES § Phase 3 exit criteria; harness run p3x2: the 17 tests pass; PKI step: 21 DER files C = hybrid, openssl CLI verifies all 18 artifacts, tampered set refused)* Composite ML-DSA, X.509, CSR, CRL and OCSP outputs pass `make tests` (`test_composite_*`, `test_pki_classic`, `test_pkiops*`) and cross-verify with the `openssl` CLI.
+  - [x] *(2026-11-03: see TRANSFORMATION_NOTES § Phase 3 exit criteria; harness run p3x2: four proptest properties in `crypto/src/drbg.rs`; 7 of 7 cutoff mutants killed)* DRBG health tests (RCT, APT, CRNGT) pass property tests at their configured cutoffs.
+  - [x] *(2026-11-03, slice 4: DIV-034, DIV-035, DIV-046; integrity swap and FIPS step)* Self-test bypasses behave as Q11 decided. Integrity is checked against the Rust-built module's digest.
   - [x] *(2026-11-02, slice 1: harness step 4b, C and hybrid identical; `test_secure_heap` needed a missing SO logout in the harness copy, see TRANSFORMATION_NOTES § Phase 3; `probe_secure_heap` 8192 kB locked)* The secure heap is mlocked and zeroed on free, verified by `test_secure_heap`.
-  - [ ] Every P0 rule gated at Phase 3 in §5 passes.
+  - [x] *(2026-11-03: see TRANSFORMATION_NOTES § Phase 3 exit criteria; harness run p3x2: all 15 covered by a C golden, property or DIV test; RULE-006's PKCS#11 part is Phase 4, RULE-021/022's fhsm-ca parts Phase 5)* Every P0 rule gated at Phase 3 in §5 passes.
 - **Risk: High.**
   1. *FIPS-mode drift: provider load order, self-test ordering, or a non-approved fallback in `openssl-sys` usage silently weakens approved mode.* Mitigation: the FIPS-provider baseline is an entry gate; approved-mode refusal tests (RULE-065) run in both modes.
   2. *DRBG and entropy health-test parameters are uncertain (RULE-012, Medium confidence).* Mitigation: SME answer before entry; property tests pin the cutoff and comparison direction.
@@ -230,9 +230,9 @@ About 2.6 KSLOC (the dead dispatch layer, `fhsm_mode.c` and `kat/fhsm_kat_rsp.c`
   - At exit, no C remains in the module.
   - Port behaviour from D1's hand-written `switch` blocks, not from `src/dispatch/`.
 - **Entry criteria:**
-  - [ ] Phase 3 exit criteria are met.
-  - [ ] Q12–Q17 are ticked. **Q14 (RULE-041 and RULE-064) is a P0 blocker.**
-  - [ ] `DIVERGENCES.md` has a decision for every suspected-defect rule gated at Phase 4. Every intended divergence lists the exact expected harness diff, as return code and call.
+  - [x] Phase 3 exit criteria are met. *(2026-11-03: see Phase 3 above; harness run p3x2)*
+  - [x] Q12–Q17 are ticked. *(2026-11-03)* **Q14 (RULE-041 and RULE-064) is a P0 blocker.**
+  - [x] *(2026-11-03: DIV-050 to DIV-059, DIV-001's Phase 4 sites and the 21-row table, each with its expected harness diff)* `DIVERGENCES.md` has a decision for every suspected-defect rule gated at Phase 4. Every intended divergence lists the exact expected harness diff, as return code and call.
   - [ ] **Pilot slice named and done first:** the *lifecycle, session and login group*:
     - `C_Initialize`, `C_Finalize`, `C_GetInfo`;
     - `C_OpenSession`, `C_CloseSession`, `C_CloseAllSessions`, `C_GetSessionInfo`;
@@ -485,7 +485,7 @@ unticked box blocks that phase.
 **Before Phase 2**
 - [x] **Q5 On-disk compatibility.** **Answered 2026-10-30: yes, stay compatible.** Rust reads and writes the current formats byte for byte. Must existing `slotN.tok` v3, `.tpm` and audit chains remain readable by pqHSM? *(rec.: yes; dual execution requires it through Phase 4 anyway)*
 - [x] **Q6 SEC-002 zero-DEK fallback (RULE-066, also RULE-004/044 header authentication).** *(rec.: drop the silent fallback; offer an explicit offline migration command for ≤2.5.0 tokens; authenticate the header in a new format version only if Q5 permits)* **Answered 2026-10-30: drop the silent fallback (a failed decrypt is a reported error) and add an explicit one-shot offline migration command for ≤2.5.0 tokens.** Q5 keeps the format, so the header is not authenticated in this pass.
-- [x] **Q7 PIN minimum (RULE-036/079).** Should it be 4 (code), or 8 (`docs/FIPS_140_3.md` and fresh-token SO PIN)? **Answered 2026-10-30: keep 4 in Phase 2, with 8 for a fresh token's SO PIN as today. The general minimum is decided at Phase 4 with `fhsm_pkcs11.c`.**
+- [x] **Q7 PIN minimum (RULE-036/079).** Should it be 4 (code), or 8 (`docs/FIPS_140_3.md` and fresh-token SO PIN)? **Answered 2026-10-30: keep 4 in Phase 2, with 8 for a fresh token's SO PIN as today. The general minimum is decided at Phase 4 with `fhsm_pkcs11.c`.** **Phase 4 half answered 2026-11-03: 8 on every path** (user: "8 everywhere (Recommended)"; DIV-059).
 - [x] **Q8 SEC-004 cross-process lockout (RULE-084).** Enforce PIN failure counters across processes with a file lock and atomic writes? **Answered 2026-10-30: fix.** Take `flock` on the token file, re-read the counter, update it, and write it back through the existing tmp + fsync + rename.
 
 **Before Phase 3**
@@ -495,19 +495,19 @@ unticked box blocks that phase.
 - [x] **Q11 Self-test bypasses and re-runs (RULE-074/076/077).** **Answered 2026-11-02: as recommended.** *(rec.: allow `FHSM_INTEGRITY_ALLOW_UNSIGNED` and `FHSM_KAT_ALLOW_FAIL` only in non-release builds; re-run self-tests after `C_Finalize`→`C_Initialize` and in fork children)*
 
 **Before Phase 4**
-- [ ] **Q12 SEC-001 (RULE-056/086).** Gate key use on login, and drop decrypted objects at logout. *(rec.: fix)*
-- [ ] **Q13 Reproduced lifecycle defects.** *(rec.: fix all as recorded divergences)* They are:
+- [x] **Q12 SEC-001 (RULE-056/086).** **Answered 2026-11-03: fix** (user: "SEC-001: require login before a key can be used, and drop decrypted objects at logout."). Gate key use on login, and drop decrypted objects at logout. *(rec.: fix)*
+- [x] **Q13 Reproduced lifecycle defects.** **Answered 2026-11-03: fix all five** (user: "Fix the five reproduced lifecycle defects."). Still to settle in the DIVs: whether an SO `C_SetPIN` rotates the DEK, and how widely ERROR refuses calls (RULE-073). *(rec.: fix all as recorded divergences)* They are:
   - return `CKR_CRYPTOKI_NOT_INITIALIZED` before `C_Initialize` (RULE-072);
   - latch ERROR on a pairwise failure (RULE-075), and set how widely ERROR refuses calls (RULE-073);
   - make `C_SetPIN` work (RULE-082/005; and whether an SO `C_SetPIN` rotates the DEK);
   - make `C_CloseAllSessions` accept every valid slot (RULE-090);
   - reseal or remove the `.tpm` file on re-init (RULE-080).
-- [ ] **Q14 (BLOCKER).**
+- [x] **Q14 (BLOCKER).** **Answered 2026-11-03** (user: "C_CopyObject should keep the source's usage and policy unchanged (RULE-041). Derived keys must inherit SENSITIVE and ALWAYS_SENSITIVE, and CKO_DATA is allowed only for CKM_HKDF_DATA (RULE-064).").
   - RULE-041: must `C_CopyObject` carry the source's usage and policy unchanged?
   - RULE-064: must derived keys inherit SENSITIVE and ALWAYS_SENSITIVE, and is CKO_DATA allowed only for `CKM_HKDF_DATA`?
-- [ ] **Q15 SEC-003 (RULE-063).** Refuse `C_WrapKey` whenever EXTRACTABLE is FALSE, as the spec requires? *(rec.: fix)*
-- [ ] **Q16 Dead code.** Confirm that runtime mode (`fhsm_mode.c`) and the `src/dispatch/*` handlers are **not ported**, with the build profile as the only mode switch. *(rec.: confirm)*
-- [ ] **Q17 Composite.** Is the composite ML-DSA-65+Ed25519 mechanism (non-FIPS) in scope for the FIPS-profile build?
+- [x] **Q15 SEC-003 (RULE-063).** **Answered 2026-11-03: fix** (user: "SEC-003: refuse C_WrapKey whenever EXTRACTABLE is false."). Refuse `C_WrapKey` whenever EXTRACTABLE is FALSE, as the spec requires? *(rec.: fix)*
+- [x] **Q16 Dead code.** **Answered 2026-11-03: confirmed** (user: "Confirm that runtime mode (fhsm_mode.c) and src/dispatch/* are not ported, leaving the build profile as the only mode switch."). Confirm that runtime mode (`fhsm_mode.c`) and the `src/dispatch/*` handlers are **not ported**, with the build profile as the only mode switch. *(rec.: confirm)*
+- [x] **Q17 Composite.** **Answered 2026-11-03: not in the FIPS profile** (user: "Not in FIPS profile"). C already does this: `fhsm_build_fips_strict` refuses it with MECHANISM_INVALID at keygen, C_SignInit and C_VerifyInit (`src/fhsm_pkcs11.c:6606`, `:10832`, `:11526`), so Phase 4 preserves C, and every one of the three sites needs a test. Is the composite ML-DSA-65+Ed25519 mechanism (non-FIPS) in scope for the FIPS-profile build?
 
 **Before Phase 6**
 - [ ] **Q18 Rename surface.** Library filename (`libpqhsm.so` plus a `libfreehsm.so` compatibility symlink?), binary names (`pqhsm-*`), `CK_INFO` manufacturer and library strings, and env var prefixes (`FHSM_*`). This is the second rebrand; `REBRAND_CHECKLIST.md` records the first one's friction.

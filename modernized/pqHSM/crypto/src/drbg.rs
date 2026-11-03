@@ -238,6 +238,7 @@ impl<S: Source> Drbg<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     /// A generator that repeats `pattern`, always seeds, and never moves its clock.
     struct Fixed(Vec<u8>);
@@ -319,5 +320,77 @@ mod tests {
         let mut d = Drbg::new(Fixed((1..=8).collect()));
         assert_eq!(d.bytes(&mut [0; 8]), Ok(()));
         assert_eq!(d.bytes(&mut [0; 8]), Ok(()));
+    }
+
+    /// The health test `stream` trips, if any: one request of the stream's own length, so the
+    /// generator never repeats it.
+    fn trips(stream: Vec<u8>) -> Option<&'static CStr> {
+        let mut out = vec![0; stream.len()];
+        match Drbg::new(Fixed(stream)).bytes(&mut out) {
+            Ok(()) => None,
+            Err(Error::Latch(m)) => Some(m),
+            Err(e) => panic!("{e:?}"),
+        }
+    }
+
+    /// No run, no recurring first byte, no repeated block: none of the three tests trips.
+    fn background(n: usize) -> Vec<u8> {
+        (0..n).map(|i| (i % 200) as u8).collect()
+    }
+
+    // Exit criterion 3 of Phase 3 (PHASE3_PLAN.md §4.4): each test trips exactly at its cutoff,
+    // wherever the samples fall. The cutoffs are written out (6, 19), not the constants under
+    // test. Inserted bytes are 200 or more, so the background never extends them.
+    proptest! {
+        /// RCT (RULE-011): a run of one byte fails at its 6th sample.
+        #[test]
+        fn rct_fails_exactly_at_its_cutoff(run in 1usize..12, at in 0usize..1000, x in 200u8..) {
+            let mut s = background(1024);
+            s[at..at + run].fill(x);
+            let want = (run >= 6).then_some(c"DRBG RCT alarm");
+            prop_assert_eq!(trips(s), want);
+        }
+
+        /// APT (RULE-012, DIV-032): the window's first byte fails at its 19th occurrence,
+        /// counting itself. The copies sit on even samples, never adjacent, so the RCT stays quiet.
+        #[test]
+        fn apt_fails_exactly_at_its_cutoff(
+            at in proptest::sample::subsequence((1..256usize).collect::<Vec<_>>(), 0..40),
+            x in 200u8..,
+        ) {
+            let mut s = background(768);
+            s[0] = x;
+            for i in &at {
+                s[2 * i] = x;
+            }
+            let want = (1 + at.len() >= 19).then_some(c"DRBG APT alarm");
+            prop_assert_eq!(trips(s), want);
+        }
+
+        /// APT: the count starts again with each 512-sample window, from that window's first byte.
+        #[test]
+        fn apt_counts_one_window_at_a_time(first in 1usize..19, second in 1usize..19, x in 200u8..) {
+            let mut s = background(1024);
+            for k in 0..first {
+                s[2 * k] = x;
+            }
+            for k in 0..second {
+                s[512 + 2 * k] = x;
+            }
+            prop_assert_eq!(trips(s), None);
+        }
+
+        /// CRNGT (RULE-013, DIV-037): a 16-byte block equal to the one before fails; distinct
+        /// neighbours never do. Block v is v, v+17, v+34, ...: no run longer than 2, and under
+        /// 18 blocks no byte occurs 19 times.
+        #[test]
+        fn crngt_fails_exactly_on_a_repeated_block(v in proptest::collection::vec(0u8..4, 1..18)) {
+            let s = v
+                .iter()
+                .flat_map(|&b| (0..16u8).map(move |j| b.wrapping_add(j.wrapping_mul(17))))
+                .collect();
+            let want = v.windows(2).any(|w| w[0] == w[1]).then_some(c"DRBG CRNGT repeated block");
+            prop_assert_eq!(trips(s), want);
+        }
     }
 }
