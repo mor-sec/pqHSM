@@ -23,3 +23,4 @@ pqhsm-token = { path = "../token", features = ["ffi"] }
 pqhsm-pki = { path = "../pki", features = ["ffi"] }
 pqhsm-crypto = { path = "../crypto", features = ["ffi"] }
 pqhsm-selftest = { path = "../selftest", features = ["ffi"] }
+pqhsm-p11 = { path = "../p11", features = ["ffi"] }

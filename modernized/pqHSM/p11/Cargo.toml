@@ -1,0 +1,16 @@
+[package]
+name = "pqhsm-p11"
+description = "pqHSM PKCS#11 API layer (replaces src/fhsm_pkcs11.c, PHASE4_PLAN.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+# The C ABI. Off for `cargo test`, on for the hybrid build: the tables name the C entry points
+# still defined in src/fhsm_pkcs11.c, which only the module link provides.
+ffi = []

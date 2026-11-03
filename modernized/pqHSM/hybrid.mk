@@ -10,6 +10,7 @@
 # because every `make tests` recipe sets FHSM_INTEGRITY_ALLOW_UNSIGNED (DIV-034). Slice 4:
 # src/fhsm_integrity.c; its digest array stays C, where scripts/sign_module.sh patches it.
 # Slice 5: src/fhsm_composite.c, in the module and in every PKI tool and test_pkiops* link.
+# Phase 4 slice 0: the function tables and C_GetFunctionList, C_GetInterfaceList, C_GetInterface.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -71,6 +72,18 @@ $(OBJDIR)/src/fhsm_crypto.o: $(PQHSM_KAT_SHIM) $(PQHSM_LIB)
 $(OBJDIR)/src/fhsm_integrity.o: $(PQHSM_DIGEST_SHIM) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# fhsm_pkcs11.o: C's three table calls are made local, and the shim exporting Rust's is linked
+# into the same object, so every $(LIB_OBJ) link picks it up unchanged. The other C_* stay C's
+# and the Rust tables point at them.
+PQHSM_P11_SHIM := $(PQHSM_DIR)/p11/shim/interface.c
+$(OBJDIR)/src/fhsm_pkcs11.o: src/fhsm_pkcs11.c $(PQHSM_P11_SHIM) $(PQHSM_LIB)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@.c.o $<
+	objcopy --localize-symbol=C_GetFunctionList --localize-symbol=C_GetInterfaceList \
+	    --localize-symbol=C_GetInterface $@.c.o
+	$(CC) $(CFLAGS) -c -o $@.shim.o $(PQHSM_P11_SHIM)
+	$(LD) -r -o $@ $@.c.o $@.shim.o
 
 # test_tpm linked fhsm_tpm.c rebuilt with -DFHSM_TPM_TEST_HOOKS. That seam is now the Rust
 # feature, so the object is empty and test_tpm links the hooks staticlib instead. LDFLAGS is

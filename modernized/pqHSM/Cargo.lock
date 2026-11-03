@@ -299,10 +299,15 @@ version = "0.1.0"
 dependencies = [
  "pqhsm-audit",
  "pqhsm-crypto",
+ "pqhsm-p11",
  "pqhsm-pki",
  "pqhsm-selftest",
  "pqhsm-token",
 ]
+
+[[package]]
+name = "pqhsm-p11"
+version = "0.1.0"
 
 [[package]]
 name = "pqhsm-pki"

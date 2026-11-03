@@ -192,6 +192,18 @@ printf 'pki_artifacts: C %s, hybrid %s; %s DER files, %s differ; openssl CLI: C 
   "$(grep -o ' ok' /out/pki_cli_c.txt | wc -l)" "$(grep -o ' ok' /out/pki_cli_hybrid.txt | wc -l)" "$(cat /out/pki_cli_c.txt /out/pki_cli_hybrid.txt | grep -o FAIL | wc -l)" \
   "$([ "$(cat /out/pki_cli_tampered.txt)" = "$TAMPERED_WANT" ] && echo 'every signed part refused, as expected' || echo "UNEXPECTED: $(cat /out/pki_cli_tampered.txt)")" > /out/pki_tests.txt
 
+# 4f. Phase 4 slice 0 (PHASE4_PLAN.md §2): the function tables are Rust's. p11_tables.c prints
+#     every slot of the v2.40, v3.0 and v3.2 tables by symbol name, and the argument checks of
+#     the three calls that return them; C and hybrid must print the same.
+cc -o /tmp/p11_tables modernized/pqHSM/tests-support/hybrid/p11_tables.c -ldl
+for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+  tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_tables $lib > /out/p11_tables_$tag.txt 2>&1; echo "rc=$?" >> /out/p11_tables_$tag.txt
+done
+printf 'p11 tables: C %s, hybrid %s, %s lines, %s' "$(tail -1 /out/p11_tables_c.txt)" "$(tail -1 /out/p11_tables_hybrid.txt)" \
+  "$(wc -l < /out/p11_tables_c.txt)" \
+  "$(cmp -s /out/p11_tables_c.txt /out/p11_tables_hybrid.txt && echo identical || echo "DIFFER: $(diff /out/p11_tables_c.txt /out/p11_tables_hybrid.txt | grep -c '^[<>]') lines")" > /out/p11_tables.txt
+
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
@@ -373,6 +385,7 @@ rm -rf /tmp/wy /tmp/venv
   echo "drbg: $(cat /out/drbg_tests.txt)"
   echo "integrity: $(cat /out/integrity_tests.txt)"
   echo "pki: $(cat /out/pki_tests.txt)"
+  echo "$(cat /out/p11_tables.txt)"
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"
