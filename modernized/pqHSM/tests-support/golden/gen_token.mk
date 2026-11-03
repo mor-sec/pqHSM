@@ -72,3 +72,13 @@ gen_kat: $(GEN_DIR)/gen_kat.c kat/fhsm_kat_vectors.c kat/cavp_extended.c $(OBJDI
 # regen_selftest.sh.
 gen_pairwise: $(GEN_DIR)/gen_pairwise.c $(OBJDIR)/src/fhsm_pairwise.o
 	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_pairwise.o $(LDFLAGS)
+
+# Phase 3 slice 5: the legacy composite and PKI encoders (src/fhsm_composite.c); libcrypto only.
+# Used only by regen_composite.sh.
+gen_composite: $(GEN_DIR)/gen_composite.c $(OBJDIR)/src/fhsm_composite.o
+	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_composite.o $(LDFLAGS)
+
+# Phase 3 slice 5b: the legacy X.509 encoders. Defines time() itself (see the file). Used only by
+# regen_composite.sh.
+gen_x509: $(GEN_DIR)/gen_x509.c $(OBJDIR)/src/fhsm_composite.o
+	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/src/fhsm_composite.o $(LDFLAGS)

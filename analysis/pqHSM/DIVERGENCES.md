@@ -532,6 +532,20 @@ Drafted 2026-11-02 for the Phase 3 entry gate ("a decision for every suspected-d
 - **Target:** such a vector is recorded as failed, so `fhsm_kat_run_all` returns `FHSM_RV_KAT_FAILED` at that vector, as for a wrong digest. Every other line of the file is read as C reads it: glibc's `atoi` and `%2x`, 2047-byte lines.
 - **Expected harness diff:** none; the shipped file's longest vector is 896 bits (`kat/cavp/sha2_256_short.rsp`).
 
+### DIV-048 · RULE-021, RULE-025 A signer that reports more signature than it was given room for fails the build
+
+- **Status:** DONE (2026-11-03, Phase 3 slice 5, `pki/src/ffi/c_abi.rs` `c_sign`). DECIDED, Fix (2026-11-03, user: "keep refusing a signer callback that reports a longer signature than its buffer"). Recorded: mine, found while porting. No golden row: on C the case is an out-of-bounds read. Test: `pki/tests/x509_golden.rs`, after the replay.
+- **Legacy:** every builder in `src/fhsm_composite.c` hands the signer callback an 8,192-byte heap buffer (`FHSM_PKI_SIG_MAX`, `OPENSSL_malloc` at `:762`, `:900`, `:1753`, `:2056`, `:2400`) with `*sig_len` set to its size, then copies `*sig_len` bytes from it, whatever the callback wrote there (`:765`, `:904`, `:1756`, `:2061`, `:2404`). A callback that returns OK with a larger length makes C read past the buffer into the structure it signs.
+- **Target:** that call fails with `FHSM_RV_FUNCTION_FAILED` and nothing is written. A length within the room is used as before, so every signer the project has (the PKCS#11 callbacks in `tools/pkiops.c`, the composite signer) behaves as before.
+- **Expected harness diff:** none; no callback reports more than it wrote.
+
+### DIV-049 · RULE-069 A public key whose AlgorithmIdentifier parameters are a BOOLEAN is refused
+
+- **Status:** DONE (2026-11-03, Phase 3 slice 5, `pki/src/ffi/x509.rs` `spki_into_slot`). DECIDED, Fix (2026-11-03, user: "keep refusing BOOLEAN key parameters"). Recorded: found by the slice 5 architecture review (M1) and reproduced on the C object. No golden row: on C it crashes. Test: `pki/tests/x509_golden.rs`, after the replay; fuzz seed `pki/fuzz/seeds/der_inputs/csr_spki_div049_boolean.bin`.
+- **Legacy:** `spki_into_slot` (`src/fhsm_composite.c:658-684`) copies a SubjectPublicKeyInfo's parameters with `ASN1_STRING_dup` for every type but OBJECT, NULL and absent. For a BOOLEAN, `X509_ALGOR_get0` hands back the value itself (0xFF for TRUE) as the pointer, and the copy faults. The same copy takes the signer's key (`fhsm_pki_csr`, `fhsm_pki_selfsigned`) and an issued request's key (`fhsm_pki_issue`, `:1320`). `pub_from_slot` (`:1040-1054`) checks only the composite OID, so a request whose key carries `BOOLEAN TRUE` and is properly composite-signed passes proof of possession and then crashes the issuing tool. Reproduced: a composite-OID SPKI with BOOLEAN parameters given to `fhsm_pki_csr` segfaults the C object.
+- **Target:** such a key is `FHSM_RV_ARGUMENTS_BAD`, before anything is built. Every other parameter type is copied as before. Requiring absent parameters on a composite key (they MUST be absent) would refuse more inputs C accepts; it is left for Phase 5.
+- **Expected harness diff:** none; no test uses such a key.
+
 ### Phase 3 rules kept as C does them, or deferred (decision: as below, 2026-11-02, user: "Approve as drafted")
 
 | Rule | Suspected defect | Proposed |

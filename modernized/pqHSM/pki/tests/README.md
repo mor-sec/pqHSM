@@ -27,8 +27,55 @@ podman run --rm --cap-drop=DAC_OVERRIDE,DAC_READ_SEARCH \
     -v $PWD:/repo:z -v <cargo-registry>:/opt/rust/cargo/registry:Z \
     -w /repo/modernized/pqHSM localhost/pqhsm-rust:1.99.1 \
     cargo test --offline -p pqhsm-pki                    # 322 tests
-#   ... cargo test --offline -p pqhsm-pki --features ffi   # + 14 C ABI tests
+#   ... cargo test --offline -p pqhsm-pki --features ffi   # + 14 C ABI tests, + composite_golden
 ```
+
+`composite_golden.rs` (Phase 3 slice 5a) replays `golden/composite/composite.tsv`, which
+`tests-support/golden/regen_composite.sh` writes from `src/fhsm_composite.c:1-481`: each
+call to the composite ML-DSA C ABI gets the same arguments, and the row must match C's
+(return code, length, output bytes). Signing uses C's key pair (`composite_fixture.tsv`, a
+freshly generated test key). The Ed25519 half must match C's byte for byte; the ML-DSA half
+must verify. Verification runs on C's own signatures.
+
+`x509_golden.rs` (slice 5b) replays `golden/composite/x509.tsv`, written by
+`tests-support/golden/gen_x509.c` from `src/fhsm_composite.c:482-1450`. It covers the raw and
+SPKI forms of a composite key, PKCS#10 requests, self-signed roots and issued certificates,
+both composite and classic. Each row records the return code, the length, the first 8 bytes
+of the buffer, the SHA-256 of the output, and what the signing callback saw. Signatures come
+from a deterministic stand-in (SHA-256 of the to-be-signed bytes, stretched), so every byte
+the encoder writes is pinned. Both the generator and the test define `time()`, which
+libcrypto's `X509_gmtime_adj` binds to, so every validity date is 2027-01-01T00:00:00Z. The
+requests that must pass proof of possession are really signed, and they are inputs in
+`x509_fixture.tsv`.
+
+Slice 5c adds rows to the same file: CRLs, OCSP SingleResponses, ResponseData,
+BasicOCSPResponses, and `fhsm_pki_algid`'s table (`:1451-2128`). Every `der_len` ceiling has
+a row on each side of it; the size check runs before the output is written, so a cap of 1
+reports the size without a 16 MiB buffer. The OCSP responder's C ABI now calls the real
+encoder. `revocation_ffi.rs` replays every non-synth answer row with the clock pinned to
+gen_rev's NOW and C's signatures handed back. `common/c_doubles.rs` holds those two doubles,
+the clock and the signer. The response must be C's bytes, and the encoder must have asked to
+sign C's tbsResponseData.
+
+Slice 5d adds the rest of the file (`:2129-2917`): `fhsm_pki_ecdsa_raw_to_der`, the CMS
+SignerInfo and ContentInfo encoders, `fhsm_pki_cms` and `fhsm_composite_cms` for every signer,
+and the CMS readers (`fhsm_pki_cms_digest`, `fhsm_pki_cms_verify`, `fhsm_composite_cms_verify`).
+The generator verifies real structures, signed by keys it makes, and structures it assembles
+by hand: a signature or digest that does not match, attributes out of order or missing, two
+signers, two certificates, PSS parameters, an unknown algorithm. Each structure and its digest
+go into `x509_fixture.tsv` as `cmsv:<name>` and `cmsd:<name>`, and the test runs every one
+through all three readers. That way an input C never produced still has C's answer. 571 rows
+in `x509.tsv` in all.
+
+`pki/fuzz/` (nightly `cargo fuzz`, outside the workspace, like `token/fuzz/`): `der_reader`
+(`tlv_at` and the walk to the signed attributes) and `der_inputs`. `der_inputs` covers the CMS
+readers, whose return codes must stay OK, SIGNATURE_INVALID or ARGUMENTS_BAD. It also covers the
+certificate input of `fhsm_pki_cms`, `fhsm_pki_crl` and `fhsm_pki_ocsp`, the CA and request of
+`fhsm_pki_issue`, the signer's SPKI and AlgorithmIdentifier through `fhsm_pki_csr`, and a raw
+composite public key. A mutated request fails its proof of possession, so what issuance does
+after that sees only the seed requests; the SPKI selector reaches the same key copy without
+one (DIV-049). The targets are seeded from the golden fixture's public structures.
+`src/fhsm_composite.c` has no PEM parser, so there is none to fuzz.
 
 - **`--cap-drop` is required.** Root in the container can read a mode-000 file and write into
   a mode-555 directory, and the goldens were made without that capability. Without the flag,

@@ -1,9 +1,8 @@
 //! The revocation database and the OCSP responder body (`src/fhsm_revocation.c`).
 //!
-//! The OCSP encoder (`fhsm_pki_ocsp`, `src/fhsm_composite.c`) stays C until Phase 3, so
-//! [`answer`] takes it as an argument: it decides every SingleResponse, builds the nonce
-//! extension and wraps the encoder's BasicOCSPResponse in an OCSPResponse. The `ffi` C ABI
-//! passes an encoder that calls `fhsm_pki_ocsp` with the caller's signer.
+//! [`answer`] takes the OCSP encoder as an argument: it decides every SingleResponse, builds
+//! the nonce extension and wraps the encoder's BasicOCSPResponse in an OCSPResponse. The `ffi`
+//! C ABI passes `fhsm_pki_ocsp` (Phase 3 slice 5c) with the caller's signer.
 //!
 //! Behaviour that looks wrong but is kept, as decided, is listed in `DIVERGENCES.md`
 //! ("Candidates found in slice 2"); the numbers in comments here refer to that table.
@@ -533,15 +532,19 @@ pub struct Query<'a> {
     pub now: i64,
 }
 
-/// A DER TLV, with a length header of up to three bytes.
-fn tlv(tag: u8, parts: &[&[u8]]) -> Vec<u8> {
+/// A DER TLV.
+pub(crate) fn tlv(tag: u8, parts: &[&[u8]]) -> Vec<u8> {
     let n: usize = parts.iter().map(|p| p.len()).sum();
     let mut out = vec![tag];
     match n {
         0..0x80 => out.push(n as u8),
         0x80..=0xFF => out.extend([0x81, n as u8]),
         0x100..=0xFFFF => out.extend([0x82, (n >> 8) as u8, n as u8]),
-        _ => out.extend([0x83, (n >> 16) as u8, (n >> 8) as u8, n as u8]),
+        0x10000..=0xFF_FFFF => out.extend([0x83, (n >> 16) as u8, (n >> 8) as u8, n as u8]),
+        _ => {
+            out.push(0x84);
+            out.extend_from_slice(&(n as u32).to_be_bytes());
+        }
     }
     parts.iter().for_each(|p| out.extend_from_slice(p));
     out

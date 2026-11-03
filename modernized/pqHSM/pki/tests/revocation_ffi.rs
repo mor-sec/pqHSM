@@ -1,8 +1,8 @@
 //! The C ABI of `include/fhsm_revocation.h` (feature `ffi`). What the safe API cannot show is
 //! checked here, row by row from the same goldens: the struct layout, what each function leaves
 //! in the caller's buffers on failure, `err` NULL and truncation at `err_cap`, the growth of
-//! `cap`, NULL `stats`, `*out` ownership, and the arguments handed to the C encoder (through
-//! the replay double in `common/c_doubles.rs`, which stands in for `src/fhsm_composite.c`).
+//! `cap`, NULL `stats`, `*out` ownership, and the responses the real encoder writes with C's
+//! signatures (the clock and signer doubles are in `common/c_doubles.rs`).
 //!
 //!   cargo test -p pqhsm-pki --features ffi --test revocation_ffi
 //!
@@ -16,7 +16,6 @@ use std::mem::{offset_of, size_of};
 use std::path::Path;
 use std::ptr::{null, null_mut};
 
-use common::c_doubles::{ALGID_FAIL, REPLAY, Replay};
 use common::*;
 use pqhsm_pki::ffi::*;
 use pqhsm_pki::revocation::Db;
@@ -45,13 +44,6 @@ fn err_of(buf: &[u8]) -> Option<String> {
             .unwrap()
             .to_owned()
     })
-}
-
-fn time_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
 }
 
 /// A C-side database holding `d`, built through `fhsm_rev_db_add` as a C caller would.
@@ -458,57 +450,80 @@ fn check_responder_through_the_c_abi() {
     }
 }
 
-unsafe extern "C" fn dummy_sign(
-    _: *mut c_void,
-    _: *const u8,
-    _: usize,
-    _: *mut u8,
-    _: *mut usize,
-) -> u32 {
-    0x6
+/// The elements of a DER SEQUENCE (definite lengths up to four octets).
+fn elements(der: &[u8]) -> Vec<&[u8]> {
+    let tlv = |b: &[u8]| -> (usize, usize) {
+        let (n, h) = match b[1] {
+            l @ 0..0x80 => (l as usize, 2),
+            l => {
+                let k = (l & 0x7F) as usize;
+                (
+                    b[2..2 + k].iter().fold(0, |a, &x| a << 8 | x as usize),
+                    2 + k,
+                )
+            }
+        };
+        (h, h + n)
+    };
+    let (h, end) = tlv(der);
+    let (mut rest, mut out) = (&der[h..end], Vec::new());
+    while !rest.is_empty() {
+        let (_, n) = tlv(rest);
+        out.push(&rest[..n]);
+        rest = &rest[n..];
+    }
+    out
 }
 
 #[test]
-fn answer_through_the_c_abi_hands_the_encoder_c_s_arguments() {
-    // RULE-023: every answer row. The double checks the encoder's arguments (the times
-    // against the real clock and `days`); the output must be C's bytes
+fn answer_through_the_c_abi_writes_c_s_response() {
+    // RULE-023: every answer row through the real encoder, with the clock pinned to gen_rev's
+    // NOW and C's own signature handed back by the signer: the response must be C's bytes and
+    // the encoder must have asked to sign C's tbsResponseData. The synth rows (an encoder
+    // output of a forced size) need gen_rev's encoder seam; revocation.rs replays them
+    // through the same closure seam in rev::answer
     let layout = case("c_struct_layout");
-    let ed = unhex(layout.get("ed25519_algid"));
-    let mut seen = 0;
+    let (now, ed) = (layout.num::<i64>("now"), unhex(layout.get("ed25519_algid")));
+    let (mut seen, mut synth) = (0, 0);
     for c in cases_of("answer") {
+        if c.opt("synth").is_some() {
+            synth += 1;
+            continue;
+        }
         let inp = answer_inputs(&c);
         let mut db = c_db(&inp.db);
-        let synth = c.opt("synth").map(|s| s.parse().unwrap());
         let enc = golden_enc(&c.name);
-        let rv_enc = enc.as_deref().map_or(0, enc_rv);
-        let basic = if rv_enc == 0 && enc.is_some() {
-            golden_bytes(&format!("ocsp/{}.basic.der", c.name))
-        } else {
-            Vec::new()
+        let basic = (enc.as_deref().map_or(1, enc_rv) == 0)
+            .then(|| golden_bytes(&format!("ocsp/{}.basic.der", c.name)));
+        // DIV-016: the in-memory month-13 entry is revoked at t = 0 in Rust
+        let div016 = |b: Vec<u8>| -> Vec<u8> {
+            if c.name != "answer_div016_unvalidated_dates" {
+                return b;
+            }
+            let (c_t, r_t) = (gt("20270213030000Z"), gt("19700101000000Z"));
+            let at = b
+                .windows(c_t.len())
+                .position(|w| w == c_t)
+                .expect("C's value");
+            [&b[..at], &r_t, &b[at + c_t.len()..]].concat()
         };
-        let t0 = time_now();
-        REPLAY.set(Some(Replay {
-            case: c.name.clone(),
-            enc: enc.map(|e| {
-                // DIV-016: the in-memory month-13 entry is revoked at t = 0 in Rust
-                if c.name == "answer_div016_unvalidated_dates" {
-                    let c_t = hex(&gt("20270213030000Z"));
-                    assert!(e.contains(&c_t), "C's value");
-                    e.replacen(&c_t, &hex(&gt("19700101000000Z")), 1)
-                } else {
-                    e
-                }
-            }),
-            basic,
-            rv: rv_enc,
-            synth,
-            days: inp.days.into(),
-            // time() is glibc's coarse clock: just past a second it can still say t0 - 1
-            window: (t0 - 1, t0),
+        let tbs = basic.as_ref().map(|b| div016(elements(b)[0].to_vec()));
+        // C's signature, from the BIT STRING (2-byte header, no unused bits); 64 bytes where
+        // C's encoder refused after signing, so the sizes it compared are C's
+        let sig = basic
+            .as_ref()
+            .map_or(vec![0; 64], |b| elements(b)[2][3..].to_vec());
+        let mut rp = common::c_doubles::Replay {
+            sig,
+            seen: None,
             calls: 0,
-            signer: None,
-            failure: None,
-        }));
+        };
+        let sign: fhsm_composite_sign_cb = if c.is("sign", "fail") {
+            Some(common::c_doubles::failing_sign)
+        } else {
+            Some(common::c_doubles::replay_sign)
+        };
+        let ctx = (&raw mut rp).cast::<c_void>();
         let label = inp.label.as_ref().map(|l| cs(l.as_bytes()));
         let mut out: *mut u8 = std::ptr::dangling_mut::<u8>();
         let mut out_len = 12345usize;
@@ -531,15 +546,9 @@ fn answer_through_the_c_abi_hands_the_encoder_c_s_arguments() {
         } else {
             &mut st as *mut _
         };
-        let ctx = 0x5157 as *mut c_void;
-        // the window for producedAt is [before, after] the call
-        REPLAY.with_borrow_mut(|r| r.as_mut().unwrap().window.1 = t0 + 5);
+        let lp = label.as_ref().map_or(null(), |s| s.as_ptr());
         // SAFETY: every pointer is ours and lives for the call
-        let rv = unsafe {
-            let (lp, db) = (
-                label.as_ref().map_or(null(), |s| s.as_ptr()),
-                &db as *const _,
-            );
+        let rv = common::c_doubles::pinned(now, || unsafe {
             if c.is("fn", "answer") {
                 fhsm_ocsp_answer(
                     inp.req.as_ptr(),
@@ -548,10 +557,10 @@ fn answer_through_the_c_abi_hands_the_encoder_c_s_arguments() {
                     inp.ca.len(),
                     inp.responder.as_ptr(),
                     inp.responder.len(),
-                    db,
+                    &db,
                     inp.days,
                     lp,
-                    Some(dummy_sign),
+                    sign,
                     ctx,
                     &mut out,
                     &mut out_len,
@@ -567,12 +576,12 @@ fn answer_through_the_c_abi_hands_the_encoder_c_s_arguments() {
                     inp.ca.len(),
                     inp.responder.as_ptr(),
                     inp.responder.len(),
-                    db,
+                    &db,
                     inp.days,
                     lp,
                     ed.as_ptr(),
                     ed.len(),
-                    Some(dummy_sign),
+                    sign,
                     ctx,
                     &mut out,
                     &mut out_len,
@@ -581,18 +590,12 @@ fn answer_through_the_c_abi_hands_the_encoder_c_s_arguments() {
                     cap,
                 )
             }
-        };
-        let r = REPLAY.take().unwrap();
-        assert_eq!(r.failure, None, "{}", c.name);
-        assert_eq!(
-            r.calls.to_string(),
-            c.get("encoder_called"),
-            "{}: encoder calls",
-            c.name
-        );
-        if r.calls > 0 {
-            let sign = dummy_sign as unsafe extern "C" fn(_, _, _, _, _) -> u32 as usize;
-            assert_eq!(r.signer, Some((sign, ctx as usize)), "{}: signer", c.name);
+        });
+        // the encoder signs last: it can be reached and refuse first (encoder_called counts it)
+        let reached: usize = c.num("encoder_called");
+        assert!(rp.calls <= reached, "{}: signer calls", c.name);
+        if let Some(t) = &tbs {
+            assert!(rp.seen.as_ref() == Some(t), "{}: tbsResponseData", c.name);
         }
         assert_eq!(rv as i64, c.rv_i(), "{}: rv", c.name);
         assert_eq!(
@@ -620,75 +623,12 @@ fn answer_through_the_c_abi_hands_the_encoder_c_s_arguments() {
             // SAFETY: *out is a malloc'd buffer of out_len bytes that belongs to the caller
             let got = unsafe { std::slice::from_raw_parts(out, out_len) }.to_vec();
             unsafe { libc::free(out as *mut c_void) };
-            match synth {
-                Some(n) => {
-                    assert_eq!(hex(&got[..got.len() - n]), c.get("prefix"), "{}", c.name);
-                    assert_eq!(got[got.len() - n..], pattern(n)[..], "{}", c.name);
-                }
-                None => assert!(
-                    got == golden_bytes(&format!("ocsp/{}.resp.der", c.name)),
-                    "{}: bytes",
-                    c.name
-                ),
-            }
+            let want = div016(golden_bytes(&format!("ocsp/{}.resp.der", c.name)));
+            assert!(got == want, "{}: bytes", c.name);
         }
         // SAFETY: built by c_db
         unsafe { fhsm_rev_db_free(&mut db) };
         seen += 1;
     }
-    assert!(seen >= 80, "expected every answer row, saw {seen}");
-}
-
-#[test]
-fn answer_without_a_composite_algid_touches_nothing_else() {
-    // src/fhsm_revocation.c:394-395, read from the code: the real fhsm_pki_algid never fails,
-    // so no golden row reaches this. fhsm_ocsp_answer returns before _ex resets *out, *out_len
-    // and stats, so all three are left as the caller set them
-    let c = case("answer_composite_algid");
-    let inp = answer_inputs(&c);
-    let mut db = c_db(&inp.db);
-    ALGID_FAIL.set(true);
-    let sentinel = std::ptr::dangling_mut::<u8>();
-    let (mut out, mut out_len) = (sentinel, 12345usize);
-    let mut st = fhsm_ocsp_stats_t {
-        asked: 9,
-        ours: 9,
-        revoked: 9,
-        unknown: 9,
-        nonce_echoed: 9,
-    };
-    let mut err = err_buf();
-    // SAFETY: every pointer is ours
-    let rv = unsafe {
-        fhsm_ocsp_answer(
-            inp.req.as_ptr(),
-            inp.req.len(),
-            inp.ca.as_ptr(),
-            inp.ca.len(),
-            inp.responder.as_ptr(),
-            inp.responder.len(),
-            &db,
-            7,
-            null(),
-            Some(dummy_sign),
-            null_mut(),
-            &mut out,
-            &mut out_len,
-            &mut st,
-            err.as_mut_ptr() as *mut c_char,
-            640,
-        )
-    };
-    ALGID_FAIL.set(false);
-    assert_eq!(rv, 2);
-    assert_eq!(
-        err_of(&err).as_deref(),
-        Some("no composite AlgorithmIdentifier\n")
-    );
-    assert_eq!(
-        (out, out_len, st.asked, st.nonce_echoed),
-        (sentinel, 12345, 9, 9)
-    );
-    // SAFETY: built by c_db
-    unsafe { fhsm_rev_db_free(&mut db) };
+    assert_eq!((seen, synth), (56, 25), "every answer row");
 }

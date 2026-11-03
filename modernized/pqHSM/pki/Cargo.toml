@@ -8,8 +8,8 @@ license.workspace = true
 
 [features]
 # The C ABI of include/fhsm_revocation.h, linked into C only through pqhsm-module
-# (PHASE2_PLAN.md §3, review H5). Imports fhsm_pki_ocsp and fhsm_pki_algid from the C
-# encoder (src/fhsm_composite.c, Phase 3).
+# (PHASE2_PLAN.md §3, review H5), and from Phase 3 slice 5 the PKI encoders of
+# include/fhsm_composite.h and include/fhsm_pki.h (src/fhsm_composite.c).
 ffi = []
 
 [dependencies]

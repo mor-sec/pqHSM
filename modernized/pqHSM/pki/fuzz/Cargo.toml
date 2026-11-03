@@ -1,0 +1,34 @@
+# cargo-fuzz targets for the PKI DER parsers (Phase 3 slice 5, PHASE3_PLAN.md validation 6).
+# Outside the workspace, as `cargo fuzz init` makes it: nightly-only, never part of the module
+# build. The pki crate has no PEM parser (src/fhsm_composite.c has none).
+#
+#   cargo +nightly fuzz run der_reader seeds/der_reader
+#   cargo +nightly fuzz run der_inputs seeds/der_inputs
+[package]
+name = "pqhsm-pki-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pqhsm-pki = { path = "..", features = ["ffi"] }
+
+[workspace]
+
+[[bin]]
+name = "der_reader"
+path = "fuzz_targets/der_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "der_inputs"
+path = "fuzz_targets/der_inputs.rs"
+test = false
+doc = false
+bench = false

@@ -693,3 +693,100 @@ Nothing. The comment at `cavp_extended.c:37` saying a mismatch latches ERROR was
 
 - The token crate's crypto seam consolidation (slice 3 follow-up) is still open.
 - **Slice 5 (PKI):** Wycheproof is re-run after it, as the plan says.
+
+## Slice 5: PKI encoders
+
+### What was replaced
+
+`src/fhsm_composite.c` (2,917 lines) is now in the `pqhsm-pki` crate, ported in four parts (5a-5d) and swapped in once at the end:
+
+- **5a** (`:1-481`, composite ML-DSA-65 + Ed25519 parameters, M', keys, sign, verify): `pki/src/composite.rs` (blob layout, pure) and `pki/src/ffi/composite.rs` (OpenSSL).
+- **5b** (`:482-1450`, raw and SPKI key forms, PKCS#10, self-signed roots, issuance): `pki/src/ffi/x509.rs` `csr`, `selfsigned`, `issue`. The extension values (SAN, CRL distribution points, key identifiers) are DER-encoded in safe Rust in `pki/src/x509.rs`. OpenSSL still assembles names, validity and the SPKI slot.
+- **5c** (`:1451-2128`, CRL, OCSP; and `fhsm_pki_algid`, `:2678`): `x509.rs` `crl_tbs`, `ocsp_single`, `ocsp_tbs` and `ffi/x509.rs` `crl`, `ocsp`. The OCSP responder (`pki/src/revocation.rs`, Phase 2) now calls the Rust encoder; its two C-encoder test doubles are gone.
+- **5d** (`:2129-2917`, ECDSA raw-to-DER, CMS encode and verify): `x509.rs` `ecdsa_sig`, `cms_signerinfo`, `cms_wrap`, `cms_signed_attrs`, and the DER reader `tlv_at` / `cms_signed_attrs_of`; `ffi/x509.rs` `cms`, `cms_digest`, `composite_cms_verify`, `pki_cms_verify`.
+
+All 38 symbols the C object defined are exported from `pki/src/ffi/c_abi.rs` with C's signatures. `hybrid.mk` empties `fhsm_composite.o`, so the module, the five PKI tools and the `test_pkiops*` links take the staticlib's code.
+
+### How equivalence was proved
+
+Dual execution: the legacy C was run in the pinned image (`tests-support/golden/regen_composite.sh`).
+
+1. **Goldens.** `gen_composite.c` (140 rows) and `gen_x509.c` (571 rows) drive every C entry point, including NULL and empty arguments, each `der_len` ceiling on both sides (a cap of 1 reports the size without a 16 MiB buffer), every signer kind and every buffer size boundary. A deterministic stand-in signer and a `time()` defined in both the generator and the test pin every byte. `composite_golden.rs` and `x509_golden.rs` replay the rows in order. For CMS verification, the generator verifies 61 structures: 29 real signatures and their tampered copies, and 32 assembled by hand: wrong digest or signature, attributes out of order or missing, two signers, two certificates, PSS parameters, an unknown algorithm, a SignerIdentifier naming another certificate. Each structure and its digest are fixtures, so all three readers answer as C did on inputs C never produced itself.
+2. **The OCSP responder:** `revocation_ffi.rs` replays all 56 non-synth answer rows through the Rust encoder (clock pinned, C's signatures handed back). Each response is C's bytes.
+3. **Mutation checks** (on a copy, against the goldens): 5a 13 with 12 killed, 5b 25/24, 5c 31/30, 5d 39/38. The survivors: the digest-failure path (unreachable without fault injection); one equivalent mutant in 5b; the nextUpdate time failure (unreachable with an `int` days); and `fhsm_composite_cms`'s digest-length check, which repeats the one `fhsm_pki_cms` makes for SHA-512. Three 5d survivors of the first round (`tlv_at`'s four-octet limit, the last-element tag) were killed by unit tests in `x509.rs`.
+4. **Fuzzing** (PHASE3_PLAN.md §4.6): `pki/fuzz/`, two targets (`pki/tests/README.md`). Before the review: 5 minutes each, 31.5 M and 1.39 M runs, no crash. With the review's selectors (M3) the SPKI selector found a 26-byte leak C shares (a tag-0 parameter, see Deliberate deviations); after its fix, 5 minutes each: 29.7 M and 1.52 M runs, no crash, no leak. There is no PEM parser in `src/fhsm_composite.c`, so the plan's "PEM" has nothing to fuzz.
+5. **Workspace:** 873 pass; fmt and the three clippy runs clean.
+6. **Hybrid harness** (2026-11-03):
+   - 106/106; `nm -D` (63 symbols) and NEEDED identical.
+   - The composite swap: `fhsm_composite.o` defines nothing, the module's `fhsm_composite_sign` and `fhsm-ca`'s `fhsm_pki_issue` are Rust's. Every earlier swap is unchanged.
+   - New PKI step (§4.3, `tests-support/hybrid/pki_artifacts.c`): a root, a request, a leaf, a CRL, an OCSP response (and its BasicOCSPResponse) and a CMS for Ed25519, P-256 (RFC 6979 nonces) and RSA PKCS#1 v1.5 keys made in the container, through the C object and the staticlib. First run: 18 files, 0 differ; `openssl req -verify`, `verify`, `crl`, `ocsp` and `cms -verify` all OK on both. After the review fixes (M2): 21 files (the BasicOCSPResponses added), 0 differ; the tampered Ed25519 set is refused for every signed part, as expected.
+   - Wycheproof re-run (the plan's "after slice 5"): 0 violations, hybrid equal to C. FIPS, both profiles: 99 OK lines, the KAT report, the probe and the curve refusal identical. TSan 0 races; audit corpus 64 same / 4 explained (the same four commands as slice 4; `test_cbc_pad_oracle`'s timing-dependent log was order-only in the second run, DIFF in the first); token files: only the known 2-byte DER-length variance.
+
+### Mapping: legacy → Rust
+
+| Behaviour | Legacy | Rust |
+|---|---|---|
+| Parameters, M', blob layout | `fhsm_composite.c:60-238` | `composite.rs:46` `params`, `:65` `layout`, `:83` `pack`; `c_abi.rs:744` `fhsm_composite_mprime*` |
+| Keygen, split, sign, verify | `:239-522` | `ffi/composite.rs:144` `keygen`, `:158` `ph`, `:311` `verify_mprime`; `c_abi.rs:867`, `:926`, `:1047` |
+| Raw and SPKI key forms | `:523-728`, `:1007-1102` | `ffi/x509.rs:521` `raw_pub`, `:544` `pub_from_raw`, `pub_from_slot`, `spki_into_slot`; `x509.rs:76` `composite_spki` |
+| PKCS#10, self-signed | `:729-1006` | `ffi/x509.rs:436` `csr`, `:485` `selfsigned` |
+| Issuance (PoP, profile, SAN, CRL DP, serial) | `:1105-1470` | `ffi/x509.rs:682` `issue`; `x509.rs:119` `san`, `:185` `crl_dp`, `:81` `ski`, `:86` `akid` |
+| CRL | `:1471-1827` | `x509.rs:226` `crl_tbs`, `:258` `crl_extensions`; `ffi/x509.rs:881` `crl` |
+| OCSP | `:1828-2150` | `x509.rs:284` `ocsp_single`, `:320` `ocsp_tbs`; `ffi/x509.rs:965` `ocsp` |
+| `fhsm_pki_algid` | `:2678-2697` | `x509.rs:17` `pki_algid` |
+| CMS SignerInfo, ContentInfo, signed attributes | `:2151-2531` | `x509.rs:403` `cms_signerinfo`, `:432` `cms_wrap`, `:457` `cms_signed_attrs`; `ffi/x509.rs:1049` `cms` |
+| CMS readers | `:2532-2677`, `:2759-2917` | `x509.rs:469` `tlv_at`, `:497` `cms_signed_attrs_of`; `ffi/x509.rs:1151` `cms_digest`, `:1201` `composite_cms_verify`, `:1339` `pki_cms_verify` |
+| ECDSA r ‖ s to DER | `:2698-2758` | `x509.rs:517` `ecdsa_sig`; `c_abi.rs:2242` |
+
+### Representative behaviour, side by side
+
+`fhsm_pki_ecdsa_raw_to_der` (`src/fhsm_composite.c:2698-2725`) against `ecdsa_sig` (`pki/src/x509.rs:515-529`): C builds two BIGNUMs and an `ECDSA_SIG` to have OpenSSL write two minimal INTEGERs; Rust strips leading zeros and prefixes one where the top bit is set. The argument checks and the out/out_len contract stay in `c_abi.rs:2242`, as C's.
+
+```
+fhsm_rv_t fhsm_pki_ecdsa_raw_to_der(const uint8_t *rs, ...)   |  pub fn ecdsa_sig(rs: &[u8]) -> Vec<u8> {
+    BIGNUM *r = BN_bin2bn(rs, (int)h, NULL);                  |      let int = |b: &[u8]| {
+    BIGNUM *s = BN_bin2bn(rs + h, (int)h, NULL);              |          let b = &b[b.iter().take_while(|&&x| x == 0).count()..];
+    if (ECDSA_SIG_set0(sig, r, s) != 1) goto out;             |          match b.first() {
+    int n = i2d_ECDSA_SIG(sig, NULL);                         |              None => tlv(0x02, &[&[0]]),
+    if (*out_len < (size_t)n) { ... BUFFER_TOO_SMALL; }       |              Some(x) if x & 0x80 != 0 => tlv(0x02, &[&[0], b]),
+    if (i2d_ECDSA_SIG(sig, &p) != n) goto out;                |              Some(_) => tlv(0x02, &[b]),
+                                                              |      ...
+                                                              |      tlv(0x30, &[&int(r), &int(s)])
+```
+
+### Deliberate deviations
+
+- **DIV-048 (done; decided Fix 2026-11-03, user: "keep refusing a signer callback that reports a longer signature than its buffer"):** a signer callback that reports more signature than its room fails with FUNCTION_FAILED; C read past its 8 KiB buffer.
+- **DIV-049 (done; review M1, reproduced on C; decided Fix 2026-11-03, user: "keep refusing BOOLEAN key parameters"):** a public key whose AlgorithmIdentifier parameters are a BOOLEAN is ARGUMENTS_BAD; C crashed copying it, also from an issued request's key after proof of possession.
+- **Not observable:** C's `static` buffers in the CMS verifier and issuance (`pubblob`, `reqpub`) are locals, so concurrent calls no longer share them. A NULL signature AlgorithmIdentifier is checked before use where C would dereference it (unreachable from a parsed structure). OIDs are compared through 128-byte `OBJ_obj2txt` buffers where C used 64 in one place; every OID in play fits both. A key whose parameters have tag 0 (EOC) leaked their copy (C has the same code; its leak inferred, not measured), because `X509_ALGOR_set0` neither takes nor frees a type-0 parameter; Rust frees it (found by the fuzzer after review M3, 26 bytes per call; the output is unchanged).
+- **Kept as C:** both CMS verifiers trust whichever certificate the file carries, and the composite path ignores the SignerIdentifier and the digestAlgorithm (golden rows `assembled/composite_names_other_cert`, `assembled/composite_digalg_sha1`; review H1, below). `fhsm_pki_cms` returns BUFFER_TOO_SMALL without updating `*out_len` when the SignerInfo alone exceeds 16,384 bytes (row `pki_cms:big_issuer`); a caller that grows its buffer to `*out_len` would loop.
+
+### Architecture review (Step 5)
+
+No memory-safety defect, leak or double free found; every return code and byte matched C apart from DIV-048. Applied:
+
+- **H1** (a design property kept from C, not a port defect): "CMS verified" means "signed by the certificate inside the file". C's behaviour is pinned by two new golden rows so a change is deliberate. The fix (return the signer certificate or its fingerprint, print it in `fhsm-sign`, accept a pinned CA, check the SignerIdentifier on the composite path) is a Phase 5 decision; see Follow-ups.
+- **M1:** DIV-049.
+- **M2:** the harness's tampered OCSP response still verified: its last byte belongs to the embedded responder certificate, which `-VAfile` does not need. The OCSP tamper now flips a byte of producedAt, inside tbsResponseData; the tampered line is compared with the expected one and says UNEXPECTED otherwise; and `fhsm_pki_ocsp`'s own BasicOCSPResponse is written and compared, not only OpenSSL's re-encoding of it.
+- **M3:** the fuzz targets could not reach the SPKI copy behind M1 (a mutated request fails proof of possession first). `der_inputs` now also fuzzes the signer's SPKI and AlgorithmIdentifier through `fhsm_pki_csr` and a raw composite public key, and asserts the verifiers answer only OK, SIGNATURE_INVALID or ARGUMENTS_BAD. The README's coverage claim is corrected.
+- **M4 (part):** the SignerIdentifier and SHA-1 digestAlgorithm rows above.
+- **L1:** `revocation::tlv` wrote a truncated three-octet length past 16 MiB; it now writes the four-octet form OpenSSL writes (reachable only through the Rust API; the C ABI refuses earlier).
+- **L2:** `tagged` indexed an empty slice (a panic, so an abort, through the safe Rust API); it now refuses it.
+- **L4:** DIV-048 said "stack buffer"; C's is `OPENSSL_malloc`'d.
+
+Recorded for later:
+
+- **M4 (rest):** no golden row for an embedded certificate with a non-composite OID but a 1,984-byte key under the composite verifier, nor for a third-party `openssl cms -sign` structure (three or more signed attributes) through `fhsm_pki_cms_verify`.
+- **L3:** two RAII wrappers (`Own<T>` in `ffi/composite.rs`, an untyped `Own` in `ffi/x509.rs`) and two identical `refused()`; about 140 libcrypto prototypes declared as `*mut c_void` where `openssl-sys` has typed ones (each checked against the OpenSSL 3 headers, none wrong); `ffi::x509` calls the exported `c_abi::fhsm_composite_verify` and `fhsm_composite_ph_len` instead of a safe helper; the magic index `pki_algid(3)`.
+- **M1's second half:** a composite key's parameters MUST be absent; `pub_from_slot` checks only the OID, as C does. Refusing present parameters refuses inputs C accepts.
+
+### Not migrated
+
+`fhsm_ocsp_answer`'s "no composite AlgorithmIdentifier" branch (slice 5c): unreachable, because `fhsm_pki_algid` never fails for the composite. Its ALGID_FAIL test is removed.
+
+### Follow-ups
+
+- **Phase 5:** CMS signer identity (H1): the verifier should report who signed and the tool print it or check it against a pinned certificate. A DIV and a user decision.
+- **Phase 5:** DIV-021/069 clamping (the plan's slice 5 row) is still Phase 5.
+- The harness has no gate: its summary is read, not asserted. Step 4e's tampered line now says UNEXPECTED when wrong, like the others say DIFF.
+- Still open from earlier slices: the token crate's crypto seam consolidation; slice 4's L2 and N1.

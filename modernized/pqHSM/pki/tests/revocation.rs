@@ -7,8 +7,7 @@
 //! is meant to differ (DIV-016, DIV-019 to DIV-022), the test first asserts what C did, then
 //! what Rust must.
 //!
-//! OCSP: the encoder (`fhsm_pki_ocsp`) stays C until Phase 3, so `answer` takes it as an
-//! argument. The tests pass a replay encoder that (1) requires exactly the arguments C handed
+//! OCSP: `answer` takes the encoder (`fhsm_pki_ocsp`) as an argument. The tests pass a replay encoder that (1) requires exactly the arguments C handed
 //! the real encoder (`ocsp/CASE.enc`, captured through `--wrap`) and (2) returns exactly what
 //! the real encoder returned (`ocsp/CASE.basic.der`). Rust's whole OCSPResponse must then
 //! equal C's (`ocsp/CASE.resp.der`) byte for byte: C's clock was pinned, so nothing is masked.

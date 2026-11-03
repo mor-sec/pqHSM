@@ -8,6 +8,8 @@
 //! (parsing), RULE-099/RULE-100 (no locking, preserved). Divergences: DIV-016, DIV-019 to
 //! DIV-022.
 
+pub mod composite;
 pub mod revocation;
+pub mod x509;
 
 pub mod ffi;

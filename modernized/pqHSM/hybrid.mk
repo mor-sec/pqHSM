@@ -9,6 +9,7 @@
 # Slice 2: src/fhsm_drbg.c. Slice 3: src/fhsm_crypto.c; the staticlib is built with dev-bypass,
 # because every `make tests` recipe sets FHSM_INTEGRITY_ALLOW_UNSIGNED (DIV-034). Slice 4:
 # src/fhsm_integrity.c; its digest array stays C, where scripts/sign_module.sh patches it.
+# Slice 5: src/fhsm_composite.c, in the module and in every PKI tool and test_pkiops* link.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -56,7 +57,8 @@ $(OBJDIR)/src/fhsm_audit.o: $(PQHSM_SHIM) $(PQHSM_LIB)
 # Objects whose code is now in the staticlib: an empty object keeps every $(LIB_OBJ) rule as is.
 $(OBJDIR)/src/fhsm_tpm.o $(OBJDIR)/src/fhsm_token_tpm.o $(OBJDIR)/src/fhsm_token.o \
 $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o $(OBJDIR)/src/fhsm_drbg.o \
-$(OBJDIR)/kat/fhsm_kat_vectors.o $(OBJDIR)/kat/cavp_extended.o $(OBJDIR)/src/fhsm_pairwise.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
+$(OBJDIR)/kat/fhsm_kat_vectors.o $(OBJDIR)/kat/cavp_extended.o $(OBJDIR)/src/fhsm_pairwise.o \
+$(OBJDIR)/src/fhsm_composite.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

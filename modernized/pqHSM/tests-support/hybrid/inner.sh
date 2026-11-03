@@ -61,6 +61,10 @@ nm libfreehsm.so | grep -cE ' [tT] pqhsm_audit_event_v$' > /out/rust_linked.txt
   printf 'module fhsm_pairwise_check: %s; ' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_pairwise_check$')"
   printf 'rust pairwise code in module: %s' "$(nm libfreehsm.so | grep -c 'pqhsm_selftest3ffi8pairwise')"
 } > /out/pairwise_swap.txt
+# Phase 3 slice 5: the PKI encoders, in the module and in the tools.
+{ printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_composite.o | grep -c ' [TtDdBbRr] ')"
+  printf 'module fhsm_composite_sign: %s; fhsm-ca rust fhsm_pki_issue: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_composite_sign$')" "$(nm tools/fhsm-ca | grep -c ' [Tt] fhsm_pki_issue$')"
+} > /out/composite_swap.txt
 # fhsm-ca end to end over the revocation DB (not in `make tests`). ocsp-delegated is left out:
 # it runs `make clean` and rebuilds the tree under another PROFILE.
 $M revocation-db > /out/revocation_db.txt 2>&1; echo "rc=$?" >> /out/revocation_db.txt
@@ -140,6 +144,53 @@ done
 pass() { grep -E '^(test_integrity|  |\[)' "$1" | grep -v -e '^cc ' -e '^\[gen_p11_thunks\]'; }
 printf 'test-integrity: C %s, hybrid %s, output %s' "$(tail -1 /out/integrity_test_c.txt)" "$(tail -1 /out/integrity_test_hybrid.txt)" \
   "$(pass /out/integrity_test_c.txt > /tmp/a; pass /out/integrity_test_hybrid.txt > /tmp/b; cmp -s /tmp/a /tmp/b && echo same || echo DIFF)" > /out/integrity_tests.txt
+
+# 4e. Phase 3 slice 5 (PHASE3_PLAN.md §4.3): pki_artifacts.c makes a root, a request, a leaf, a
+#     CRL, an OCSP response and a CMS through fhsm_pki_* for Ed25519, P-256 and RSA keys made here,
+#     on C and hybrid. Deterministic signers, a counter RNG and a pinned clock: the DER must be
+#     the same, and pass the openssl CLI. A tampered copy of the Ed25519 set must fail it, all
+#     but the root (the trust anchor): one byte flipped inside each signed part.
+K=$(mktemp -d)
+{ openssl genpkey -algorithm ED25519 -out $K/ed25519.pem
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out $K/p256.pem
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out $K/rsa.pem; } > /out/pki_build.log 2>&1
+head -c 5000 /dev/urandom > $K/data.bin
+PKI_RULE='tests/pki_artifacts: /work/modernized/pqHSM/tests-support/hybrid/pki_artifacts.c .obj/src/fhsm_composite.o .obj/src/fhsm_revocation.o
+	$(CC) $(CFLAGS) -o $@ $< .obj/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS)'
+make -s -C /tmp/cb --eval "$PKI_RULE" tests/pki_artifacts >> /out/pki_build.log 2>&1
+$M --eval "$PKI_RULE" tests/pki_artifacts >> /out/pki_build.log 2>&1
+for d in /tmp/cb /work; do
+  tag=$([ "$d" = /work ] && echo hybrid || echo c); mkdir -p /tmp/pki_$tag
+  $d/tests/pki_artifacts $K /tmp/pki_$tag $K/data.bin > /out/pki_artifacts_$tag.txt 2>&1; echo "rc=$?" >> /out/pki_artifacts_$tag.txt
+done
+pki_cli() {  # dir: one line per signer, each structure checked by the openssl CLI at the pinned time
+  T=1798761600
+  v() { if "$@" > /dev/null 2>&1; then echo ok; else echo FAIL; fi; }
+  g() { p=$1; shift; if "$@" 2>&1 | grep -q "$p"; then echo ok; else echo FAIL; fi; }
+  for a in ed25519 p256 rsa; do
+    [ -f $1/${a}_ca.der ] || continue
+    openssl x509 -inform DER -in $1/${a}_ca.der -out $1/${a}_ca.pem; openssl x509 -inform DER -in $1/${a}_leaf.der -out $1/${a}_leaf.pem
+    echo "$a: csr $(v openssl req -inform DER -in $1/${a}_csr.der -verify -noout)," \
+      "root $(v openssl verify -attime $T -CAfile $1/${a}_ca.pem $1/${a}_ca.pem)," \
+      "leaf $(v openssl verify -attime $T -CAfile $1/${a}_ca.pem $1/${a}_leaf.pem)," \
+      "crl $(g 'verify OK' openssl crl -inform DER -in $1/${a}_crl.der -CAfile $1/${a}_ca.pem -noout)," \
+      "ocsp $(g 'Response verify OK' openssl ocsp -respin $1/${a}_ocsp.der -VAfile $1/${a}_ca.pem -CAfile $1/${a}_ca.pem -attime $T)," \
+      "cms $(v openssl cms -verify -binary -inform DER -in $1/${a}_cms.der -content $K/data.bin -CAfile $1/${a}_ca.pem -attime $T -purpose any -out /dev/null)"
+  done
+}
+pki_cli /tmp/pki_c > /out/pki_cli_c.txt; pki_cli /tmp/pki_hybrid > /out/pki_cli_hybrid.txt
+# The tampered set: the signature's last byte, except in the OCSPResponse, which ends in the
+# responder's certificate; there producedAt, inside tbsResponseData.
+mkdir -p /tmp/pki_bad; cp /tmp/pki_hybrid/ed25519_* /tmp/pki_bad/
+for w in csr leaf crl ocsp cms; do f=/tmp/pki_bad/ed25519_$w.der
+  python3 -c "import sys; b=bytearray(open(sys.argv[1],'rb').read()); i=b.find(b'20270101000000Z')+13 if sys.argv[2]=='ocsp' else -1; b[i]^=1; open(sys.argv[1],'wb').write(b)" $f $w; done
+pki_cli /tmp/pki_bad > /out/pki_cli_tampered.txt
+TAMPERED_WANT='ed25519: csr FAIL, root ok, leaf FAIL, crl FAIL, ocsp FAIL, cms FAIL'
+printf 'pki_artifacts: C %s, hybrid %s; %s DER files, %s differ; openssl CLI: C %s ok, hybrid %s ok, FAIL %s; tampered Ed25519: %s' \
+  "$(tail -1 /out/pki_artifacts_c.txt)" "$(tail -1 /out/pki_artifacts_hybrid.txt)" "$(ls /tmp/pki_hybrid/*.der 2>/dev/null | wc -l)" \
+  "$(n=0; for f in /tmp/pki_c/*.der; do cmp -s $f /tmp/pki_hybrid/$(basename $f) || n=$((n+1)); done; echo $n)" \
+  "$(grep -o ' ok' /out/pki_cli_c.txt | wc -l)" "$(grep -o ' ok' /out/pki_cli_hybrid.txt | wc -l)" "$(cat /out/pki_cli_c.txt /out/pki_cli_hybrid.txt | grep -o FAIL | wc -l)" \
+  "$([ "$(cat /out/pki_cli_tampered.txt)" = "$TAMPERED_WANT" ] && echo 'every signed part refused, as expected' || echo "UNEXPECTED: $(cat /out/pki_cli_tampered.txt)")" > /out/pki_tests.txt
 
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
@@ -298,9 +349,11 @@ fi
   echo "integrity swap: $(cat /out/integrity_swap.txt)"
   echo "kat swap: $(cat /out/kat_swap.txt)"
   echo "pairwise swap: $(cat /out/pairwise_swap.txt)"
+  echo "composite swap: $(cat /out/composite_swap.txt)"
   echo "secure heap: $(cat /out/heap_tests.txt)"
   echo "drbg: $(cat /out/drbg_tests.txt)"
   echo "integrity: $(cat /out/integrity_tests.txt)"
+  echo "pki: $(cat /out/pki_tests.txt)"
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"
