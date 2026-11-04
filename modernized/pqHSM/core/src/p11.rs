@@ -30,6 +30,18 @@ pub fn pin_len_ok(len: c_ulong) -> bool {
     (PIN_MIN_LEN..=PIN_MAX_LEN).contains(&len)
 }
 
+/// `PIN_MAX_FAILED` (`token/src/token.rs`): the failure that locks a PIN.
+pub const PIN_MAX_FAILED: u32 = 5;
+
+/// RULE-084: `CKF_*_PIN_COUNT_LOW` and `CKF_*_PIN_FINAL_TRY` for a PIN with `failed` wrong
+/// attempts: COUNT_LOW while 1 <= failed < 5, FINAL_TRY when one attempt is left.
+pub fn pin_warning(failed: u32) -> (bool, bool) {
+    (
+        (1..PIN_MAX_FAILED).contains(&failed),
+        failed == PIN_MAX_FAILED - 1,
+    )
+}
+
 /// Whether a PIN being set is long enough (DIV-059) and within C's maximum.
 pub fn new_pin_len_ok(len: c_ulong) -> bool {
     (NEW_PIN_MIN_LEN..=PIN_MAX_LEN).contains(&len)
@@ -109,6 +121,15 @@ mod tests {
         assert!(!pin_len_ok(3) && pin_len_ok(4) && pin_len_ok(64) && !pin_len_ok(65));
         assert!(!new_pin_len_ok(7) && new_pin_len_ok(8) && new_pin_len_ok(64));
         assert!(!new_pin_len_ok(65));
+    }
+
+    #[test]
+    fn pin_warnings() {
+        assert_eq!(pin_warning(0), (false, false));
+        assert_eq!(pin_warning(1), (true, false));
+        assert_eq!(pin_warning(3), (true, false));
+        assert_eq!(pin_warning(4), (true, true));
+        assert_eq!(pin_warning(5), (false, false)); // locked: CKF_*_PIN_LOCKED instead
         assert_eq!(role_of(0), Some(ROLE_SO));
         assert_eq!(role_of(1), Some(ROLE_USER));
         assert_eq!(role_of(2), None);

@@ -166,7 +166,6 @@ fn login_event(rv: u32) -> c_int {
     match rv {
         OK => EV_LOGIN_OK,
         PIN_LOCKED => EV_LOGIN_LOCKED,
-        PIN_THROTTLED => EV_LOGIN_THROTTLED,
         _ => EV_LOGIN_FAIL,
     }
 }

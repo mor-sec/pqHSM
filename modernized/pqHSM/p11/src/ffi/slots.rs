@@ -249,7 +249,11 @@ const RNG: c_ulong = 0x1;
 const LOGIN_REQUIRED: c_ulong = 0x4;
 const USER_PIN_INITIALIZED: c_ulong = 0x8;
 const TOKEN_INITIALIZED: c_ulong = 0x400;
+const USER_PIN_COUNT_LOW: c_ulong = 0x1_0000;
+const USER_PIN_FINAL_TRY: c_ulong = 0x2_0000;
 const USER_PIN_LOCKED: c_ulong = 0x4_0000;
+const SO_PIN_COUNT_LOW: c_ulong = 0x10_0000;
+const SO_PIN_FINAL_TRY: c_ulong = 0x20_0000;
 const SO_PIN_LOCKED: c_ulong = 0x40_0000;
 
 /// A token's C string, or "" for none.
@@ -293,6 +297,14 @@ pub unsafe extern "C" fn pqhsm_C_GetTokenInfo(slot: c_ulong, info: *mut c_void) 
             }
             if fhsm_token_is_locked(t, ROLE_SO) != 0 {
                 flags |= SO_PIN_LOCKED;
+            }
+            // RULE-084: C never set the two warnings.
+            for (role, low, last) in [
+                (p11::ROLE_USER, USER_PIN_COUNT_LOW, USER_PIN_FINAL_TRY),
+                (ROLE_SO, SO_PIN_COUNT_LOW, SO_PIN_FINAL_TRY),
+            ] {
+                let (l, f) = p11::pin_warning(fhsm_token_failed_count(t, role));
+                flags |= if l { low } else { 0 } | if f { last } else { 0 };
             }
         }
     }

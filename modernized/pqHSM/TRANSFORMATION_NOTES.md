@@ -902,3 +902,11 @@ Fifteen `C_*` move: `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetSlotList`, 
 - **Golden:** step 4g's `closeall 1` row is 0 and the slot-1 session after it is gone (0xB3, output untouched); `p11_lifecycle_expect.py` gained an optional printed-output column for that row.
 
 - **Harness `p4d55`:** as `p4s1e2`, with DIV-055 failing on C and passing on the hybrid; token files the Phase 2 size variance only.
+
+### RULE-084: the PIN warning flags
+
+- `C_GetTokenInfo` sets `CKF_USER_PIN_COUNT_LOW`/`CKF_SO_PIN_COUNT_LOW` while 1 <= failures < 5 and `*_FINAL_TRY` at 4, from `fhsm_token_failed_count` (`core::p11::pin_warning`, unit-tested). Locked (5) shows `*_PIN_LOCKED` only, as before.
+- The dead mapping goes: the token never returns `FHSM_RV_PIN_THROTTLED` (a throttled login waits and then answers), so `login_event`'s arm for it and `EV_LOGIN_THROTTLED` are removed. `audit-verify` keeps the name, to read old logs.
+- **Test:** `p11_divs.c` RULE-084: the user flags after 0-5 wrong logins (0, LOW, LOW, LOW, LOW|FINAL, LOCKED), the SO's after 1 and 4, cleared by a good SO login. C: no warning bit ever.
+- **Golden:** five `tokinfo` rows of step 4g gain the bits, recorded in `p11_lifecycle_expect.py`'s `FLAGS` table.
+

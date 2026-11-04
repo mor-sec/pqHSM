@@ -22,12 +22,23 @@ RV = [
     ("DIV-055", "closeall 1", "0"),
     ("DIV-055", "sessinfo slot 1 after closeall 1", "0xb3", "a" * 64),
 ]
+# (DIV, tokinfo row label, CK_TOKEN_INFO.flags bits Rust adds). RULE-084: the PIN warnings
+# (USER COUNT_LOW 0x10000, FINAL_TRY 0x20000; SO COUNT_LOW 0x100000) C never set.
+FLAGS = [
+    ("RULE-084", "tokinfo 0 after a wrong SO pin", 0x100000),
+    ("RULE-084", "tokinfo after user 1", 0x10000),
+    ("RULE-084", "tokinfo after user 2", 0x10000),
+    ("RULE-084", "tokinfo after user 3", 0x10000),
+    ("RULE-084", "tokinfo after user 4", 0x30000),
+]
 # DIV-051: rows dropped from both, C's answers outside an initialised process.
 DROP_CHILD = "child sessinfo before initialize"
 
 
-def tokinfo(hexs: str) -> str:
-    """DIV-059: CK_TOKEN_INFO.ulMinPinLen (offset 144) is 8."""
+def tokinfo(hexs: str, add: int) -> str:
+    """DIV-059: CK_TOKEN_INFO.ulMinPinLen (offset 144) is 8; `add` ORed into flags (96)."""
+    flags = int.from_bytes(bytes.fromhex(hexs[192:208]), "little") | add
+    hexs = hexs[:192] + flags.to_bytes(8, "little").hex() + hexs[208:]
     return hexs[:288] + "0800000000000000" + hexs[304:]
 
 
@@ -57,7 +68,7 @@ def norm(lines, expect):
                     if printed:
                         f[2] = printed[0]
             if f[0].startswith("tokinfo") and f[1] == "0":
-                f[2] = tokinfo(f[2])
+                f[2] = tokinfo(f[2], sum(b for _d, label, b in FLAGS if label == f[0]))
             line = "\t".join(f)
         out.append(line)
     return out

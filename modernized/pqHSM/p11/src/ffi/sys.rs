@@ -59,6 +59,7 @@ unsafe extern "C" {
     pub fn fhsm_token_serial(t: *const fhsm_token_t) -> *const c_char;
     pub fn fhsm_token_user_initialized(t: *const fhsm_token_t) -> c_int;
     pub fn fhsm_token_is_locked(t: *const fhsm_token_t, role: c_int) -> c_int;
+    pub fn fhsm_token_failed_count(t: *const fhsm_token_t, role: c_int) -> u32;
     pub fn fhsm_token_destroy_session_objects(t: *mut fhsm_token_t, owner: u32) -> u32;
 
     pub fn fhsm_audit_event(
@@ -107,7 +108,6 @@ pub const BUFFER_TOO_SMALL: u32 = 0x150;
 pub const CRYPTOKI_NOT_INITIALIZED: u32 = 0x190;
 pub const CRYPTOKI_ALREADY_INITIALIZED: u32 = 0x191;
 pub const USER_PIN_NOT_INITIALIZED: u32 = 0x102;
-pub const PIN_THROTTLED: u32 = 0x8000_0004;
 
 /// `fhsm_audit_event_t` values these entry points emit.
 pub const EV_MODULE_INIT: c_int = 1;
@@ -116,7 +116,6 @@ pub const EV_TOKEN_INIT: c_int = 10;
 pub const EV_LOGIN_OK: c_int = 12;
 pub const EV_LOGIN_FAIL: c_int = 13;
 pub const EV_LOGIN_LOCKED: c_int = 14;
-pub const EV_LOGIN_THROTTLED: c_int = 15;
 pub const EV_LOGOUT: c_int = 16;
 pub const EV_SET_PIN: c_int = 17;
 

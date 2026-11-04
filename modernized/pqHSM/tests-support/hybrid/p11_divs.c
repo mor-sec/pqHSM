@@ -106,9 +106,39 @@ static void div_055(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* RULE-084: CKF_*_PIN_COUNT_LOW while 1 <= failures < 5, CKF_*_PIN_FINAL_TRY at 4, for USER
+ * and SO; cleared by a good login. */
+static UL tflags(void) {
+    UL ti[40];
+    memset(ti, 0, sizeof ti);
+    want("tokinfo", CALL(C_GetTokenInfo, 0UL, ti), 0);
+    return ti[96 / sizeof(UL)] & 0x770000UL;   /* the six PIN state bits */
+}
+
+static void rule_084(void) {
+    static const UL user[] = { 0, 0x10000, 0x10000, 0x10000, 0x30000, 0x40000 };
+    UL h = fresh(0);
+    char what[64];
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    want("logout", CALL(C_Logout, h), 0);
+    for (int i = 0; i <= 5; ++i) {
+        if (i) CALL(C_Login, h, 1UL, "wrong-pin-0", 11UL);
+        snprintf(what, sizeof what, "user flags after %d wrong", i);
+        want(what, tflags(), user[i]);
+    }
+    want("login so wrong", CALL(C_Login, h, 0UL, "wrong-pin-0", 11UL), 0xA0);
+    want("so flags after 1 wrong", tflags(), 0x40000 | 0x100000);
+    for (int i = 2; i <= 4; ++i) CALL(C_Login, h, 0UL, "wrong-pin-0", 11UL);
+    want("so flags after 4 wrong", tflags(), 0x40000 | 0x300000);
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("so flags after a good login", tflags(), 0x40000);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
-    { "DIV-055", div_055 },
+    { "DIV-055", div_055 }, { "RULE-084", rule_084 },
 };
 
 int main(int argc, char **argv) {
