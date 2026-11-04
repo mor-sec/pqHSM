@@ -20,7 +20,8 @@
 //! - DIV-001: the 11 audit calls are checked; a failed audit fails the call with
 //!   `DEVICE_ERROR` and suppresses its effect (H4: build a copy, audit, write, swap).
 //!
-//! Preserved as C does it (deferred): RULE-082/005 (`set_pin` logs in first), RULE-083 (0x101
+//! Preserved as C does it (deferred): RULE-082/005 (`set_pin` logs in first; Phase 4's
+//! `C_SetPIN` uses [`Token::change_pin`] instead, DIV-054), RULE-083 (0x101
 //! for an uninitialised user PIN), RULE-086/056 (logout keeps objects), RULE-036/079(a) (PIN
 //! minimum 8 on init, 4 elsewhere), RULE-003(1) ([`crate::store::BLOB_MAX`]).
 
@@ -797,6 +798,26 @@ impl Token {
             return Err(Rv::PIN_INCORRECT);
         }
         self.login(role, old_pin)?;
+        self.rewrap(role, new_pin)
+    }
+
+    /// DIV-054, for `C_SetPIN`: `role` is logged in; its old PIN is checked as a login would
+    /// count it (failure counter, throttle, lock) without logging in again, then the DEK is
+    /// re-wrapped under the new PIN with a fresh salt and nonce. The DEK itself is not rotated.
+    /// [`Self::set_pin`] keeps C's log-in-first behaviour for the token's own callers.
+    pub fn change_pin(&self, role: Role, old_pin: &[u8], new_pin: &[u8]) -> Result<(), Rv> {
+        {
+            let g = self.g();
+            if role == Role::None || g.role != role || !g.dek_live {
+                return Err(NOLOGIN);
+            }
+        }
+        self.verify_pin(role, old_pin)?;
+        self.rewrap(role, new_pin)
+    }
+
+    /// The new wrap of the live DEK for `role`, audited, then written (H4).
+    fn rewrap(&self, role: Role, new_pin: &[u8]) -> Result<(), Rv> {
         let mut g = self.g();
         let mut next = g.clone();
         let dek = next.dek.clone();

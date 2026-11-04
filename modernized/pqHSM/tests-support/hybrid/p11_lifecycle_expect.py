@@ -21,6 +21,9 @@ RV = [
     ("DIV-059", "initpin len 4", "0xa2"),
     ("DIV-055", "closeall 1", "0"),
     ("DIV-055", "sessinfo slot 1 after closeall 1", "0xb3", "a" * 64),
+    ("DIV-054", "setpin so", "0"),
+    ("DIV-054", "setpin so wrong old", "0xa0"),
+    ("DIV-054", "setpin user", "0xb5"),
 ]
 # (DIV, tokinfo row label, CK_TOKEN_INFO.flags bits Rust adds). RULE-084: the PIN warnings
 # (USER COUNT_LOW 0x10000, FINAL_TRY 0x20000; SO COUNT_LOW 0x100000) C never set.

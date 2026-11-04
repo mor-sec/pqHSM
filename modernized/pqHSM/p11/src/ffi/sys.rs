@@ -43,11 +43,13 @@ unsafe extern "C" {
         pin: *const c_char,
         len: usize,
     ) -> u32;
-    pub fn fhsm_token_set_pin(
+    pub fn pqhsm_token_change_pin(
         t: *mut fhsm_token_t,
         role: c_int,
         old: *const c_char,
+        old_len: usize,
         new: *const c_char,
+        new_len: usize,
     ) -> u32;
     pub fn fhsm_token_init_user_pin(t: *mut fhsm_token_t, pin: *const c_char) -> u32;
     pub fn fhsm_token_reinit(
@@ -100,6 +102,7 @@ pub const PIN_LEN_RANGE: u32 = 0xA2;
 pub const PIN_LOCKED: u32 = 0xA4;
 pub const SESSION_HANDLE_INVALID: u32 = 0xB3;
 pub const SESSION_PARALLEL_NOT_SUPPORTED: u32 = 0xB4;
+pub const SESSION_READ_ONLY: u32 = 0xB5;
 pub const SESSION_EXISTS: u32 = 0xB6;
 pub const SESSION_READ_WRITE_SO_EXISTS: u32 = 0xB8;
 pub const TOKEN_NOT_PRESENT: u32 = 0xE0;

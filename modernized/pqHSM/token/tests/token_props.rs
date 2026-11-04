@@ -307,3 +307,36 @@ fn a_child_forked_during_a_login_can_close_its_copy_m3() {
     );
     th.join().unwrap().unwrap();
 }
+
+/// DIV-054: `change_pin` is `C_SetPIN`'s: only for the role logged in, the old PIN counted as a
+/// login counts it, no second login, and afterwards only the new PIN opens the token. C's
+/// `set_pin` logged in first, so from a logged-in session it was always ALREADY_LOGGED_IN
+/// (set_pin_while_logged_in_rule082).
+#[test]
+fn change_pin_rewraps_for_the_logged_in_role() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = start(dir.path(), "user_base");
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    assert_eq!(
+        t.change_pin(Role::User, USER_PIN, NEW_PIN),
+        Err(Rv::USER_NOT_LOGGED_IN)
+    );
+    t.login(Role::User, USER_PIN).unwrap();
+    assert_eq!(
+        t.change_pin(Role::So, SO_PIN, NEW_PIN),
+        Err(Rv::USER_NOT_LOGGED_IN)
+    );
+    assert_eq!(
+        t.change_pin(Role::User, WRONG_PIN, NEW_PIN),
+        Err(Rv::PIN_INCORRECT)
+    );
+    assert_eq!(t.failed_count(Role::User), 1);
+    t.change_pin(Role::User, USER_PIN, NEW_PIN).unwrap();
+    assert_eq!(t.current_role(), Role::User);
+    assert_eq!(t.failed_count(Role::User), 0);
+    t.logout();
+    drop(t);
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    assert_eq!(t.login(Role::User, USER_PIN), Err(Rv::PIN_INCORRECT));
+    t.login(Role::User, NEW_PIN).unwrap();
+}

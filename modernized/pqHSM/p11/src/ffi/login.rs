@@ -343,18 +343,31 @@ pub unsafe extern "C" fn pqhsm_C_SetPIN(
     };
     let t = TABLE.token(h);
     let r = TABLE.role(h);
+    let rw = TABLE.info(h).is_ok_and(|(_, f, _)| f & RW_SESSION != 0);
+    // DIV-054: the logged-in role's PIN, its old PIN checked without a second login (C's
+    // fhsm_token_set_pin logged in first, so it was always 0x100).
     let rv = match t {
         None => Err(SESSION_HANDLE_INVALID),
         Some(_) if r == ROLE_NONE => Err(USER_NOT_LOGGED_IN),
-        // SAFETY: a token the registry holds; NUL-terminated PIN copies
+        Some(_) if !rw => Err(SESSION_READ_ONLY),
+        // SAFETY: a token the registry holds; the PIN copies, of these lengths
         Some(t) => Ok(unsafe {
-            fhsm_token_set_pin(t.0.as_ptr(), r, op.as_ptr().cast(), np.as_ptr().cast())
+            pqhsm_token_change_pin(
+                t.0.as_ptr(),
+                r,
+                op.as_ptr().cast(),
+                old_len as usize,
+                np.as_ptr().cast(),
+                new_len as usize,
+            )
         }),
     };
     zeroize(&mut op);
     zeroize(&mut np);
     match rv {
         Err(rv) => rv.into(),
+        // A success is recorded by the token, before it writes the file (DIV-001); a failure here.
+        Ok(OK) => OK.into(),
         Ok(rv) => {
             audit(EV_SET_PIN, -1, h as c_int, r, rv, &[]);
             rv.into()

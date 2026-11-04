@@ -910,3 +910,12 @@ Fifteen `C_*` move: `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetSlotList`, 
 - **Test:** `p11_divs.c` RULE-084: the user flags after 0-5 wrong logins (0, LOW, LOW, LOW, LOW|FINAL, LOCKED), the SO's after 1 and 4, cleared by a good SO login. C: no warning bit ever.
 - **Golden:** five `tokinfo` rows of step 4g gain the bits, recorded in `p11_lifecycle_expect.py`'s `FLAGS` table.
 
+### DIV-054: `C_SetPIN` works
+
+- **Token:** a new `Token::change_pin(role, old, new)`: the role must be the one logged in with its DEK live (else 0x101), the old PIN goes through `verify_pin` (the counter, throttle and lock a login applies, without logging in again), then the shared `rewrap` wraps the live DEK under the new PIN with a fresh salt and nonce, audits SET_PIN, and writes through the locked transaction. `set_pin` keeps C's log-in-first behaviour: the token's Phase 2 golden (`set_pin_logged_out_rule082`) pins it, and only the token's own callers use it. ABI: `pqhsm_token_change_pin`, PINs by length (PKCS#11 does not terminate them).
+- **`C_SetPIN`:** the handle, then a login (0x101), then a read-write session (0xB5, PKCS#11's `CKR_SESSION_READ_ONLY`), then `change_pin` for the session's role. The new PIN's length is DIV-059's.
+- **Audit:** one SET_PIN event a call. A success is the token's (role, OK; session -1, since the token does not know it), written before the file so a failed audit suppresses the change (DIV-001); a refusal from the token (0xA0, 0xA4, ...) is `C_SetPIN`'s, with the session. Argument and session refusals write none, as before.
+- **Tests:** `token_props.rs` `change_pin_rewraps_for_the_logged_in_role`; `p11_divs.c` DIV-054: nobody logged in 0x101, SO change then old refused and new accepted, a wrong old user PIN counted (COUNT_LOW), a read-only session 0xB5, user change with the session still logged in, and the new PIN after `C_Finalize` and a fresh `C_Initialize` (it is on disk). C: every change 0x100.
+- **Golden:** three step 4g rows recorded (`setpin so` 0, `setpin so wrong old` 0xA0, `setpin user` on a read-only session 0xB5).
+
+- **Harness `p4d54`:** as `p4r84`, with DIV-054 failing on C and passing on the hybrid. Workspace 885 pass, 0 fail; clippy clean (workspace default, token `ffi` and `tool`, p11 `ffi`).

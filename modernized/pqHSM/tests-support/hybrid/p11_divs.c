@@ -136,9 +136,44 @@ static void rule_084(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* DIV-054: C_SetPIN changes the logged-in role's PIN (C: always 0x100); the old PIN is
+ * counted as a login counts it; afterwards only the new PIN logs in. Read-only session 0xB5,
+ * nobody logged in 0x101. */
+static void div_054(void) {
+    static const char NEW_USER[] = "user-pin-5678", NEW_SO[] = "so-pin-5678";
+    UL h = fresh(0), ro = 0;
+    want("setpin nobody logged in", CALL(C_SetPIN, h, SO, (UL)strlen(SO), NEW_SO, (UL)strlen(NEW_SO)), 0x101);
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    want("setpin so", CALL(C_SetPIN, h, SO, (UL)strlen(SO), NEW_SO, (UL)strlen(NEW_SO)), 0);
+    want("logout", CALL(C_Logout, h), 0);
+    want("login so old", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0xA0);
+    want("login so new", CALL(C_Login, h, 0UL, NEW_SO, (UL)strlen(NEW_SO)), 0);
+    want("logout", CALL(C_Logout, h), 0);
+    want("login user", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("setpin user wrong old", CALL(C_SetPIN, h, "wrong-pin-0", 11UL, NEW_USER, (UL)strlen(NEW_USER)), 0xA0);
+    want("wrong old counted (COUNT_LOW)", tflags() & 0x10000UL, 0x10000);
+    want("open ro", CALL(C_OpenSession, 0UL, 4UL, NULL, NULL, &ro), 0);
+    want("setpin read-only", CALL(C_SetPIN, ro, USER, (UL)strlen(USER), NEW_USER, (UL)strlen(NEW_USER)), 0xB5);
+    want("setpin user", CALL(C_SetPIN, h, USER, (UL)strlen(USER), NEW_USER, (UL)strlen(NEW_USER)), 0);
+    UL si[4] = { 0 };
+    want("sessinfo", CALL(C_GetSessionInfo, h, si), 0);
+    want("still logged in (CKS_RW_USER_FUNCTIONS)", si[1], 3);
+    want("logout", CALL(C_Logout, h), 0);
+    want("login user old", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0xA0);
+    want("login user new", CALL(C_Login, h, 1UL, NEW_USER, (UL)strlen(NEW_USER)), 0);
+    CALL(C_Finalize, NULL);
+    /* The change is on disk: a fresh initialisation logs in with the new PIN. */
+    want("initialize", CALL(C_Initialize, NULL), 0);
+    want("open", CALL(C_OpenSession, 0UL, 6UL, NULL, NULL, &h), 0);
+    want("login user new after restart", CALL(C_Login, h, 1UL, NEW_USER, (UL)strlen(NEW_USER)), 0);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
+    { "DIV-054", div_054 },
 };
 
 int main(int argc, char **argv) {

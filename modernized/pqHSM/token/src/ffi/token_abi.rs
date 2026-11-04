@@ -306,6 +306,36 @@ pub unsafe extern "C" fn fhsm_token_set_pin(
     code(t.token.set_pin(role, old, new))
 }
 
+/// DIV-054: [`Token::change_pin`], for `C_SetPIN`. Lengths are the caller's (PKCS#11 PINs are
+/// not terminated); a NUL inside either is the caller's to refuse first.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pqhsm_token_change_pin(
+    t: *mut fhsm_token_t,
+    role: c_int,
+    old_pin: *const c_char,
+    old_len: usize,
+    new_pin: *const c_char,
+    new_len: usize,
+) -> u32 {
+    let Some(t) = (unsafe { tok(t) }) else {
+        return BAD;
+    };
+    if old_pin.is_null() || new_pin.is_null() {
+        return BAD;
+    }
+    let Some(role) = pin_role(role) else {
+        return BAD;
+    };
+    // SAFETY: by the caller's contract, old_len and new_len readable bytes
+    let (old, new) = unsafe {
+        (
+            bytes(old_pin.cast(), old_len),
+            bytes(new_pin.cast(), new_len),
+        )
+    };
+    code(t.token.change_pin(role, old, new))
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn fhsm_token_init_user_pin(t: *mut fhsm_token_t, pin: *const c_char) -> u32 {
     let (Some(t), Some(pin)) = (unsafe { (tok(t), cstr(pin)) }) else {
