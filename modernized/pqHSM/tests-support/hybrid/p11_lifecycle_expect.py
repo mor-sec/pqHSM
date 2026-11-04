@@ -10,7 +10,8 @@ and the Phase 1 `[pqhsm]` key-message prefix. C only: the rows below, each under
 import re
 import sys
 
-# (DIV, row label, rv Rust returns). The rows are C's defect; each DIV's own test checks it.
+# (DIV, row label, rv Rust returns[, output it prints]). The rows are C's defect; each DIV's own
+# test checks it. An output of 'a' * n is the driver's untouched 0xAA fill.
 RV = [
     ("DIV-051", "finalize reserved", "0x7"),
     ("RULE-071", "initialize again", "0x191"),
@@ -18,6 +19,8 @@ RV = [
     ("DIV-059", "inittoken len 4 fresh", "0xa2"),
     ("DIV-059", "inittoken len 7 fresh", "0xa2"),
     ("DIV-059", "initpin len 4", "0xa2"),
+    ("DIV-055", "closeall 1", "0"),
+    ("DIV-055", "sessinfo slot 1 after closeall 1", "0xb3", "a" * 64),
 ]
 # DIV-051: rows dropped from both, C's answers outside an initialised process.
 DROP_CHILD = "child sessinfo before initialize"
@@ -48,9 +51,11 @@ def norm(lines, expect):
             continue
         f = line.split("\t")
         if expect and len(f) == 3:
-            for _div, label, rv in RV:
+            for _div, label, rv, *printed in RV:
                 if f[0] == label:
                     f[1] = rv
+                    if printed:
+                        f[2] = printed[0]
             if f[0].startswith("tokinfo") and f[1] == "0":
                 f[2] = tokinfo(f[2])
             line = "\t".join(f)

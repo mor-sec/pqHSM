@@ -894,3 +894,11 @@ Fifteen `C_*` move: `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetSlotList`, 
 - **Audit in step 4g:** scenarios 1 and 2 leave the exact log comparison (with 0 and 5): a short new PIN is now refused before the token layer, so C's TOKEN_INIT or SET_PIN event for it is not written and every later sequence number moves, and the 0x102 login is logged as such. Rewriting C's records to match would be guesswork about which record came from which call; the rows of those scenarios still compare, and the remaining ten scenarios' logs must match exactly.
 - **Intended test change:** `test_input_validation`'s `ulMinPinLen != 4` is patched to 8 in the harness's copy (the plan's §4.2); the original is the C's.
 - **Harness `p4s1e2`:** 106/106, `nm -D` and NEEDED identical, step 4g identical after the recorded rows (logs: ten scenarios exact), step 4h: every DIV test fails on C and passes on the hybrid, TSan 0 races, corpus 64 same / 4 explained, token files the Phase 2 size pair only. Workspace 883 pass; clippy clean.
+
+### DIV-055: `C_CloseAllSessions` per slot
+
+- Slots 0-3 accepted, past 3 0x3; each session whose slot (`Table::info`) is the one given goes through the same `close_session` as `C_CloseSession`, so its operations, session objects and the last-session logout of that slot's token follow C's per-session path. As in C, only sessions with a token attached are visited.
+- **Test:** `p11_divs.c` DIV-055: SO sessions on slots 0 and 1, `closeall 4` 0x3, `closeall 1` closes slot 1's session only and slot 0's stays logged in as SO, then `closeall 0`. C: `closeall 1` is 0x3 and the session survives.
+- **Golden:** step 4g's `closeall 1` row is 0 and the slot-1 session after it is gone (0xB3, output untouched); `p11_lifecycle_expect.py` gained an optional printed-output column for that row.
+
+- **Harness `p4d55`:** as `p4s1e2`, with DIV-055 failing on C and passing on the hybrid; token files the Phase 2 size variance only.

@@ -88,8 +88,27 @@ static void div_059(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* DIV-055: C_CloseAllSessions takes slots 0-3 and closes only that slot's sessions, logging
+ * out only that slot's token; a slot past 3 is 0x3. */
+static void div_055(void) {
+    UL a = fresh(0), b = 0, si[4];
+    want("inittoken 1", CALL(C_InitToken, 1UL, SO, (UL)strlen(SO), LABEL), 0);
+    want("open 1", CALL(C_OpenSession, 1UL, 6UL, NULL, NULL, &b), 0);
+    want("login so 0", CALL(C_Login, a, 0UL, SO, (UL)strlen(SO)), 0);
+    want("login so 1", CALL(C_Login, b, 0UL, SO, (UL)strlen(SO)), 0);
+    want("closeall 4", CALL(C_CloseAllSessions, 4UL), 0x3);
+    want("closeall 1", CALL(C_CloseAllSessions, 1UL), 0);
+    want("slot 1 session closed", CALL(C_GetSessionInfo, b, si), 0xB3);
+    want("slot 0 session open", CALL(C_GetSessionInfo, a, si), 0);
+    want("slot 0 still SO (CKS_RW_SO_FUNCTIONS)", si[1], 4);
+    want("closeall 0", CALL(C_CloseAllSessions, 0UL), 0);
+    want("slot 0 session closed", CALL(C_GetSessionInfo, a, si), 0xB3);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
+    { "DIV-055", div_055 },
 };
 
 int main(int argc, char **argv) {

@@ -121,11 +121,12 @@ pub extern "C" fn pqhsm_C_CloseAllSessions(slot: c_ulong) -> c_ulong {
     if in_error() {
         return FUNCTION_FAILED.into();
     }
-    if slot != 0 {
+    // DIV-055: any valid slot, and only its sessions (C took slot 0 alone and closed all).
+    if slot >= MAX_SLOTS {
         return SLOT_ID_INVALID.into();
     }
     for h in 1..MAX as c_ulong {
-        if TABLE.token(h).is_some() {
+        if TABLE.token(h).is_some() && TABLE.info(h).is_ok_and(|(s, _, _)| s == slot) {
             close_session(h);
         }
     }

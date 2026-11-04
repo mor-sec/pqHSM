@@ -605,7 +605,7 @@ Drafted 2026-11-03 for the Phase 4 entry gate ("a decision for every suspected-d
 
 ### DIV-055 · RULE-090 `C_CloseAllSessions` takes any valid slot, and closes only that slot's sessions
 
-- **Status:** DECIDED, Fix (2026-11-03, Q13).
+- **Status:** DONE (2026-11-04, Phase 4 slice 1, `p11/src/ffi/login.rs` `pqhsm_C_CloseAllSessions`; test `p11_divs.c` DIV-055, harness step 4h). DECIDED, Fix (2026-11-03, Q13).
 - **Legacy:** only slot 0 is accepted (`C_CloseAllSessions(1..3)` returns `CKR_SLOT_ID_INVALID`, 0x3; reproduced), and slot 0 closes every session on every slot. `C_OpenSession` accepts slots 0–3.
 - **Target:** slots 0–3 are accepted; only that slot's sessions close, with RULE-090's per-session cleanup and the last-session logout of that slot's token. A slot ≥ 4 is 0x3.
 - **Test:** sessions on two slots, close one slot, the other's sessions survive.
