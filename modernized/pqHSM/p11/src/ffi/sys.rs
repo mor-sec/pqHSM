@@ -63,6 +63,31 @@ unsafe extern "C" {
     pub fn fhsm_token_is_locked(t: *const fhsm_token_t, role: c_int) -> c_int;
     pub fn fhsm_token_failed_count(t: *const fhsm_token_t, role: c_int) -> u32;
     pub fn fhsm_token_destroy_session_objects(t: *mut fhsm_token_t, owner: u32) -> u32;
+    pub fn fhsm_token_object_get(
+        t: *mut fhsm_token_t,
+        h: u32,
+        value: *mut *const u8,
+        value_len: *mut usize,
+        class: *mut u32,
+        key_type: *mut u32,
+    ) -> u32;
+    pub fn fhsm_token_object_find(
+        t: *mut fhsm_token_t,
+        class: *const u32,
+        label: *const c_char,
+        out: *mut u32,
+        cap: usize,
+        count: *mut usize,
+    ) -> u32;
+    pub fn fhsm_token_object_get_id(
+        t: *mut fhsm_token_t,
+        h: u32,
+        out: *mut *const u8,
+        out_len: *mut usize,
+    ) -> u32;
+    pub fn fhsm_token_object_is_token(t: *mut fhsm_token_t, h: u32, out: *mut c_int) -> u32;
+    pub fn fhsm_token_object_get_flags(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
+    pub fn fhsm_token_object_destroy(t: *mut fhsm_token_t, h: u32) -> u32;
 
     pub fn fhsm_audit_event(
         ev: c_int,
@@ -94,6 +119,11 @@ unsafe extern "C" {
 /// The `CK_RV`s these entry points return themselves (`include/fhsm_common.h`).
 pub const OK: u32 = 0;
 pub const DEVICE_ERROR: u32 = 0x30;
+pub const ATTRIBUTE_VALUE_INVALID: u32 = 0x13;
+pub const ACTION_PROHIBITED: u32 = 0x1B;
+pub const KEY_HANDLE_INVALID: u32 = 0x60;
+pub const OBJECT_HANDLE_INVALID: u32 = 0x82;
+pub const OPERATION_ACTIVE: u32 = 0x90;
 pub const SLOT_ID_INVALID: u32 = 0x3;
 pub const FUNCTION_FAILED: u32 = 0x6;
 pub const ARGUMENTS_BAD: u32 = 0x7;

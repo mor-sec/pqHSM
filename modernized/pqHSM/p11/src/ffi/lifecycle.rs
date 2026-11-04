@@ -31,6 +31,7 @@ static INIT_PID: AtomicI32 = AtomicI32::new(0);
 fn reset_after_fork() {
     slots::close_all();
     TABLE.reset_all();
+    super::objects::reset_finds();
     // SAFETY: C's tables, under the EXCLUSIVE lock
     unsafe { pqhsm_c_ops_forget_all() };
     fhsm_state_reset_after_fork();
@@ -40,6 +41,7 @@ fn reset_after_fork() {
 fn finalize_release() {
     // SAFETY: C's tables, under the EXCLUSIVE lock
     unsafe { pqhsm_c_ops_release_all() };
+    super::objects::reset_finds();
     TABLE.reset_all();
     slots::close_all();
     INIT_PID.store(0, Relaxed);

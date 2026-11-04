@@ -952,3 +952,12 @@ Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against 
 | L4 | `p11_notinit.c` accepts any 0x6 in ERROR; DIV-050's find check does not separate C from Rust | Noted: the 0x6 is the decided code; DIV-050's distinguishing check is the 0x60. |
 | L5 | `Table::with` asks the token for its role under the session-table mutex | Slice 2's object calls copy the token handle out first. |
 
+
+### Slice 2a: find, size and destroy in Rust
+
+- `p11/src/ffi/objects.rs`: `C_FindObjectsInit`, `C_FindObjects`, `C_FindObjectsFinal`, `C_GetObjectSize`, `C_DestroyObject`, in C's check order over the token's C ABI, as C called it. Each applies DIV-051's and DIV-053's gate itself, as the shim's wrapper did. `hybrid.mk` moves the five from the gated list to the Rust-owned one; `p11/shim/interface.c` forwards them.
+- **Find state:** C's `g_finds` becomes `objects::FINDS`, reset where C reset it (finalize, after a fork). Kept as C: a find is set active even when the token's search fails (that rv is returned); the result is clamped to the store's 1,024; an object whose class lookup fails is not hidden; a CKA_ID over 32 bytes is no filter at all; the label is cut at 63 bytes.
+- **Candidate defect, kept:** a session's find is not cleared when the session closes, so the next session on that handle inherits it (`C_FindObjectsInit` 0x90, or the old results). C's `fhsm_session_ops_reset` clears the operation tables, not `g_finds`.
+- **Destroy:** as C, no visibility check yet. That is DIV-050's destroy part (0x82), the next commit, with its test.
+- **Golden:** step 4i identical before and after the port (1,877 rows).
+

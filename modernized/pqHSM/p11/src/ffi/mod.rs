@@ -3,6 +3,7 @@
 mod apilock;
 mod lifecycle;
 mod login;
+mod objects;
 mod session;
 mod slots;
 mod state;
