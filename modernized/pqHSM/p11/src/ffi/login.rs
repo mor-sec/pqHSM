@@ -33,6 +33,9 @@ pub unsafe extern "C" fn pqhsm_C_OpenSession(
     out: *mut c_ulong,
 ) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if in_error() {
         return FUNCTION_FAILED.into();
     }
@@ -103,12 +106,18 @@ fn close_session(h: c_ulong) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn pqhsm_C_CloseSession(h: c_ulong) -> c_ulong {
     let _g = Held::exclusive();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     close_session(h).into()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pqhsm_C_CloseAllSessions(slot: c_ulong) -> c_ulong {
     let _g = Held::exclusive();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if in_error() {
         return FUNCTION_FAILED.into();
     }
@@ -126,6 +135,9 @@ pub extern "C" fn pqhsm_C_CloseAllSessions(slot: c_ulong) -> c_ulong {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pqhsm_C_GetSessionInfo(h: c_ulong, info: *mut c_void) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if in_error() {
         return FUNCTION_FAILED.into();
     }
@@ -166,6 +178,9 @@ pub unsafe extern "C" fn pqhsm_C_Login(
     pin_len: c_ulong,
 ) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if in_error() {
         return FUNCTION_FAILED.into();
     }
@@ -230,6 +245,9 @@ fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn pqhsm_C_Logout(h: c_ulong) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if in_error() {
         return FUNCTION_FAILED.into();
     }
@@ -256,6 +274,9 @@ pub unsafe extern "C" fn pqhsm_C_InitPIN(
     pin_len: c_ulong,
 ) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if in_error() {
         return FUNCTION_FAILED.into();
     }
@@ -292,6 +313,9 @@ pub unsafe extern "C" fn pqhsm_C_SetPIN(
     new_len: c_ulong,
 ) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if in_error() {
         return FUNCTION_FAILED.into();
     }

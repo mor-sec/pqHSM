@@ -18,7 +18,9 @@ use pqhsm_core::state::{INITIALIZED, INITIALIZING, POWER_OFF};
 use super::apilock::Held;
 use super::session::TABLE;
 use super::slots;
-use super::state::{fhsm_state_latch_error, fhsm_state_reset_after_fork, fhsm_state_set};
+use super::state::{
+    fhsm_state_get, fhsm_state_latch_error, fhsm_state_reset_after_fork, fhsm_state_set,
+};
 use super::sys::*;
 
 /// `g_init_pid`: the process that set the state up; 0 once released.
@@ -41,6 +43,26 @@ fn finalize_release() {
     TABLE.reset_all();
     slots::close_all();
     INIT_PID.store(0, Relaxed);
+}
+
+/// DIV-051: `CKR_CRYPTOKI_NOT_INITIALIZED` unless this process initialised the module and has
+/// not finalised it: before `C_Initialize`, after `C_Finalize`, and in a forked child that has
+/// not called `C_Initialize` (it holds the parent's state). `C_Initialize` failing before the
+/// state leaves POWER_OFF counts as not initialised; failing after latches ERROR, as in C.
+pub(crate) fn initialized() -> Result<(), u32> {
+    if fhsm_state_get() == POWER_OFF || INIT_PID.load(Relaxed) != std::process::id() as i32 {
+        return Err(CRYPTOKI_NOT_INITIALIZED);
+    }
+    Ok(())
+}
+
+/// The same gate for the entry points still in C, which `p11/shim/interface.c` wraps.
+#[unsafe(no_mangle)]
+pub extern "C" fn pqhsm_p11_gate() -> c_ulong {
+    match initialized() {
+        Ok(()) => OK.into(),
+        Err(rv) => rv.into(),
+    }
 }
 
 fn latch(reason: &CStr) {
@@ -214,8 +236,15 @@ rather than continued, which would start a second chain in\n  the same file. See
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pqhsm_C_Finalize(_reserved: *mut c_void) -> c_ulong {
+pub unsafe extern "C" fn pqhsm_C_Finalize(reserved: *mut c_void) -> c_ulong {
     let _g = Held::exclusive();
+    // DIV-051: pReserved first, then the state.
+    if !reserved.is_null() {
+        return ARGUMENTS_BAD.into();
+    }
+    if let Err(rv) = initialized() {
+        return rv.into();
+    }
     audit(EV_MODULE_FINALIZE, -1, -1, 0, OK, &[]);
     // Before the crypto layer goes down: the operation contexts freed are OpenSSL objects.
     finalize_release();
@@ -241,6 +270,9 @@ struct Info {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pqhsm_C_GetInfo(info: *mut c_void) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = initialized() {
+        return rv.into();
+    }
     if info.is_null() {
         return ARGUMENTS_BAD.into();
     }

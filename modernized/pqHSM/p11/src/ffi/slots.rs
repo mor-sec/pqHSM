@@ -7,10 +7,10 @@
 //! and by a forked child's `C_Initialize`.
 #![allow(clippy::missing_safety_doc)]
 
+use std::cell::UnsafeCell;
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_uchar, c_ulong, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::ptr::{NonNull, null_mut};
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use pqhsm_core::p11::{self, MAX_SLOTS, VERSION, pack_field};
 use pqhsm_core::session::ROLE_SO;
@@ -26,29 +26,79 @@ struct Slot {
     token: Option<Tok>,
 }
 
-static SLOTS: OnceLock<Mutex<[Slot; MAX_SLOTS as usize]>> = OnceLock::new();
+type Table = [Slot; MAX_SLOTS as usize];
+
+/// The registry under a pthread mutex, as the rest of `ffi`: TSan sees pthread, and the Rust is
+/// not instrumented, so a std lock here hid the hand-over of the paths from it.
+struct Registry {
+    mu: UnsafeCell<libc::pthread_mutex_t>,
+    table: UnsafeCell<Option<Table>>,
+}
+// SAFETY: `table` is only reached through `Locked`, which holds `mu`.
+unsafe impl Sync for Registry {}
+
+static SLOTS: Registry = Registry {
+    mu: UnsafeCell::new(libc::PTHREAD_MUTEX_INITIALIZER),
+    table: UnsafeCell::new(None),
+};
+
+/// `SLOTS` locked; unlocked on drop.
+struct Locked;
+
+impl Locked {
+    fn new() -> Self {
+        // SAFETY: a statically initialised mutex, never destroyed
+        unsafe { libc::pthread_mutex_lock(SLOTS.mu.get()) };
+        Locked
+    }
+
+    fn table(&mut self) -> &mut Option<Table> {
+        // SAFETY: the mutex is held for as long as `self`, and `self` is borrowed mutably
+        unsafe { &mut *SLOTS.table.get() }
+    }
+}
+
+impl Drop for Locked {
+    fn drop(&mut self) {
+        // SAFETY: locked by `new`
+        unsafe { libc::pthread_mutex_unlock(SLOTS.mu.get()) };
+    }
+}
 
 /// `fhsm_tokens_dir`.
 pub(crate) fn tokens_dir() -> Vec<u8> {
     env_nonempty("FHSM_TOKENS_DIR").unwrap_or_else(|| b"/var/lib/freehsm/tokens".to_vec())
 }
 
-fn slots() -> MutexGuard<'static, [Slot; MAX_SLOTS as usize]> {
-    SLOTS
-        .get_or_init(|| {
-            let dir = tokens_dir();
-            Mutex::new(std::array::from_fn(|i| {
-                let path = bounded([&dir[..], format!("/slot{i}.tok").as_bytes()].concat(), 512);
-                let present = std::fs::metadata(OsStr::from_bytes(path.as_bytes())).is_ok();
-                Slot {
-                    present,
-                    path,
-                    token: None,
-                }
-            }))
+/// The registry, locked, built on first use.
+fn slots() -> impl std::ops::DerefMut<Target = Table> {
+    struct Built(Locked);
+    impl std::ops::Deref for Built {
+        type Target = Table;
+        fn deref(&self) -> &Table {
+            // SAFETY: as `Locked::table`; built before `Built` is returned
+            unsafe { (*SLOTS.table.get()).as_ref().expect("built") }
+        }
+    }
+    impl std::ops::DerefMut for Built {
+        fn deref_mut(&mut self) -> &mut Table {
+            self.0.table().as_mut().expect("built")
+        }
+    }
+    let mut l = Locked::new();
+    l.table().get_or_insert_with(|| {
+        let dir = tokens_dir();
+        std::array::from_fn(|i| {
+            let path = bounded([&dir[..], format!("/slot{i}.tok").as_bytes()].concat(), 512);
+            let present = std::fs::metadata(OsStr::from_bytes(path.as_bytes())).is_ok();
+            Slot {
+                present,
+                path,
+                token: None,
+            }
         })
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    });
+    Built(l)
 }
 
 /// `fhsm_slot_token`: the slot's token, loaded on first use; `None` if the slot is out of
@@ -74,8 +124,9 @@ pub(crate) fn slot_token(slot: c_ulong) -> Option<Tok> {
 
 /// Every loaded token closed (its DEK zeroised, its objects freed); the table itself stays.
 pub(crate) fn close_all() {
-    let Some(m) = SLOTS.get() else { return };
-    for s in m.lock().unwrap_or_else(|e| e.into_inner()).iter_mut() {
+    let mut l = Locked::new();
+    let Some(t) = l.table() else { return };
+    for s in t.iter_mut() {
         if let Some(t) = s.token.take() {
             // SAFETY: a token fhsm_token_load or fhsm_token_init gave us, closed once
             unsafe { fhsm_token_close(t.0.as_ptr()) };
@@ -100,6 +151,9 @@ pub unsafe extern "C" fn pqhsm_C_GetSlotList(
     count: *mut c_ulong,
 ) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if count.is_null() {
         return ARGUMENTS_BAD.into();
     }
@@ -141,6 +195,9 @@ const TOKEN_PRESENT: c_ulong = 0x1;
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pqhsm_C_GetSlotInfo(slot: c_ulong, info: *mut c_void) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if info.is_null() {
         return ARGUMENTS_BAD.into();
     }
@@ -208,6 +265,9 @@ fn cstr<'a>(p: *const c_char) -> &'a [u8] {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pqhsm_C_GetTokenInfo(slot: c_ulong, info: *mut c_void) -> c_ulong {
     let _g = Held::shared();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if info.is_null() {
         return ARGUMENTS_BAD.into();
     }
@@ -287,6 +347,9 @@ pub unsafe extern "C" fn pqhsm_C_InitToken(
     label: *const c_char,
 ) -> c_ulong {
     let _g = Held::exclusive();
+    if let Err(rv) = super::lifecycle::initialized() {
+        return rv.into();
+    }
     if in_error() {
         return FUNCTION_FAILED.into();
     }

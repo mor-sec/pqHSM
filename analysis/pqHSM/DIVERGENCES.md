@@ -572,11 +572,11 @@ Drafted 2026-11-03 for the Phase 4 entry gate ("a decision for every suspected-d
 
 ### DIV-051 · RULE-072, RULE-076(a)(c), RULE-077(b) "Not initialized" is enforced
 
-- **Status:** DECIDED, Fix (2026-11-03, Q13, user: "Fix the five reproduced lifecycle defects."). RULE-076(a) and RULE-077(b) are the same gate and are included.
+- **Status:** DONE (2026-11-04, Phase 4 slice 1, `p11/src/ffi/lifecycle.rs` `initialized`; the C entry points through `p11/shim/interface.c`; test `tests-support/hybrid/p11_notinit.c`, harness step 4h). DECIDED, Fix (2026-11-03, Q13, user: "Fix the five reproduced lifecycle defects."). RULE-076(a) and RULE-077(b) are the same gate and are included.
 - **Legacy:** `FHSM_RV_CRYPTOKI_NOT_INITIALIZED` is defined (`include/fhsm_common.h:198`) and never returned. Every `C_*` checks only `== FHSM_STATE_ERROR`. Reproduced: after `C_Finalize`, `C_OpenSession` and `C_Login(CKU_USER)` return CKR_OK, with self-tests and audit bypassed. `C_Finalize` returns OK in POWER_OFF and ignores `pReserved`. A forked child that never calls `C_Initialize` keeps the parent's sessions and login.
 - **Target:** while the state is POWER_OFF, or the caller is a forked child that has not called `C_Initialize` (`getpid() != g_init_pid`), every `C_*` except `C_Initialize`, `C_GetFunctionList`, `C_GetInterfaceList` and `C_GetInterface` returns 0x190, `C_Finalize` included. `C_Finalize` with a non-NULL `pReserved` returns `CKR_ARGUMENTS_BAD` (0x7) before the state check.
 - **Test:** each entry point before `C_Initialize`, after `C_Finalize`, and in an uninitialised child.
-- **Expected harness diff:** none. Every test, both fork tests' children and the harness helpers (`atexit_finalize.c`, `fork_parent_log.c`) call `C_Initialize` first.
+- **Expected harness diff:** none. Every test, both fork tests' children and the harness helpers (`atexit_finalize.c`, `fork_parent_log.c`) call `C_Initialize` first. Step 4g's own golden (`p11_lifecycle.c`, written in slice 1d) records the defect in three places, which it sets aside: scenario 0 before its first `C_Initialize` with its log, `C_Finalize(pReserved)`, the forked child before `C_Initialize`.
 
 ### DIV-052 · RULE-075 A pairwise failure latches ERROR
 

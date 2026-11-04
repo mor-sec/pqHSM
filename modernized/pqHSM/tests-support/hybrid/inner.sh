@@ -219,23 +219,39 @@ done
 # Recorded differences, suppressed and nothing else: DIV-035 (a forked child or a restart
 # re-runs the self-tests, so the integrity-bypass NOTE prints again), the Phase 1 key-message
 # prefix (TRANSFORMATION_NOTES.md, Phase 1), and DIV-009 (the fork scenario's child writes its
-# own log, not the parent's; step 5 checks it), so scenario 5's logs are left out.
+# own log, not the parent's; step 5 checks it), so scenario 5's logs are left out. From slice 1
+# DIV-051 (step 4h checks it): the calls before the first C_Initialize in scenario 0 and their
+# log, C_Finalize with pReserved, and the forked child's call before its C_Initialize.
 pl_norm() {
-  awk '/^\[freehsm-c\] NOTE : integrity bypass active/ {skip=7} skip {skip--; next} {print}' "$1" \
+  awk '/^\[freehsm-c\] NOTE : integrity bypass active/ {skip=7} skip {skip--; next}
+       /^=== 0 preinit/ {print; pre=1; next} pre && /^initialize\t/ {pre=0}
+       pre || /^finalize reserved\t/ || /^child sessinfo before initialize\t/ {next} {print}' "$1" \
     | sed 's/^\[pqhsm\] audit key :/[freehsm-c] audit key :/'
 }
 pl_same() { if cmp -s "$1" "$2"; then echo identical; else echo "DIFFER: $(diff "$1" "$2" | grep -c '^[<>]') lines"; fi; }
 for tag in c hybrid; do
   pl_norm /out/p11_lifecycle_$tag.txt > /out/p11_lifecycle_${tag}_norm.txt
-  mv /tmp/p11lc_$tag/5 /tmp/p11lc_${tag}_fork
+  mv /tmp/p11lc_$tag/5 /tmp/p11lc_${tag}_fork; mv /tmp/p11lc_$tag/0 /tmp/p11lc_${tag}_preinit
   python3 modernized/pqHSM/tests-support/hybrid/corpus_norm.py /tmp/p11lc_$tag > /out/p11_lifecycle_audit_${tag}_nofork.txt
 done
-printf 'p11 lifecycle: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s; audit %s records, less the fork scenario %s' \
+printf 'p11 lifecycle: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s; audit %s records, less scenarios 0 and 5 %s' \
   "$(tail -1 /out/p11_lifecycle_c.txt)" "$(tail -1 /out/p11_lifecycle_hybrid.txt)" \
   "$(grep -c "$(printf '\t')" /out/p11_lifecycle_c.txt)" "$(pl_same /out/p11_lifecycle_c.txt /out/p11_lifecycle_hybrid.txt)" \
   "$(pl_same /out/p11_lifecycle_c_norm.txt /out/p11_lifecycle_hybrid_norm.txt)" \
   "$(grep -vc '^=== log' /out/p11_lifecycle_audit_c.txt)" \
   "$(pl_same /out/p11_lifecycle_audit_c_nofork.txt /out/p11_lifecycle_audit_hybrid_nofork.txt)" > /out/p11_lifecycle.txt
+
+# 4h. Phase 4 slice 1, DIV-051: p11_notinit.c calls every entry point but C_Initialize and the
+#     list calls before C_Initialize, after C_Finalize and in an uninitialised forked child;
+#     each must answer 0x190 (C_Finalize with pReserved 0x7). The C must fail it.
+cc -std=gnu17 -o /tmp/p11_notinit modernized/pqHSM/tests-support/hybrid/p11_notinit.c -ldl
+for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+  tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
+  d=$(mktemp -d)
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$d /tmp/p11_notinit $lib > /out/p11_notinit_$tag.txt 2>/dev/null
+  echo "rc=$?" >> /out/p11_notinit_$tag.txt
+done
+echo "DIV tests: 051 C $(grep -q '^DIV-051: FAIL' /out/p11_notinit_c.txt && echo fails || echo 'PASSES (wrong)'), hybrid $(grep -q '^DIV-051: pass' /out/p11_notinit_hybrid.txt && echo passes || echo FAILS)" > /out/div_tests.txt
 
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
@@ -420,6 +436,7 @@ rm -rf /tmp/wy /tmp/venv
   echo "pki: $(cat /out/pki_tests.txt)"
   echo "$(cat /out/p11_tables.txt)"
   echo "$(cat /out/p11_lifecycle.txt)"
+  echo "$(cat /out/div_tests.txt)"
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"

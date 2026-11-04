@@ -52,3 +52,60 @@ FWD(C_Login, (UL h, UL u, const char *p, UL n), (h, u, p, n))
 FWD(C_Logout, (UL h), (h))
 FWD(C_InitPIN, (UL h, const char *p, UL n), (h, p, n))
 FWD(C_SetPIN, (UL h, const char *o, UL on, const char *p, UL pn), (h, o, on, p, pn))
+
+/* Phase 4 slice 1, DIV-051: the entry points still in C refuse with CKR_CRYPTOKI_NOT_INITIALIZED
+ * outside an initialised process, as Rust's do. hybrid.mk renames C's to pqhsm_c_<name>; these
+ * take the exported names. shortcut: the gate is read before the C takes the API lock, so a call
+ * racing C_Finalize in another thread can pass it; PKCS#11 leaves that race to the application.
+ * It moves under the lock as each slice takes its entry points into Rust. */
+typedef void *P;
+CK_RV pqhsm_p11_gate(void);
+#define GATE(name, params, args) \
+    CK_RV pqhsm_c_##name params; CK_RV name params; \
+    __attribute__((visibility("default"))) CK_RV name params { \
+        CK_RV rv = pqhsm_p11_gate(); return rv ? rv : pqhsm_c_##name args; }
+
+GATE(C_GetMechanismList, (UL s, P l, P n), (s, l, n))
+GATE(C_GetMechanismInfo, (UL s, UL t, P i), (s, t, i))
+GATE(C_WaitForSlotEvent, (UL f, P s, P r), (f, s, r))
+GATE(C_GetFunctionStatus, (UL h), (h))
+GATE(C_CancelFunction, (UL h), (h))
+GATE(C_SeedRandom, (UL h, P p, UL n), (h, p, n))
+GATE(C_GenerateRandom, (UL h, P p, UL n), (h, p, n))
+GATE(C_CreateObject, (UL h, P t, UL n, P o), (h, t, n, o))
+GATE(C_CopyObject, (UL h, UL o, P t, UL n, P no), (h, o, t, n, no))
+GATE(C_DestroyObject, (UL h, UL o), (h, o))
+GATE(C_GetObjectSize, (UL h, UL o, P s), (h, o, s))
+GATE(C_GetAttributeValue, (UL h, UL o, P t, UL n), (h, o, t, n))
+GATE(C_SetAttributeValue, (UL h, UL o, P t, UL n), (h, o, t, n))
+GATE(C_FindObjectsInit, (UL h, P t, UL n), (h, t, n))
+GATE(C_FindObjects, (UL h, P o, UL m, P n), (h, o, m, n))
+GATE(C_FindObjectsFinal, (UL h), (h))
+GATE(C_EncryptInit, (UL h, P m, UL k), (h, m, k))
+GATE(C_Encrypt, (UL h, P d, UL dn, P e, P en), (h, d, dn, e, en))
+GATE(C_EncryptUpdate, (UL h, P d, UL dn, P e, P en), (h, d, dn, e, en))
+GATE(C_EncryptFinal, (UL h, P e, P en), (h, e, en))
+GATE(C_DecryptInit, (UL h, P m, UL k), (h, m, k))
+GATE(C_Decrypt, (UL h, P e, UL en, P d, P dn), (h, e, en, d, dn))
+GATE(C_DecryptUpdate, (UL h, P e, UL en, P d, P dn), (h, e, en, d, dn))
+GATE(C_DecryptFinal, (UL h, P d, P dn), (h, d, dn))
+GATE(C_DigestInit, (UL h, P m), (h, m))
+GATE(C_Digest, (UL h, P d, UL dn, P o, P on), (h, d, dn, o, on))
+GATE(C_DigestUpdate, (UL h, P d, UL dn), (h, d, dn))
+GATE(C_DigestKey, (UL h, UL k), (h, k))
+GATE(C_DigestFinal, (UL h, P o, P on), (h, o, on))
+GATE(C_SignInit, (UL h, P m, UL k), (h, m, k))
+GATE(C_Sign, (UL h, P d, UL dn, P s, P sn), (h, d, dn, s, sn))
+GATE(C_SignUpdate, (UL h, P d, UL dn), (h, d, dn))
+GATE(C_SignFinal, (UL h, P s, P sn), (h, s, sn))
+GATE(C_VerifyInit, (UL h, P m, UL k), (h, m, k))
+GATE(C_Verify, (UL h, P d, UL dn, P s, UL sn), (h, d, dn, s, sn))
+GATE(C_VerifyUpdate, (UL h, P d, UL dn), (h, d, dn))
+GATE(C_VerifyFinal, (UL h, P s, UL sn), (h, s, sn))
+GATE(C_GenerateKey, (UL h, P m, P t, UL n, P k), (h, m, t, n, k))
+GATE(C_GenerateKeyPair, (UL h, P m, P pu, UL npu, P pr, UL npr, P hpu, P hpr), (h, m, pu, npu, pr, npr, hpu, hpr))
+GATE(C_WrapKey, (UL h, P m, UL wk, UL k, P o, P on), (h, m, wk, k, o, on))
+GATE(C_UnwrapKey, (UL h, P m, UL uk, P w, UL wn, P t, UL n, P k), (h, m, uk, w, wn, t, n, k))
+GATE(C_DeriveKey, (UL h, P m, UL b, P t, UL n, P k), (h, m, b, t, n, k))
+GATE(C_EncapsulateKey, (UL h, P m, UL k, P t, UL n, P c, P cn, P nk), (h, m, k, t, n, c, cn, nk))
+GATE(C_DecapsulateKey, (UL h, P m, UL k, P t, UL n, P c, UL cn, P nk), (h, m, k, t, n, c, cn, nk))
