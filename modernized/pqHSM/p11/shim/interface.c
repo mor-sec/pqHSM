@@ -60,6 +60,10 @@ FWD(C_FindObjectsFinal, (UL h), (h))
 FWD(C_GetObjectSize, (UL h, UL o, void *s), (h, o, s))
 FWD(C_DestroyObject, (UL h, UL o), (h, o))
 
+/* Phase 4 slice 2b: get and set attribute (p11/src/ffi/attrs.rs). */
+FWD(C_GetAttributeValue, (UL h, UL o, void *t, UL n), (h, o, t, n))
+FWD(C_SetAttributeValue, (UL h, UL o, void *t, UL n), (h, o, t, n))
+
 /* Phase 4 slice 1, DIV-051 and DIV-053: the entry points still in C refuse with
  * CKR_CRYPTOKI_NOT_INITIALIZED outside an initialised process, and in ERROR, as Rust's do. hybrid.mk renames C's to pqhsm_c_<name>; these
  * take the exported names. shortcut: the gate is read before the C takes the API lock, so a call
@@ -84,8 +88,6 @@ GATE(C_SeedRandom, (UL h, P p, UL n), (h, p, n))
 GATE(C_GenerateRandom, (UL h, P p, UL n), (h, p, n))
 GATE(C_CreateObject, (UL h, P t, UL n, P o), (h, t, n, o))
 GATE(C_CopyObject, (UL h, UL o, P t, UL n, P no), (h, o, t, n, no))
-GATE(C_GetAttributeValue, (UL h, UL o, P t, UL n), (h, o, t, n))
-GATE(C_SetAttributeValue, (UL h, UL o, P t, UL n), (h, o, t, n))
 GATE(C_EncryptInit, (UL h, P m, UL k), (h, m, k))
 GATE(C_Encrypt, (UL h, P d, UL dn, P e, P en), (h, d, dn, e, en))
 GATE(C_EncryptUpdate, (UL h, P d, UL dn, P e, P en), (h, d, dn, e, en))

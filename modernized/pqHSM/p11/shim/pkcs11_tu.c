@@ -42,3 +42,33 @@ void pqhsm_c_ops_release_all(void) {
     fhsm_oaep_reset_all();
     fhsm_zeroize(g_finds, sizeof(g_finds));
 }
+
+/* Phase 4 slice 2b: C_GetAttributeValue is Rust's; its OpenSSL readbacks are still these.
+ * pqhsm_c_pqc_raw_pub is the block C_GetAttributeValue's CKA_VALUE arm ran inline: an ML-KEM
+ * or ML-DSA public key's raw form from its stored SPKI; 1 on success. */
+int pqhsm_c_extract_pubkey_attr(fhsm_token_t *t, uint32_t h, CK_ATTRIBUTE_TYPE type,
+                                uint8_t *out, size_t *out_len);
+int pqhsm_c_extract_cert_attr(fhsm_token_t *t, uint32_t h, CK_ATTRIBUTE_TYPE type,
+                              uint8_t *out, size_t *out_len);
+int pqhsm_c_pset_selector_of(uint32_t cls, uint32_t kt, const uint8_t *v, size_t n,
+                             CK_ULONG *sel);
+int pqhsm_c_pqc_raw_pub(const uint8_t *v, size_t n, uint8_t *out, size_t *out_len);
+int pqhsm_c_extract_pubkey_attr(fhsm_token_t *t, uint32_t h, CK_ATTRIBUTE_TYPE type,
+                                uint8_t *out, size_t *out_len) {
+    return extract_pubkey_attr(t, h, type, out, out_len);
+}
+int pqhsm_c_extract_cert_attr(fhsm_token_t *t, uint32_t h, CK_ATTRIBUTE_TYPE type,
+                              uint8_t *out, size_t *out_len) {
+    return extract_cert_attr(t, h, type, out, out_len);
+}
+int pqhsm_c_pset_selector_of(uint32_t cls, uint32_t kt, const uint8_t *v, size_t n,
+                             CK_ULONG *sel) {
+    return fhsm_pset_selector_of(cls, kt, v, n, sel);
+}
+int pqhsm_c_pqc_raw_pub(const uint8_t *v, size_t n, uint8_t *out, size_t *out_len) {
+    const unsigned char *pp = v;
+    EVP_PKEY *pk = d2i_PUBKEY(NULL, &pp, (long)n);
+    int ok = pk != NULL && EVP_PKEY_get_raw_public_key(pk, out, out_len) == 1;
+    if (pk) EVP_PKEY_free(pk);
+    return ok;
+}

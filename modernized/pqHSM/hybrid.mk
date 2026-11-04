@@ -87,13 +87,14 @@ PQHSM_P11_RUST := C_GetFunctionList C_GetInterfaceList C_GetInterface \
                   C_Initialize C_Finalize C_GetInfo C_GetSlotList C_GetSlotInfo C_GetTokenInfo \
                   C_InitToken C_OpenSession C_CloseSession C_CloseAllSessions C_GetSessionInfo \
                   C_Login C_Logout C_InitPIN C_SetPIN \
-                  C_FindObjectsInit C_FindObjects C_FindObjectsFinal C_GetObjectSize C_DestroyObject
+                  C_FindObjectsInit C_FindObjects C_FindObjectsFinal C_GetObjectSize C_DestroyObject \
+                  C_GetAttributeValue C_SetAttributeValue
 # Slice 1, DIV-051: the rest stay C's, renamed pqhsm_c_<name>; the shim's gated wrappers take
 # their names. C declares its entry points visible, so the renamed ones are made local once the
 # shim is linked to them.
 PQHSM_P11_GATED := C_GetMechanismList C_GetMechanismInfo C_WaitForSlotEvent C_GetFunctionStatus \
                    C_CancelFunction C_SeedRandom C_GenerateRandom C_CreateObject C_CopyObject \
-                   C_GetAttributeValue C_SetAttributeValue C_EncryptInit C_Encrypt \
+                   C_EncryptInit C_Encrypt \
                    C_EncryptUpdate C_EncryptFinal C_DecryptInit C_Decrypt C_DecryptUpdate \
                    C_DecryptFinal C_DigestInit C_Digest C_DigestUpdate C_DigestKey C_DigestFinal \
                    C_SignInit C_Sign C_SignUpdate C_SignFinal C_VerifyInit C_Verify C_VerifyUpdate \

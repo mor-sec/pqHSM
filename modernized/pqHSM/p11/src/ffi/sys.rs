@@ -88,6 +88,42 @@ unsafe extern "C" {
     pub fn fhsm_token_object_is_token(t: *mut fhsm_token_t, h: u32, out: *mut c_int) -> u32;
     pub fn fhsm_token_object_get_flags(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
     pub fn fhsm_token_object_destroy(t: *mut fhsm_token_t, h: u32) -> u32;
+    pub fn fhsm_token_object_get_label(
+        t: *mut fhsm_token_t,
+        h: u32,
+        out: *mut *const c_char,
+        out_len: *mut usize,
+    ) -> u32;
+    pub fn fhsm_token_object_get_meta(
+        t: *mut fhsm_token_t,
+        h: u32,
+        which: c_int,
+        out: *mut *const u8,
+        out_len: *mut usize,
+    ) -> u32;
+    pub fn fhsm_token_object_get_flags2(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
+    pub fn fhsm_token_object_get_usage(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
+    pub fn fhsm_token_object_get_allowed_mechs(
+        t: *mut fhsm_token_t,
+        h: u32,
+        out: *mut u32,
+        io_count: *mut u8,
+    ) -> u32;
+    pub fn fhsm_token_object_set_label(t: *mut fhsm_token_t, h: u32, label: *const c_char) -> u32;
+    pub fn fhsm_token_object_set_id(t: *mut fhsm_token_t, h: u32, id: *const u8, n: usize) -> u32;
+    pub fn fhsm_token_object_set_flags(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
+    pub fn fhsm_token_object_set_flags2(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
+    #[allow(clippy::too_many_arguments)]
+    pub fn fhsm_token_object_set_meta(
+        t: *mut fhsm_token_t,
+        h: u32,
+        start: *const u8,
+        start_len: usize,
+        end: *const u8,
+        end_len: usize,
+        app: *const u8,
+        app_len: usize,
+    ) -> u32;
 
     pub fn fhsm_audit_event(
         ev: c_int,

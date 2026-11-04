@@ -961,8 +961,14 @@ Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against 
 - **Destroy:** as C, no visibility check yet. That is DIV-050's destroy part (0x82), the next commit, with its test.
 - **Golden:** step 4i identical before and after the port (1,877 rows).
 
-
 ### DIV-050, the destroy part
 
 - `C_DestroyObject` looks the object's class up first, and a secret or private key is 0x82 unless the token is logged in as the user: the SO could destroy the user's keys in C. The check comes before the read-only-session check, so a read-only session's 0xB5 does not tell a caller the key exists. An object whose lookup fails goes on to C's checks unchanged (its rv stays C's 0x60 until RULE-092's commit).
 - **Golden fixed first:** the driver's three SO logins ran with a read-only session open, so they failed (0xB7) and the "so" rows tested nobody. Each now closes it first; with the fix, only the two rows it changes differ from C. Step 4i records the two rows the fix changes, by exact match.
+
+### Slice 2b: get and set attribute in Rust
+
+- `p11/src/ffi/attrs.rs`: `C_GetAttributeValue` (every arm of C's switch: the withheld CKA_VALUE and its 0x11, the nested templates filled in the caller's own buffers, the usage defaults by class, the CK_UNAVAILABLE_INFORMATION shapes) and `C_SetAttributeValue` (validate every row, then apply; the one-way SENSITIVE, EXTRACTABLE, COPYABLE and WRAP_WITH_TRUSTED rules; CKA_TRUSTED only by the SO). C's order of checks and of the three error codes is kept.
+- **Still C, through `p11/shim/pkcs11_tu.c`:** the OpenSSL readbacks: `extract_pubkey_attr` (RSA and EC components), `extract_cert_attr` (subject, issuer, serial), `fhsm_pset_selector_of`, and the raw PQC public key the CKA_VALUE arm decoded inline (`pqhsm_c_pqc_raw_pub`, the same five lines). They move with the PKI side, by slice 5.
+- **Kept as C in the port:** `C_SetAttributeValue` checks no visibility (`C_GetAttributeValue` and `C_GetObjectSize` do), so the SO may relabel the user's key or turn on its CKA_SENSITIVE. Decided 2026-11-05 as a new part of DIV-050 (user: "Fix, under DIV-050 (Recommended)"); the next commit.
+- **Golden:** step 4i identical (all rows but the two DIV-050 records).

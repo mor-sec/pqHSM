@@ -19,15 +19,15 @@ use super::sys::*;
 /// `FHSM_MAX_OBJECTS`: a search returns at most what the store holds.
 const MAX_OBJECTS: usize = 1024;
 /// `FHSM_MAX_TEMPLATE_ATTRS`.
-const MAX_TEMPLATE_ATTRS: c_ulong = 1024;
-const CKA_CLASS: c_ulong = 0x0;
-const CKA_LABEL: c_ulong = 0x3;
-const CKA_ID: c_ulong = 0x102;
-const CKO_PRIVATE_KEY: u32 = 3;
-const CKO_SECRET_KEY: u32 = 4;
-const CKF_RW_SESSION: c_ulong = 0x2;
+pub(super) const MAX_TEMPLATE_ATTRS: c_ulong = 1024;
+pub(super) const CKA_CLASS: c_ulong = 0x0;
+pub(super) const CKA_LABEL: c_ulong = 0x3;
+pub(super) const CKA_ID: c_ulong = 0x102;
+pub(super) const CKO_PRIVATE_KEY: u32 = 3;
+pub(super) const CKO_SECRET_KEY: u32 = 4;
+pub(super) const CKF_RW_SESSION: c_ulong = 0x2;
 /// `FHSM_OBJF_UNDESTROYABLE`: CKA_DESTROYABLE=FALSE.
-const OBJF_UNDESTROYABLE: u8 = 0x08;
+pub(super) const OBJF_UNDESTROYABLE: u8 = 0x08;
 
 /// `CK_ATTRIBUTE`.
 #[repr(C)]
@@ -67,7 +67,7 @@ pub(crate) fn reset_finds() {
 }
 
 /// DIV-051 and DIV-053, as the shim's gate applied them before the C ran.
-fn gate() -> Result<(), u32> {
+pub(super) fn gate() -> Result<(), u32> {
     initialized()?;
     if in_error() {
         return Err(FUNCTION_FAILED);
@@ -79,7 +79,7 @@ fn gate() -> Result<(), u32> {
 ///
 /// # Safety
 /// `t` is NULL or points to `n` attributes.
-unsafe fn check_template<'a>(t: *const Attr, n: c_ulong) -> Result<&'a [Attr], u32> {
+pub(super) unsafe fn check_template<'a>(t: *const Attr, n: c_ulong) -> Result<&'a [Attr], u32> {
     if n == 0 {
         return Ok(&[]);
     }
@@ -297,7 +297,7 @@ pub unsafe extern "C" fn pqhsm_C_GetObjectSize(
 }
 
 /// `fhsm_object_lookup_rv`: the object calls answer 0x82, not the key calls' 0x60.
-fn lookup_rv(rv: u32) -> u32 {
+pub(super) fn lookup_rv(rv: u32) -> u32 {
     if rv == KEY_HANDLE_INVALID {
         OBJECT_HANDLE_INVALID
     } else {
@@ -306,7 +306,7 @@ fn lookup_rv(rv: u32) -> u32 {
 }
 
 /// `fhsm_object_access_denied`: a private class unless the token is logged in as the user.
-fn access_denied(t: Tok, class: u32) -> bool {
+pub(super) fn access_denied(t: Tok, class: u32) -> bool {
     // SAFETY: a token the registry holds
     let role = unsafe { fhsm_token_current_role(t.0.as_ptr()) };
     role != ROLE_USER && private_class(class)
