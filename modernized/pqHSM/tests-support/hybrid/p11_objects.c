@@ -305,7 +305,8 @@ static void s_create(void) {
     { Attr t[] = { AT(0x0, c_data), AT(0x1, T) }; create(h, "nobody token data", t, 2); }
     { Attr t[] = { AT(0x0, c_secret), AT(0x100, k_aes), AT(0x11, key16) };
       create(h, "nobody aes", t, 3); }
-    P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN));
+    row("close ro", P11(C_CloseSession, ro), 0, NULL, 0, 0);   /* an SO login needs none open */
+    row("login so", P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN)), 0, NULL, 0, 0);
     { Attr t[] = { AT(0x0, c_data), AT(0x1, T) }; create(h, "so token data", t, 2); }
     { Attr t[] = { AT(0x0, c_secret), AT(0x100, k_aes), AT(0x11, key16) };
       create(h, "so aes", t, 3); }
@@ -478,7 +479,8 @@ static void s_find(void) {
     find(ro, "ro find all", NULL, 0, 100);
     P11(C_Logout, h);
     find(h, "nobody find all", NULL, 0, 100);
-    P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN));
+    row("close ro", P11(C_CloseSession, ro), 0, NULL, 0, 0);   /* an SO login needs none open */
+    row("login so", P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN)), 0, NULL, 0, 0);
     find(h, "so find all", NULL, 0, 100);
     P11(C_Finalize, NULL);
 }
@@ -505,7 +507,8 @@ static void s_destroy(void) {
     P11(C_Logout, h);
     row("nobody destroy key", P11(C_DestroyObject, h, k1), 0, NULL, 0, 0);
     row("nobody destroy token data", P11(C_DestroyObject, h, t2), 0, NULL, 0, 0);
-    P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN));
+    row("close ro", P11(C_CloseSession, ro), 0, NULL, 0, 0);   /* an SO login needs none open */
+    row("login so", P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN)), 0, NULL, 0, 0);
     row("so destroy key", P11(C_DestroyObject, h, k1), 0, NULL, 0, 0);
     P11(C_Logout, h);
     P11(C_Login, h, 1UL, USER_PIN, (UL)strlen(USER_PIN));

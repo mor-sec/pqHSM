@@ -202,6 +202,13 @@ static void div_050(void) {
     want("encryptinit after a new login", CALL(C_EncryptInit, h, &ecb, k), 0);
     out = 64;
     want("encrypt after a new login", CALL(C_Encrypt, h, pt, 16UL, ct, &out), 0);
+    /* The destroy part: the SO cannot destroy the user's key (0x82, as for no such object). */
+    want("logout user again", CALL(C_Logout, h), 0);
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("so destroys the user's key", CALL(C_DestroyObject, h, k), 0x82);
+    want("logout so again", CALL(C_Logout, h), 0);
+    want("login user a third time", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("the key survived", CALL(C_EncryptInit, h, &ecb, k), 0);
     CALL(C_Finalize, NULL);
 }
 

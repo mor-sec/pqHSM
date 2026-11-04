@@ -322,6 +322,11 @@ pub extern "C" fn pqhsm_C_DestroyObject(h: c_ulong, o: c_ulong) -> c_ulong {
         return SESSION_HANDLE_INVALID.into();
     };
     let t = tok.0.as_ptr();
+    // DIV-050: a private object is not there for anyone but the user (C let the SO destroy the
+    // user's keys). First, so a read-only session's 0xB5 does not show that it exists.
+    if class_of(tok, o as u32).is_ok_and(|c| access_denied(tok, c)) {
+        return OBJECT_HANDLE_INVALID.into();
+    }
     // A token object needs a read-write session (#125); a session object does not.
     let mut is_tok: c_int = 0;
     // SAFETY: a token the registry holds; an out pointer of our own

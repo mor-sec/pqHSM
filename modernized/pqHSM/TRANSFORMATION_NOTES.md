@@ -961,3 +961,8 @@ Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against 
 - **Destroy:** as C, no visibility check yet. That is DIV-050's destroy part (0x82), the next commit, with its test.
 - **Golden:** step 4i identical before and after the port (1,877 rows).
 
+
+### DIV-050, the destroy part
+
+- `C_DestroyObject` looks the object's class up first, and a secret or private key is 0x82 unless the token is logged in as the user: the SO could destroy the user's keys in C. The check comes before the read-only-session check, so a read-only session's 0xB5 does not tell a caller the key exists. An object whose lookup fails goes on to C's checks unchanged (its rv stays C's 0x60 until RULE-092's commit).
+- **Golden fixed first:** the driver's three SO logins ran with a read-only session open, so they failed (0xB7) and the "so" rows tested nobody. Each now closes it first; with the fix, only the two rows it changes differ from C. Step 4i records the two rows the fix changes, by exact match.
