@@ -679,6 +679,20 @@ impl Token {
                 return Err(Rv::DEVICE_ERROR);
             }
             if !g.loaded {
+                // DIV-050: the session objects a logout kept go back in, whatever the file holds
+                let sess: Vec<Object> = g
+                    .store
+                    .objects
+                    .iter()
+                    .filter(|o| o.owner_session != 0)
+                    .cloned()
+                    .collect();
+                let rejoin = |s: &mut Store| {
+                    for o in &sess {
+                        s.next_handle = s.next_handle.max(o.handle + 1);
+                        s.objects.push(o.clone());
+                    }
+                };
                 let file = fs::read(&g.path);
                 g.store = Store::default();
                 let mut loaded = false;
@@ -701,6 +715,7 @@ impl Token {
                                     {
                                         g.store = s;
                                     }
+                                    rejoin(&mut g.store);
                                     return Err(FF);
                                 }
                                 Ok(pt) => match store::parse(&pt) {
@@ -717,6 +732,7 @@ impl Token {
                                         {
                                             g.store = s;
                                         }
+                                        rejoin(&mut g.store);
                                         return Err(FF);
                                     }
                                 },
@@ -724,6 +740,7 @@ impl Token {
                         }
                     },
                 }
+                rejoin(&mut g.store);
                 g.public = false;
                 g.loaded = loaded;
             }
@@ -765,10 +782,20 @@ impl Token {
         self.check_pin(role, pin, false)
     }
 
+    /// DIV-050: logout leaves what a process that never logged in sees, the public view, plus
+    /// the session objects: every other token object goes, its value zeroised when its last
+    /// reader lets go (`Buf`'s drop). The next login reloads them from the file.
     pub fn logout(&self) {
         let mut g = self.g();
         g.drop_dek();
         g.role = Role::None;
+        if g.loaded {
+            g.store
+                .objects
+                .retain(|o| o.owner_session != 0 || store::is_public(o));
+            g.loaded = false;
+            g.public = true;
+        }
     }
 
     pub fn current_role(&self) -> Role {

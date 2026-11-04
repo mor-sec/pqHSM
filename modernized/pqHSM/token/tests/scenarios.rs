@@ -32,6 +32,40 @@ const INFO_USER_BASE: &str = "\tlabel=676f6c64656e2d75736572\tserial=ok\tfso=0\t
 /// Patterns: `*` any run, `&&` all of, `||` any of, `!` not. A row whose `c` equals `rust`
 /// records that C already matches the target at that step.
 pub const DIVS: &[Div] = &[
+    // DIV-050: logout leaves the public view and the session objects; the private key is gone.
+    Div {
+        scenario: "logout_keeps_objects_rule086",
+        step: 5,
+        div: "DIV-050",
+        c: "\trv=0x0\tclass=4\tkt=31\tvalue=101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+        rust: "\trv=0x60",
+        same_file_as: 0,
+    },
+    Div {
+        scenario: "logout_keeps_objects_rule086",
+        step: 6,
+        div: "DIV-050",
+        c: "\trv=0x0\tn=5\ths=1,2,3,4,5",
+        rust: "\trv=0x0\tn=2\ths=3,4",
+        same_file_as: 0,
+    },
+    Div {
+        scenario: "logout_keeps_objects_rule086",
+        step: 7,
+        div: "DIV-050",
+        c: "\trv=0x0\tv=6165732d73656e736974697665",
+        rust: "\trv=0x60",
+        same_file_as: 0,
+    },
+    // the user's secret token key h=1 goes at logout; the public session key h=3 stays
+    Div {
+        scenario: "session_objects_rule090",
+        step: 19,
+        div: "DIV-050",
+        c: "\trv=0x0\tn=2\ths=1,3",
+        rust: "\trv=0x0\tn=1\ths=3",
+        same_file_as: 0,
+    },
     // DIV-010: a store that fails GCM under the DEK is an error; the zero key is no longer tried.
     Div {
         scenario: "blob_bad_tag_div010",

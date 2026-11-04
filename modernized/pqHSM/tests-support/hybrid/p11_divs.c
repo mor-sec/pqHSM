@@ -170,10 +170,42 @@ static void div_054(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* DIV-050, the logout half (SEC-001's reproduction): after C_Logout the user's AES token key
+ * is gone, as in a process that never logged in, and a later login brings it back. C keeps it
+ * decrypted and usable. Key use as SO or nobody, and an operation continued past the logout,
+ * are slices 4 and 5's. */
+static void div_050(void) {
+    UL h = fresh(0), k = 0, cls = 4, kt = 0x1f, n = 0, found[16], out = 64;
+    unsigned char yes = 1, key[16] = { 1 }, pt[16] = { 2 }, ct[64];
+    struct { UL type; void *p; UL len; } t[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &yes, 1 },
+        { 0x104, &yes, 1 }, { 0x011, key, sizeof key },
+    };
+    struct { UL m; void *p; UL len; } ecb = { 0x1081, NULL, 0 };
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    want("logout so", CALL(C_Logout, h), 0);
+    want("login user", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("create the AES token key", CALL(C_CreateObject, h, t, 5UL, &k), 0);
+    want("encryptinit logged in", CALL(C_EncryptInit, h, &ecb, k), 0);
+    want("encrypt logged in", CALL(C_Encrypt, h, pt, 16UL, ct, &out), 0);
+    want("logout user", CALL(C_Logout, h), 0);
+    want("encryptinit after logout", CALL(C_EncryptInit, h, &ecb, k), 0x60);
+    want("findinit after logout", CALL(C_FindObjectsInit, h, NULL, 0UL), 0);
+    want("find after logout", CALL(C_FindObjects, h, found, 16UL, &n), 0);
+    for (UL i = 0; i < n; ++i) want("the key is found after logout", found[i] == k, 0);
+    CALL(C_FindObjectsFinal, h);
+    want("login user again", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("encryptinit after a new login", CALL(C_EncryptInit, h, &ecb, k), 0);
+    out = 64;
+    want("encrypt after a new login", CALL(C_Encrypt, h, pt, 16UL, ct, &out), 0);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
-    { "DIV-054", div_054 },
+    { "DIV-054", div_054 }, { "DIV-050", div_050 },
 };
 
 int main(int argc, char **argv) {

@@ -340,3 +340,36 @@ fn change_pin_rewraps_for_the_logged_in_role() {
     assert_eq!(t.login(Role::User, USER_PIN), Err(Rv::PIN_INCORRECT));
     t.login(Role::User, NEW_PIN).unwrap();
 }
+
+/// DIV-050: logout drops the private token objects (the public view is left), keeps the session
+/// objects, and the next login reloads the former and rejoins the latter.
+#[test]
+fn logout_drops_private_objects_and_login_brings_them_back_div050() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = start(dir.path(), "user_base");
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    let all = |t: &Token| t.object_find(None, None, 64).unwrap().0;
+    let tok = all(&t);
+    let secret = t.object_add(4, 31, Some(b"s"), &[7; 16], b"", 0).unwrap();
+    let ses = t.object_add(4, 31, Some(b"e"), &[8; 16], b"", 0).unwrap();
+    t.object_mark_session(ses, 9).unwrap();
+    t.logout();
+    assert_eq!(t.object_get(secret), Err(Rv::KEY_HANDLE_INVALID));
+    let after: Vec<_> = all(&t);
+    assert!(
+        after.contains(&ses) && !after.contains(&secret),
+        "{after:?}"
+    );
+    t.login(Role::User, USER_PIN).unwrap();
+    assert_eq!(t.object_get(secret).unwrap().0, vec![7; 16]);
+    assert_eq!(t.object_get(ses).unwrap().0, vec![8; 16]);
+    let mut back = all(&t);
+    back.sort();
+    let mut want = tok.clone();
+    want.extend([secret, ses]);
+    want.sort();
+    assert_eq!(back, want);
+    let next = t.object_add(2, 3, Some(b"n"), &[1; 8], b"", 0).unwrap();
+    assert!(!want.contains(&next), "handle {next} reused");
+}
