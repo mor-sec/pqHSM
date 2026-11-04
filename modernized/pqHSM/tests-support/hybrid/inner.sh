@@ -242,7 +242,8 @@ printf 'p11 lifecycle: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s; 
 
 # 4h. Phase 4 slice 1, DIV-051: p11_notinit.c calls every entry point but C_Initialize and the
 #     list calls before C_Initialize, after C_Finalize and in an uninitialised forked child;
-#     each must answer 0x190 (C_Finalize with pReserved 0x7). p11_divs.c: the other slice 1
+#     each must answer 0x190 (C_Finalize with pReserved 0x7); and DIV-053, every call in ERROR
+#     0x6 but C_Finalize and the status calls. p11_divs.c: the other slice 1
 #     DIVs, one test each. The C must fail every one; the hybrid pass.
 cc -std=gnu17 -o /tmp/p11_notinit modernized/pqHSM/tests-support/hybrid/p11_notinit.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
@@ -258,6 +259,7 @@ for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_divs $lib $d > /out/p11_divs_$tag.txt 2>/dev/null
 done
 printf %s "DIV tests: 051 C $(grep -q '^DIV-051: FAIL' /out/p11_notinit_c.txt && echo fails || echo 'PASSES (wrong)'), hybrid $(grep -q '^DIV-051: pass' /out/p11_notinit_hybrid.txt && echo passes || echo FAILS)" > /out/div_tests.txt
+printf '; DIV-053 C %s, hybrid %s' "$(grep -q '^DIV-053: FAIL' /out/p11_notinit_c.txt && echo fails || echo 'PASSES (wrong)')" "$(grep -q '^DIV-053: pass' /out/p11_notinit_hybrid.txt && echo passes || echo FAILS)" >> /out/div_tests.txt
 for t in $(grep -o '^[A-Z]*-[0-9]*: ' /out/p11_divs_c.txt | tr -d ': '); do
   c=$(grep "^$t: " /out/p11_divs_c.txt | cut -d' ' -f2); r=$(grep "^$t: " /out/p11_divs_hybrid.txt | cut -d' ' -f2)
   printf '; %s C %s, hybrid %s' "$t" "$([ "$c" = FAIL ] && echo fails || echo 'PASSES (wrong)')" "$([ "$r" = pass ] && echo passes || echo FAILS)"

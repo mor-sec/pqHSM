@@ -919,3 +919,10 @@ Fifteen `C_*` move: `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetSlotList`, 
 - **Golden:** three step 4g rows recorded (`setpin so` 0, `setpin so wrong old` 0xA0, `setpin user` on a read-only session 0xB5).
 
 - **Harness `p4d54`:** as `p4r84`, with DIV-054 failing on C and passing on the hybrid. Workspace 885 pass, 0 fail; clippy clean (workspace default, token `ffi` and `tool`, p11 `ffi`).
+
+### DIV-053: what ERROR refuses
+
+- `pqhsm_p11_gate(status)`: after DIV-051's check, ERROR refuses with C's 0x6 unless `status`. The shim's `GATE` passes 0 and `STATUS` 1 (`C_GetMechanismList`, `C_GetMechanismInfo`); Rust's fifteen already refused, the four status calls among them excepted, and `C_Finalize` runs. An operation under way refuses at its next call because its next call is gated.
+- **Test:** `p11_notinit.c` DIV-053. ERROR is latched from outside: a digest started, then `RLIMIT_FSIZE` at the open log's size and an audited call, whose failed write latches "audit write failed". Then the digest's update and final and every entry point: 0x6 for all but the six status calls the driver exercises and `C_Finalize`. C: 29 calls run on, among them the digest (0x0), `C_FindObjects*` and the key-use Inits (0x70, they reach the mechanism check).
+- **DIV-052** moves to slice 6 whole (`PHASE4_PLAN.md` revised): its one call site is the pairwise check in `C_GenerateKeyPair`, and only fault injection there reaches it.
+- **Harness `p4d5350`** (with DIV-050): tests 106/106, `nm -D` and NEEDED identical, 4g identical less recorded DIVs, every step 4h test fails on C and passes on the hybrid, TSan 0 races. Workspace 886 pass, 0 fail.

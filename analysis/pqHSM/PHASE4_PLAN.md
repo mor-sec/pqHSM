@@ -29,12 +29,12 @@ The brief fixes the mechanics: at the start, Rust owns `C_GetFunctionList` and `
 | # | Slice | `fhsm_pkcs11.c` entry points | DIVs |
 |---|---|---|---|
 | 0 | **Takeover.** Rust exports every `C_*`, the function lists and the interfaces; each forwards to the renamed C function. Rust owns the session and operation tables from here on; the remaining C reaches them through accessor symbols (brief, risk 1). | all, as forwarders | none |
-| 1 | **Pilot: lifecycle, sessions and login** (named in the brief) | `C_Initialize`, `C_Finalize`, `C_GetInfo`, slot and token info, `C_OpenSession`, `C_CloseSession`, `C_CloseAllSessions`, `C_GetSessionInfo`, `C_Login`, `C_Logout`, `C_InitToken`, `C_InitPIN`, `C_SetPIN`; `fhsm_state.c`, `fhsm_session.c`, `fhsm_apilock.c` | 050 (logout half), 051, 052's latch, 053's gate, 054, 055, 059; RULE-071, 083, 084 |
+| 1 | **Pilot: lifecycle, sessions and login** (named in the brief) | `C_Initialize`, `C_Finalize`, `C_GetInfo`, slot and token info, `C_OpenSession`, `C_CloseSession`, `C_CloseAllSessions`, `C_GetSessionInfo`, `C_Login`, `C_Logout`, `C_InitToken`, `C_InitPIN`, `C_SetPIN`; `fhsm_state.c`, `fhsm_session.c`, `fhsm_apilock.c` | 050 (logout half), 051, 053's gate, 054, 055, 059; RULE-071, 083, 084 |
 | 2 | Object management | `C_CreateObject`, `C_CopyObject`, `C_DestroyObject`, `C_GetAttributeValue`, `C_SetAttributeValue`, `C_GetObjectSize`, `C_FindObjects*`; `fhsm_create_attrs.c` | 050 (destroy), 056, RULE-037(b), RULE-059's history bits, RULE-061, 091, 092 |
 | 3 | Digest | `C_Digest*` | 053 |
 | 4 | Encrypt and decrypt | `C_Encrypt*`, `C_Decrypt*`, message-based | 050 (key use), 053 |
 | 5 | Sign and verify | `C_Sign*`, `C_Verify*`; `fhsm_ecdsa_raw.c` | 050, 053; Q17 (composite refused in the strict build, preserved, with a test at each of C's three sites) |
-| 6 | Key generation, wrap and derive | `C_GenerateKey`, `C_GenerateKeyPair`, `C_WrapKey`, `C_UnwrapKey`, `C_DeriveKey`; `fhsm_pq_params.c` | 052's trigger, 057, 058; RULE-006, 014, 015, 017, 020 |
+| 6 | Key generation, wrap and derive | `C_GenerateKey`, `C_GenerateKeyPair`, `C_WrapKey`, `C_UnwrapKey`, `C_DeriveKey`; `fhsm_pq_params.c` | 052 (moved from slice 1, 2026-11-04: its one call site is here), 057, 058; RULE-006, 014, 015, 017, 020 |
 | 7 | KEM | `C_EncapsulateKey`, `C_DecapsulateKey` | 050, RULE-037(a) |
 
 Each slice's exit is the harness clean apart from recorded divergences. The pilot's exit gates the rest (brief). DIV-001's audit call sites move with the slice that owns each one. As in Phases 2 and 3, the pilot is expected to revise this plan before slice 2 starts.

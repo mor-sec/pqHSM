@@ -53,20 +53,23 @@ FWD(C_Logout, (UL h), (h))
 FWD(C_InitPIN, (UL h, const char *p, UL n), (h, p, n))
 FWD(C_SetPIN, (UL h, const char *o, UL on, const char *p, UL pn), (h, o, on, p, pn))
 
-/* Phase 4 slice 1, DIV-051: the entry points still in C refuse with CKR_CRYPTOKI_NOT_INITIALIZED
- * outside an initialised process, as Rust's do. hybrid.mk renames C's to pqhsm_c_<name>; these
+/* Phase 4 slice 1, DIV-051 and DIV-053: the entry points still in C refuse with
+ * CKR_CRYPTOKI_NOT_INITIALIZED outside an initialised process, and in ERROR, as Rust's do. hybrid.mk renames C's to pqhsm_c_<name>; these
  * take the exported names. shortcut: the gate is read before the C takes the API lock, so a call
  * racing C_Finalize in another thread can pass it; PKCS#11 leaves that race to the application.
  * It moves under the lock as each slice takes its entry points into Rust. */
 typedef void *P;
-CK_RV pqhsm_p11_gate(void);
-#define GATE(name, params, args) \
+CK_RV pqhsm_p11_gate(int status);
+#define GATED(name, params, args, status) \
     CK_RV pqhsm_c_##name params; CK_RV name params; \
     __attribute__((visibility("default"))) CK_RV name params { \
-        CK_RV rv = pqhsm_p11_gate(); return rv ? rv : pqhsm_c_##name args; }
+        CK_RV rv = pqhsm_p11_gate(status); return rv ? rv : pqhsm_c_##name args; }
+/* DIV-053: in ERROR, GATE refuses with 0x6; a status call (no key material out) still runs. */
+#define GATE(name, params, args) GATED(name, params, args, 0)
+#define STATUS(name, params, args) GATED(name, params, args, 1)
 
-GATE(C_GetMechanismList, (UL s, P l, P n), (s, l, n))
-GATE(C_GetMechanismInfo, (UL s, UL t, P i), (s, t, i))
+STATUS(C_GetMechanismList, (UL s, P l, P n), (s, l, n))
+STATUS(C_GetMechanismInfo, (UL s, UL t, P i), (s, t, i))
 GATE(C_WaitForSlotEvent, (UL f, P s, P r), (f, s, r))
 GATE(C_GetFunctionStatus, (UL h), (h))
 GATE(C_CancelFunction, (UL h), (h))

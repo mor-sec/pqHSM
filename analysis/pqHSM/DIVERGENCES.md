@@ -580,7 +580,7 @@ Drafted 2026-11-03 for the Phase 4 entry gate ("a decision for every suspected-d
 
 ### DIV-052 · RULE-075 A pairwise failure latches ERROR
 
-- **Status:** DECIDED, Fix (2026-11-03, Q13).
+- **Status:** DECIDED, Fix (2026-11-03, Q13). Moved whole to slice 6 (2026-11-04, plan revision): the only `fhsm_state_set(FHSM_STATE_ERROR)` is the pairwise check in `C_GenerateKeyPair` (`:6783`), every other ERROR already goes through `fhsm_state_latch_error`, and the latch can only be reached, and tested, by fault injection on that check. The state machine's latch itself is slice 1b's and unchanged.
 - **Legacy:** a failed pairwise check frees the key and returns 0x6, but calls `fhsm_state_set(FHSM_STATE_ERROR)` (`src/fhsm_pkcs11.c:6783`), which the transition table refuses (INITIALIZED→ERROR is not whitelisted, `src/fhsm_state.c:40-47`). The module stays usable, against its own comment at `:6766`.
 - **Target:** `fhsm_state_latch_error("pairwise consistency failure")`; the call still returns 0x6 and writes the KAT_REPORT event; afterwards the module is in ERROR (DIV-053 says what that refuses).
 - **Test:** fault injection on the pairwise check.
@@ -588,7 +588,7 @@ Drafted 2026-11-03 for the Phase 4 entry gate ("a decision for every suspected-d
 
 ### DIV-053 · RULE-073 What ERROR refuses
 
-- **Status:** DECIDED, Fix (2026-11-03, Q13). Scope DECIDED as proposed (2026-11-03, user: "Status calls only (Recommended)").
+- **Status:** DONE (2026-11-04, Phase 4 slice 1: the gate, `pqhsm_p11_gate` in `p11/src/ffi/lifecycle.rs` through `p11/shim/interface.c` for the entry points still in C; Rust's fifteen already refused; test `p11_notinit.c` DIV-053, harness step 4h). The slices 3-5 that take the crypto entry points into Rust keep the same refusal under the lock. DECIDED, Fix (2026-11-03, Q13). Scope DECIDED as proposed (2026-11-03, user: "Status calls only (Recommended)").
 - **Legacy:** about 25 entry points refuse in ERROR with 0x6; signing, verification, encryption, decryption, every `*Update`/`*Final`, digests, `C_DestroyObject`, `C_GetAttributeValue` and `C_FindObjects*` keep running (`:11309`, `:9761`, `:4140`). Asymmetric signing calls EVP directly and still produces signatures. The Phase 3 primitives already refuse (DIV-041).
 - **Target:** in ERROR every `C_*` returns `CKR_FUNCTION_FAILED` (0x6, C's existing code) except `C_Finalize` and the status calls that output no key material: `C_GetInfo`, `C_GetFunctionList`, `C_GetInterfaceList`, `C_GetInterface`, `C_GetSlotList`, `C_GetSlotInfo`, `C_GetTokenInfo`, `C_GetMechanismList`, `C_GetMechanismInfo`. An operation already active refuses at its next call. FIPS 140-3 §7.10.5: no data output in the error state.
 - **Test:** latch ERROR, then call every entry point.

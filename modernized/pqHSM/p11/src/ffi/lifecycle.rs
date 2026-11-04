@@ -56,13 +56,18 @@ pub(crate) fn initialized() -> Result<(), u32> {
     Ok(())
 }
 
-/// The same gate for the entry points still in C, which `p11/shim/interface.c` wraps.
+/// The same gate for the entry points still in C, which `p11/shim/interface.c` wraps, and
+/// DIV-053's: in ERROR every call but `C_Finalize` and the status calls (`status` != 0) is
+/// refused with C's 0x6, so an operation already active refuses at its next call.
 #[unsafe(no_mangle)]
-pub extern "C" fn pqhsm_p11_gate() -> c_ulong {
-    match initialized() {
-        Ok(()) => OK.into(),
-        Err(rv) => rv.into(),
+pub extern "C" fn pqhsm_p11_gate(status: c_int) -> c_ulong {
+    if let Err(rv) = initialized() {
+        return rv.into();
     }
+    if status == 0 && super::state::in_error() {
+        return FUNCTION_FAILED.into();
+    }
+    OK.into()
 }
 
 fn latch(reason: &CStr) {

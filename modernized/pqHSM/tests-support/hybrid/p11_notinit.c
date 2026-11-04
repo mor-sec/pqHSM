@@ -1,18 +1,29 @@
-/* DIV-051's test (DIVERGENCES.md § Phase 4): outside an initialised process every C_* except
- * C_Initialize and the three that hand out the function lists returns
- * CKR_CRYPTOKI_NOT_INITIALIZED (0x190), and C_Finalize(pReserved != NULL) returns
- * CKR_ARGUMENTS_BAD (0x7) first. Three states: before C_Initialize, after C_Finalize, and a
- * forked child of an initialised parent that has not called C_Initialize.
+/* The tests that need every entry point (DIVERGENCES.md § Phase 4).
+ *
+ * DIV-051: outside an initialised process every C_* except C_Initialize and the three that
+ * hand out the function lists returns CKR_CRYPTOKI_NOT_INITIALIZED (0x190), and
+ * C_Finalize(pReserved != NULL) returns CKR_ARGUMENTS_BAD (0x7) first. Three states: before
+ * C_Initialize, after C_Finalize, and a forked child of an initialised parent that has not
+ * called C_Initialize.
+ *
+ * DIV-053: in ERROR every C_* but C_Finalize and the nine status calls returns
+ * CKR_FUNCTION_FAILED (0x6), a digest started before the latch included; the status calls do
+ * not. ERROR is latched from outside by a failed audit write: RLIMIT_FSIZE at the log's size,
+ * then an audited call.
  *
  *   p11_notinit LIB
  *
- * Prints every call that answers otherwise and one summary line per state; exit 0 only if
- * none did. Fails on the C library, which checks only for ERROR. Each state runs in a child,
- * so a crash in the C after C_Finalize is reported, not fatal. */
+ * Prints every call that answers otherwise, one summary line per state, and one line per DIV;
+ * exit 0 only if both pass. Each state runs in a child, so a crash in the C is reported, not
+ * fatal. Both fail on the C library. */
+#include <dirent.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <signal.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -36,18 +47,28 @@ static void want(const char *state, const char *name, UL rv, UL expect) {
     if (rv != expect) { ++bad; printf("%s\t%s\t0x%lx\n", state, name, rv); }
 }
 
-#define C(name, ...) want(state, #name, sym(#name)(__VA_ARGS__), 0x190)
+static int in_error;   /* DIV-053's state rather than DIV-051's */
+
+/* A refused call: 0x190, or in ERROR 0x6. A status call: 0x190, or in ERROR anything else. */
+static void call(const char *state, const char *name, UL rv, int status) {
+    if (!in_error) { want(state, name, rv, 0x190); return; }
+    ++n;
+    if (status ? rv == 0x6 : rv != 0x6) { ++bad; printf("%s\t%s\t0x%lx\n", state, name, rv); }
+}
+
+#define C(name, ...) call(state, #name, sym(#name)(__VA_ARGS__), 0)
+#define S(name, ...) call(state, #name, sym(#name)(__VA_ARGS__), 1)
 
 /* Every entry point but C_Initialize and the list calls, h a session handle, s a slot. */
 static void all(const char *state, UL h, UL s) {
     UL *u = (UL *)z;
     memset(z, 0, sizeof z);
-    C(C_GetInfo, z);
-    C(C_GetSlotList, 0, NULL, u);
-    C(C_GetSlotInfo, s, z);
-    C(C_GetTokenInfo, s, z);
-    C(C_GetMechanismList, s, NULL, u);
-    C(C_GetMechanismInfo, s, 0x250UL, z);
+    S(C_GetInfo, z);
+    S(C_GetSlotList, 0, NULL, u);
+    S(C_GetSlotInfo, s, z);
+    S(C_GetTokenInfo, s, z);
+    S(C_GetMechanismList, s, NULL, u);
+    S(C_GetMechanismInfo, s, 0x250UL, z);
     C(C_InitToken, s, "12345678", 8UL, "                                ");
     C(C_InitPIN, h, "12345678", 8UL);
     C(C_SetPIN, h, "12345678", 8UL, "87654321", 8UL);
@@ -99,6 +120,10 @@ static void all(const char *state, UL h, UL s) {
     C(C_GetFunctionStatus, h);
     C(C_CancelFunction, h);
     C(C_WaitForSlotEvent, 1UL, u, NULL);   /* CKF_DONT_BLOCK */
+    if (in_error) {
+        want(state, "C_Finalize in ERROR", sym("C_Finalize")(NULL), 0);
+        return;
+    }
     want(state, "C_Finalize reserved", sym("C_Finalize")((void *)1), 0x7);
     C(C_Finalize, NULL);
 }
@@ -121,6 +146,40 @@ static void summary(const char *state) {
     printf("%s: %d of %d refused as expected\n", state, n - bad, n);
 }
 
+/* DIV-053: a digest under way, then ERROR, then every call. The digest's update is the
+ * active operation that must refuse; the session still exists. */
+static void error_state(void) {
+    UL h = setup(), d[64];
+    want("error", "C_DigestInit before the latch", sym("C_DigestInit")(h, &sha), 0);
+    want("error", "C_DigestUpdate before the latch", sym("C_DigestUpdate")(h, "abc", 3UL), 0);
+    /* The log the module has open: the newest audit.log* in the tokens dir. */
+    const char *dir = getenv("FHSM_TOKENS_DIR");
+    char log[600] = "", p[600];
+    struct stat st, best = { 0 };
+    DIR *dd = opendir(dir);
+    for (struct dirent *e; dd && (e = readdir(dd));) {
+        snprintf(p, sizeof p, "%s/%s", dir, e->d_name);
+        if (!strncmp(e->d_name, "audit.log", 9) && !stat(p, &st) && S_ISREG(st.st_mode)
+            && st.st_mtime >= best.st_mtime) {
+            best = st;
+            snprintf(log, sizeof log, "%s", p);
+        }
+    }
+    if (dd) closedir(dd);
+    if (!*log) { printf("error\tno audit.log* in %s\n", dir); ++bad; return; }
+    st = best;
+    signal(SIGXFSZ, SIG_IGN);
+    struct rlimit rl = { (rlim_t)st.st_size, (rlim_t)st.st_size };
+    setrlimit(RLIMIT_FSIZE, &rl);
+    sym("C_Logout")(h);   /* audited; its write fails and latches ERROR */
+    sym("C_Logout")(h);
+    in_error = 1;
+    /* The digest first, before anything else could end it. */
+    call("error", "C_DigestUpdate on the active digest", sym("C_DigestUpdate")(h, "abc", 3UL), 0);
+    call("error", "C_DigestFinal on the active digest", sym("C_DigestFinal")(h, d, d + 8), 0);
+    all("error", h, 0);
+}
+
 static int run(int which) {
     pid_t p = fork();
     if (p == 0) {
@@ -129,6 +188,10 @@ static int run(int which) {
         case 0:
             all("before-initialize", 1, 0);
             summary("before-initialize");
+            break;
+        case 3:
+            error_state();
+            summary("error");
             break;
         case 1:
             h = setup();
@@ -166,5 +229,7 @@ int main(int argc, char **argv) {
     int rc = 0;
     for (int i = 0; i < 3; ++i) rc |= run(i);
     printf("DIV-051: %s\n", rc ? "FAIL" : "pass");
-    return rc ? 1 : 0;
+    int rc53 = run(3);
+    printf("DIV-053: %s\n", rc53 ? "FAIL" : "pass");
+    return rc || rc53 ? 1 : 0;
 }
