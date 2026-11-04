@@ -3,6 +3,10 @@
 set -u
 cd /work
 M="make -f modernized/pqHSM/hybrid.mk"
+# Intended test changes, each under its DIV (PHASE4_PLAN.md §4.2); the copy is patched, the
+# original stays the C's. DIV-059: ulMinPinLen is 8.
+sed -i 's/ti\.ulMinPinLen != 4 ||/ti.ulMinPinLen != 8 ||/' tests/test_input_validation.c
+grep -q 'ulMinPinLen != 8' tests/test_input_validation.c || echo "DIV-059 patch did not apply" >&2
 { $M all 2>&1 | tail -5; echo "build rc=$?"
   $M test-bins tools/fhsm-token tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign tools/fhsm-crypt 2>&1 | tail -3; } > /out/build.log 2>&1
 
@@ -216,25 +220,20 @@ for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   python3 modernized/pqHSM/tests-support/hybrid/corpus_norm.py /tmp/p11lc > /out/p11_lifecycle_audit_$tag.txt
   mv /tmp/p11lc /tmp/p11lc_$tag
 done
-# Recorded differences, suppressed and nothing else: DIV-035 (a forked child or a restart
-# re-runs the self-tests, so the integrity-bypass NOTE prints again), the Phase 1 key-message
-# prefix (TRANSFORMATION_NOTES.md, Phase 1), and DIV-009 (the fork scenario's child writes its
-# own log, not the parent's; step 5 checks it), so scenario 5's logs are left out. From slice 1
-# DIV-051 (step 4h checks it): the calls before the first C_Initialize in scenario 0 and their
-# log, C_Finalize with pReserved, and the forked child's call before its C_Initialize.
-pl_norm() {
-  awk '/^\[freehsm-c\] NOTE : integrity bypass active/ {skip=7} skip {skip--; next}
-       /^=== 0 preinit/ {print; pre=1; next} pre && /^initialize\t/ {pre=0}
-       pre || /^finalize reserved\t/ || /^child sessinfo before initialize\t/ {next} {print}' "$1" \
-    | sed 's/^\[pqhsm\] audit key :/[freehsm-c] audit key :/'
-}
+# Recorded differences, applied and nothing else (p11_lifecycle_expect.py lists them): C's output
+# becomes what Rust must print under each DIV, both are normalised for DIV-035 and the Phase 1
+# key-message prefix. Scenario 5's logs are left out (DIV-009: the child keeps its own log; step
+# 5 checks it), scenario 0's (DIV-051: C logged calls made before C_Initialize), and 1's and 2's
+# (DIV-059 and RULE-083: a short new PIN is refused before the token, so C's event for it is not
+# written and the sequence numbers after it move; 0x101 becomes 0x102). Their rows still compare.
+pl_norm() { python3 -I modernized/pqHSM/tests-support/hybrid/p11_lifecycle_expect.py "$2" "$1"; }
 pl_same() { if cmp -s "$1" "$2"; then echo identical; else echo "DIFFER: $(diff "$1" "$2" | grep -c '^[<>]') lines"; fi; }
 for tag in c hybrid; do
-  pl_norm /out/p11_lifecycle_$tag.txt > /out/p11_lifecycle_${tag}_norm.txt
-  mv /tmp/p11lc_$tag/5 /tmp/p11lc_${tag}_fork; mv /tmp/p11lc_$tag/0 /tmp/p11lc_${tag}_preinit
+  pl_norm /out/p11_lifecycle_$tag.txt $tag > /out/p11_lifecycle_${tag}_norm.txt
+  for sc in 0 1 2 5; do mv /tmp/p11lc_$tag/$sc /tmp/p11lc_${tag}_set_aside_$sc; done
   python3 modernized/pqHSM/tests-support/hybrid/corpus_norm.py /tmp/p11lc_$tag > /out/p11_lifecycle_audit_${tag}_nofork.txt
 done
-printf 'p11 lifecycle: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s; audit %s records, less scenarios 0 and 5 %s' \
+printf 'p11 lifecycle: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s; audit %s records, less scenarios 0, 1, 2 and 5 %s' \
   "$(tail -1 /out/p11_lifecycle_c.txt)" "$(tail -1 /out/p11_lifecycle_hybrid.txt)" \
   "$(grep -c "$(printf '\t')" /out/p11_lifecycle_c.txt)" "$(pl_same /out/p11_lifecycle_c.txt /out/p11_lifecycle_hybrid.txt)" \
   "$(pl_same /out/p11_lifecycle_c_norm.txt /out/p11_lifecycle_hybrid_norm.txt)" \
@@ -243,7 +242,8 @@ printf 'p11 lifecycle: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s; 
 
 # 4h. Phase 4 slice 1, DIV-051: p11_notinit.c calls every entry point but C_Initialize and the
 #     list calls before C_Initialize, after C_Finalize and in an uninitialised forked child;
-#     each must answer 0x190 (C_Finalize with pReserved 0x7). The C must fail it.
+#     each must answer 0x190 (C_Finalize with pReserved 0x7). p11_divs.c: the other slice 1
+#     DIVs, one test each. The C must fail every one; the hybrid pass.
 cc -std=gnu17 -o /tmp/p11_notinit modernized/pqHSM/tests-support/hybrid/p11_notinit.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
@@ -251,7 +251,17 @@ for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$d /tmp/p11_notinit $lib > /out/p11_notinit_$tag.txt 2>/dev/null
   echo "rc=$?" >> /out/p11_notinit_$tag.txt
 done
-echo "DIV tests: 051 C $(grep -q '^DIV-051: FAIL' /out/p11_notinit_c.txt && echo fails || echo 'PASSES (wrong)'), hybrid $(grep -q '^DIV-051: pass' /out/p11_notinit_hybrid.txt && echo passes || echo FAILS)" > /out/div_tests.txt
+cc -std=gnu17 -o /tmp/p11_divs modernized/pqHSM/tests-support/hybrid/p11_divs.c -ldl
+for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+  tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
+  d=$(mktemp -d)
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_divs $lib $d > /out/p11_divs_$tag.txt 2>/dev/null
+done
+printf %s "DIV tests: 051 C $(grep -q '^DIV-051: FAIL' /out/p11_notinit_c.txt && echo fails || echo 'PASSES (wrong)'), hybrid $(grep -q '^DIV-051: pass' /out/p11_notinit_hybrid.txt && echo passes || echo FAILS)" > /out/div_tests.txt
+for t in $(grep -o '^[A-Z]*-[0-9]*: ' /out/p11_divs_c.txt | tr -d ': '); do
+  c=$(grep "^$t: " /out/p11_divs_c.txt | cut -d' ' -f2); r=$(grep "^$t: " /out/p11_divs_hybrid.txt | cut -d' ' -f2)
+  printf '; %s C %s, hybrid %s' "$t" "$([ "$c" = FAIL ] && echo fails || echo 'PASSES (wrong)')" "$([ "$r" = pass ] && echo passes || echo FAILS)"
+done >> /out/div_tests.txt
 
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl

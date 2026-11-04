@@ -643,7 +643,7 @@ RULE-080(a), the `.tpm` file on re-init (the fifth Q13 item), is already fixed i
 
 ### DIV-059 · RULE-036, RULE-079(a) PIN minimum
 
-- **Status:** DECIDED, Fix (2026-11-03, Q7's Phase 4 half, user: "8 everywhere (Recommended)").
+- **Status:** DONE (2026-11-04, Phase 4 slice 1, `core/src/p11.rs` `new_pin_len_ok`; test `p11_divs.c` DIV-059, harness step 4h; `test_input_validation` patched in the harness copy). DECIDED, Fix (2026-11-03, Q7's Phase 4 half, user: "8 everywhere (Recommended)"). An old PIN (`C_SetPIN`'s first, `C_Login`'s) keeps C's 4, so a short PIN set before can still log in and be changed. A re-init checks the SO PIN it is given as a new PIN, as decided: a token whose SO PIN is 4-7 bytes cannot be re-initialised; deleting the file stays the recovery (RULE-079).
 - **Legacy:** 4 for `C_InitPIN`, `C_SetPIN`, a re-init's SO PIN and `C_GetTokenInfo`'s `ulMinPinLen`; 8 for a fresh token's SO PIN, reported as `CKR_PIN_INCORRECT` (0xA0) instead of 0xA2. `docs/FIPS_140_3.md:63` says 8.
 - **Target:** a new PIN under 8 bytes is 0xA2 on every path (`C_InitToken` fresh and re-init, `C_InitPIN`, `C_SetPIN`'s new PIN); `ulMinPinLen` is 8. `C_Login` is unchanged, so an existing token whose PIN is 4–7 bytes still logs in.
 - **Expected harness diff (intended, one test):** `test_input_validation` checks `ti.ulMinPinLen != 4 || ti.ulMaxPinLen != 64` after `C_GetTokenInfo` (`tests/test_input_validation.c:197`), and fails with 8. Every PIN in the legacy tests and scripts is 8 bytes or more. The alternative, 4 everywhere, changes the fresh-token SO PIN instead and has no harness diff.
@@ -670,9 +670,9 @@ The 45 `fhsm_pkcs11.c` and 2 `fhsm_state.c` audit call sites stop discarding the
 | RULE-061 (Phase 2 candidate 4) | `fhsm_token_mech_allowed` answers OK for an unknown handle or nothing loaded | Fix: the policy check refuses what it cannot find; its callers check the handle first, so no reachable result changes | none |
 | RULE-065 | The strict build's `fhsm-service` always signs with the composite mechanism, so `/sign` returns 500 | Phase 6, with the service | none |
 | RULE-070 | AUTHENTICATED is whitelisted but never set | Preserve; nothing changes behaviour | none |
-| RULE-071 | A second `C_Initialize` returns 0x6, not `CKR_CRYPTOKI_ALREADY_INITIALIZED` (0x191) | Fix: 0x191 | none (no test initialises twice; a forked child's `C_Initialize` is a fresh initialisation) |
+| RULE-071 | A second `C_Initialize` returns 0x6, not `CKR_CRYPTOKI_ALREADY_INITIALIZED` (0x191) | Fix: 0x191. DONE 2026-11-04, slice 1 (`lifecycle.rs`; `p11_divs.c` RULE-071). In ERROR it stays 0x6 | none (no test initialises twice; a forked child's `C_Initialize` is a fresh initialisation) |
 | RULE-079 (VAL-12) | A locked SO cannot re-initialise; `docs/FIPS_140_3.md:63` says `C_InitToken` clears the lock | Preserve: the lock is the control, deleting the file the recovery. The doc goes on the cutover list | none |
-| RULE-083 | 0x101 where PKCS#11 says `CKR_USER_PIN_NOT_INITIALIZED` (0x102) | Fix: 0x102 | none |
+| RULE-083 | 0x101 where PKCS#11 says `CKR_USER_PIN_NOT_INITIALIZED` (0x102) | Fix: 0x102. DONE 2026-11-04, slice 1 (`login.rs`, mapped where `C_Login` returns; the token layer keeps 0x101; `p11_divs.c` RULE-083) | none |
 | RULE-084 | `CKF_*_PIN_COUNT_LOW` and `CKF_*_PIN_FINAL_TRY` never set; `PIN_THROTTLED` is mapped but never returned | Fix: COUNT_LOW while 1 ≤ failures < 5, FINAL_TRY at 4, for USER and SO; the dead mapping is not carried over | none |
 | RULE-090 (Phase 2 candidate 5) | `fhsm_token_destroy_session_objects` checks no login | Preserve: closing a session must clean up whoever is logged in | none |
 | RULE-091 | A session object's marking result is ignored (`:2554`), so a failed rewrite leaves it a token object; 128 sessions advertised, 127 possible | Fix: a failed marking destroys the object and returns the error; 128 sessions open | none |

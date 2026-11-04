@@ -78,6 +78,8 @@ pub unsafe extern "C" fn pqhsm_C_Initialize(_init_args: *mut c_void) -> c_ulong 
     let was = INIT_PID.load(Relaxed);
     if was != 0 && was != me {
         reset_after_fork();
+    } else if was == me && fhsm_state_get() == INITIALIZED {
+        return CRYPTOKI_ALREADY_INITIALIZED.into(); // RULE-071; C answered 0x6
     }
     INIT_PID.store(me, Relaxed);
 

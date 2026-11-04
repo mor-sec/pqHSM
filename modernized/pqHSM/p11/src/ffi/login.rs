@@ -191,7 +191,16 @@ pub unsafe extern "C" fn pqhsm_C_Login(
         return ARGUMENTS_BAD.into();
     };
     // ulPinLen, not strlen: PKCS#11 does not terminate pPin.
-    let rv = TABLE.login(h, role, (pin, pin_len as usize));
+    let mut rv = TABLE.login(h, role, (pin, pin_len as usize));
+    // RULE-083: the token answers 0x101 for a user PIN never set; PKCS#11 says 0x102.
+    if rv == USER_NOT_LOGGED_IN && role == ROLE_USER {
+        // SAFETY: a token the registry holds
+        if let Some(t) = TABLE.token(h)
+            && unsafe { fhsm_token_user_initialized(t.0.as_ptr()) } == 0
+        {
+            rv = USER_PIN_NOT_INITIALIZED;
+        }
+    }
     let name = if role == ROLE_SO { c"SO" } else { c"USER" };
     // C's char[16]: an unsigned long past 15 digits is cut.
     let digits = pin_len.to_string();
@@ -261,7 +270,7 @@ fn checked_pin(pin: *const c_char, len: c_ulong) -> Result<(), u32> {
     if pin.is_null() {
         return Err(ARGUMENTS_BAD);
     }
-    if !p11::pin_len_ok(len) {
+    if !p11::new_pin_len_ok(len) {
         return Err(PIN_LEN_RANGE);
     }
     Ok(())
@@ -322,7 +331,7 @@ pub unsafe extern "C" fn pqhsm_C_SetPIN(
     if old.is_null() || new.is_null() {
         return ARGUMENTS_BAD.into();
     }
-    if !p11::pin_len_ok(old_len) || !p11::pin_len_ok(new_len) {
+    if !p11::pin_len_ok(old_len) || !p11::new_pin_len_ok(new_len) {
         return PIN_LEN_RANGE.into();
     }
     let Some(mut op) = pin_copy(old, old_len) else {

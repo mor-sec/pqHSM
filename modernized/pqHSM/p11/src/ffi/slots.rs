@@ -314,7 +314,7 @@ pub unsafe extern "C" fn pqhsm_C_GetTokenInfo(slot: c_ulong, info: *mut c_void) 
         (*i).max_rw_sessions = 128;
         (*i).rw_sessions = 0;
         (*i).max_pin = p11::PIN_MAX_LEN;
-        (*i).min_pin = p11::PIN_MIN_LEN;
+        (*i).min_pin = p11::NEW_PIN_MIN_LEN;
         (*i).total_public = 0;
         (*i).free_public = 0;
         (*i).total_private = 0;
@@ -359,7 +359,7 @@ pub unsafe extern "C" fn pqhsm_C_InitToken(
     if pin.is_null() {
         return ARGUMENTS_BAD.into();
     }
-    if !p11::pin_len_ok(pin_len) {
+    if !p11::new_pin_len_ok(pin_len) {
         return PIN_LEN_RANGE.into();
     }
     let Some(mut pin_c) = pin_copy(pin, pin_len) else {

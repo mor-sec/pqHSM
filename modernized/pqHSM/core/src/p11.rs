@@ -8,6 +8,9 @@ use crate::session::{ROLE_SO, RW_SESSION};
 
 /// `FHSM_PIN_MIN_LEN` and `FHSM_PIN_MAX_LEN` (`include/fhsm_common.h:388-391`).
 pub const PIN_MIN_LEN: c_ulong = 4;
+/// DIV-059: a PIN being set is at least 8 bytes (`docs/FIPS_140_3.md:63`); one checked against
+/// a token keeps C's 4, so an existing short PIN still logs in and can be changed.
+pub const NEW_PIN_MIN_LEN: c_ulong = 8;
 pub const PIN_MAX_LEN: c_ulong = 64;
 pub const ROLE_USER: c_int = 2;
 /// `FHSM_VERSION_MAJOR`, `FHSM_VERSION_MINOR`: the library and firmware version.
@@ -22,9 +25,14 @@ pub fn pack_field(dst: &mut [u8], src: &[u8]) {
     dst[n..].fill(b' ');
 }
 
-/// Whether a new or old PIN's length is in C's range.
+/// Whether an existing PIN's length is in C's range.
 pub fn pin_len_ok(len: c_ulong) -> bool {
     (PIN_MIN_LEN..=PIN_MAX_LEN).contains(&len)
+}
+
+/// Whether a PIN being set is long enough (DIV-059) and within C's maximum.
+pub fn new_pin_len_ok(len: c_ulong) -> bool {
+    (NEW_PIN_MIN_LEN..=PIN_MAX_LEN).contains(&len)
 }
 
 /// `C_InitToken`'s label: the 32 bytes as a C string, trailing spaces cut. An embedded NUL
@@ -99,6 +107,8 @@ mod tests {
     #[test]
     fn pin_range_and_roles() {
         assert!(!pin_len_ok(3) && pin_len_ok(4) && pin_len_ok(64) && !pin_len_ok(65));
+        assert!(!new_pin_len_ok(7) && new_pin_len_ok(8) && new_pin_len_ok(64));
+        assert!(!new_pin_len_ok(65));
         assert_eq!(role_of(0), Some(ROLE_SO));
         assert_eq!(role_of(1), Some(ROLE_USER));
         assert_eq!(role_of(2), None);

@@ -105,6 +105,8 @@ pub const TOKEN_NOT_PRESENT: u32 = 0xE0;
 pub const USER_NOT_LOGGED_IN: u32 = 0x101;
 pub const BUFFER_TOO_SMALL: u32 = 0x150;
 pub const CRYPTOKI_NOT_INITIALIZED: u32 = 0x190;
+pub const CRYPTOKI_ALREADY_INITIALIZED: u32 = 0x191;
+pub const USER_PIN_NOT_INITIALIZED: u32 = 0x102;
 pub const PIN_THROTTLED: u32 = 0x8000_0004;
 
 /// `fhsm_audit_event_t` values these entry points emit.
