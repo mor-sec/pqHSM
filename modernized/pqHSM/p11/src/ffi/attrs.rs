@@ -12,7 +12,8 @@ use pqhsm_core::session::{ROLE_NONE, ROLE_SO};
 use super::apilock::Held;
 use super::objects::{
     Attr, CKA_CLASS, CKA_ID, CKA_LABEL, CKF_RW_SESSION, CKO_PRIVATE_KEY, CKO_SECRET_KEY,
-    MAX_TEMPLATE_ATTRS, OBJF_UNDESTROYABLE, access_denied, check_template, gate, lookup_rv,
+    MAX_TEMPLATE_ATTRS, OBJF_UNDESTROYABLE, access_denied, check_template, class_of, gate,
+    lookup_rv,
 };
 use super::session::TABLE;
 use super::sys::*;
@@ -601,6 +602,11 @@ pub unsafe extern "C" fn pqhsm_C_SetAttributeValue(
         Ok(t) => t,
         Err(rv) => return rv.into(),
     };
+    // DIV-050: a private object is not there for anyone but the user (C let the SO relabel the
+    // user's keys). First, so a read-only session's 0xB5 does not show that it exists.
+    if class_of(tok, o as u32).is_ok_and(|c| access_denied(tok, c)) {
+        return OBJECT_HANDLE_INVALID.into();
+    }
     // SAFETY: as above
     unsafe { set(h, tok.0.as_ptr(), o as u32, tmpl) }.into()
 }

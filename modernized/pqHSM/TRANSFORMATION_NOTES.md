@@ -972,3 +972,8 @@ Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against 
 - **Still C, through `p11/shim/pkcs11_tu.c`:** the OpenSSL readbacks: `extract_pubkey_attr` (RSA and EC components), `extract_cert_attr` (subject, issuer, serial), `fhsm_pset_selector_of`, and the raw PQC public key the CKA_VALUE arm decoded inline (`pqhsm_c_pqc_raw_pub`, the same five lines). They move with the PKI side, by slice 5.
 - **Kept as C in the port:** `C_SetAttributeValue` checks no visibility (`C_GetAttributeValue` and `C_GetObjectSize` do), so the SO may relabel the user's key or turn on its CKA_SENSITIVE. Decided 2026-11-05 as a new part of DIV-050 (user: "Fix, under DIV-050 (Recommended)"); the next commit.
 - **Golden:** step 4i identical (all rows but the two DIV-050 records).
+
+### DIV-050, the set-attribute part
+
+- `C_SetAttributeValue` answers 0x82 for a secret or private key unless the token is logged in as the user, after the argument checks and before the read-only check, as `C_DestroyObject` does. Decided 2026-11-05 when the 2b port found it (user: "Fix, under DIV-050 (Recommended)").
+- **Test:** `p11_divs.c` DIV-050, the SO's relabel, placed before the SO's destroy: on C the destroy succeeds, and a relabel after it would have answered 0x82 for a missing key and passed for the wrong reason. The first run showed exactly that.

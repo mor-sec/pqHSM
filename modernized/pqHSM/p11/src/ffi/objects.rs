@@ -95,7 +95,7 @@ pub(super) unsafe fn check_template<'a>(t: *const Attr, n: c_ulong) -> Result<&'
 }
 
 /// `fhsm_token_object_get`'s class, or its rv.
-fn class_of(t: Tok, h: u32) -> Result<u32, u32> {
+pub(super) fn class_of(t: Tok, h: u32) -> Result<u32, u32> {
     let (mut v, mut vl, mut class, mut kt) = (null(), 0usize, 0u32, 0u32);
     // SAFETY: a token the registry holds; out pointers of our own
     let rv =
