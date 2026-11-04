@@ -340,14 +340,30 @@ pub unsafe extern "C" fn pqhsm_C_GetTokenInfo(slot: c_ulong, info: *mut c_void) 
 
 /// A PIN of `len` bytes, already range-checked; `None` holds a NUL inside (CKR_PIN_INVALID).
 /// The copy is NUL-terminated for the token, which reads C strings.
-pub(crate) fn pin_copy(pin: *const c_char, len: c_ulong) -> Option<[u8; 128]> {
+/// A NUL-terminated PIN copy, zeroised when dropped (review L2).
+pub(crate) struct PinBuf([u8; 128]);
+
+impl std::ops::Deref for PinBuf {
+    type Target = [u8; 128];
+    fn deref(&self) -> &[u8; 128] {
+        &self.0
+    }
+}
+
+impl Drop for PinBuf {
+    fn drop(&mut self) {
+        zeroize(&mut self.0);
+    }
+}
+
+pub(crate) fn pin_copy(pin: *const c_char, len: c_ulong) -> Option<PinBuf> {
     // SAFETY: by the caller's contract, `len` readable bytes; len <= 64 after the range check
     let b = unsafe { std::slice::from_raw_parts(pin.cast::<u8>(), len as usize) };
     if b.contains(&0) {
         return None;
     }
-    let mut out = [0u8; 128];
-    out[..b.len()].copy_from_slice(b);
+    let mut out = PinBuf([0u8; 128]);
+    out.0[..b.len()].copy_from_slice(b);
     Some(out)
 }
 
@@ -374,17 +390,15 @@ pub unsafe extern "C" fn pqhsm_C_InitToken(
     if !p11::new_pin_len_ok(pin_len) {
         return PIN_LEN_RANGE.into();
     }
-    let Some(mut pin_c) = pin_copy(pin, pin_len) else {
+    let Some(pin_c) = pin_copy(pin, pin_len) else {
         return PIN_INVALID.into();
     };
     if label.is_null() {
-        zeroize(&mut pin_c);
         return ARGUMENTS_BAD.into();
     }
     init_once();
     // Before the SO PIN, so a refusal here costs no attempt.
     if TABLE.exists_on_slot(slot) {
-        zeroize(&mut pin_c);
         return SESSION_EXISTS.into();
     }
     // SAFETY: by the caller's contract, the 32-byte CK_UTF8CHAR label field
@@ -420,7 +434,11 @@ pub unsafe extern "C" fn pqhsm_C_InitToken(
         }
         rv
     };
-    zeroize(&mut pin_c);
-    audit(EV_TOKEN_INIT, slot as c_int, -1, ROLE_SO, rv, &[]);
-    rv.into()
+    drop(pin_c);
+    // DIV-001: the token recorded the init or re-init before writing it; this record failing is 0x30
+    audited(
+        rv,
+        audit(EV_TOKEN_INIT, slot as c_int, -1, ROLE_SO, rv, &[]),
+    )
+    .into()
 }

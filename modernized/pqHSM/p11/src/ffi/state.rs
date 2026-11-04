@@ -10,7 +10,7 @@ use std::ptr::null;
 
 use pqhsm_core::state::State;
 
-use super::sys::fhsm_audit_event;
+use super::sys::{audit, fhsm_audit_event};
 
 /// `FHSM_EV_STATE_TRANSITION`.
 const EV_STATE_TRANSITION: c_int = 6;
@@ -34,22 +34,18 @@ pub extern "C" fn fhsm_state_set(to: c_int) -> u32 {
     match STATE.set(to) {
         Ok(from) => {
             let (from, to) = (cnum(from), cnum(to));
-            // SAFETY: NUL-terminated keys and values alive for the call; the list ends with NULL
-            unsafe {
-                fhsm_audit_event(
-                    EV_STATE_TRANSITION,
-                    -1,
-                    -1,
-                    0,
-                    OK,
-                    c"from".as_ptr(),
-                    from.as_ptr(),
-                    c"to".as_ptr(),
-                    to.as_ptr(),
-                    null::<c_char>(),
-                )
-            };
-            OK
+            // DIV-001: a transition that cannot be recorded is 0x30 (the audit has latched ERROR)
+            match audit(
+                EV_STATE_TRANSITION,
+                -1,
+                -1,
+                0,
+                OK,
+                &[(c"from", &from), (c"to", &to)],
+            ) {
+                Ok(()) => OK,
+                Err(e) => e,
+            }
         }
         Err(rv) => rv,
     }
@@ -70,6 +66,7 @@ pub unsafe extern "C" fn fhsm_state_latch_error(reason: *const c_char) {
     } else {
         reason
     };
+    // The latch's own record: nothing to suppress, so its result is not used.
     // SAFETY: reason is "(none)" or, by the caller's contract, NUL-terminated; the list ends
     // with NULL
     unsafe {

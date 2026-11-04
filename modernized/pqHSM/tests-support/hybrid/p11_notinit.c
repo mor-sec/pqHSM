@@ -6,9 +6,9 @@
  * C_Initialize, after C_Finalize, and a forked child of an initialised parent that has not
  * called C_Initialize.
  *
- * DIV-053: in ERROR every C_* but C_Finalize and the nine status calls returns
- * CKR_FUNCTION_FAILED (0x6), a digest started before the latch included; the status calls do
- * not. ERROR is latched from outside by a failed audit write: RLIMIT_FSIZE at the log's size,
+ * DIV-053: in ERROR every C_* but C_Finalize, the nine status calls, and (amended after the
+ * slice 1 review, M2) C_Logout, C_CloseSession and C_CloseAllSessions returns
+ * CKR_FUNCTION_FAILED (0x6), a digest started before the latch included; those do not. ERROR is latched from outside by a failed audit write: RLIMIT_FSIZE at the log's size,
  * then an audited call.
  *
  *   p11_notinit LIB
@@ -49,7 +49,8 @@ static void want(const char *state, const char *name, UL rv, UL expect) {
 
 static int in_error;   /* DIV-053's state rather than DIV-051's */
 
-/* A refused call: 0x190, or in ERROR 0x6. A status call: 0x190, or in ERROR anything else. */
+/* A refused call: 0x190, or in ERROR 0x6. A status call (or one of the three DIV-053 lets
+ * through): 0x190, or in ERROR anything else. */
 static void call(const char *state, const char *name, UL rv, int status) {
     if (!in_error) { want(state, name, rv, 0x190); return; }
     ++n;
@@ -73,11 +74,11 @@ static void all(const char *state, UL h, UL s) {
     C(C_InitPIN, h, "12345678", 8UL);
     C(C_SetPIN, h, "12345678", 8UL, "87654321", 8UL);
     C(C_OpenSession, s, 6UL, NULL, NULL, u);
-    C(C_CloseSession, h);
-    C(C_CloseAllSessions, s);
+    S(C_CloseSession, h);
+    S(C_CloseAllSessions, s);
     C(C_GetSessionInfo, h, z);
     C(C_Login, h, 1UL, "12345678", 8UL);
-    C(C_Logout, h);
+    S(C_Logout, h);
     C(C_CreateObject, h, z, 0UL, u);
     C(C_CopyObject, h, 1UL, z, 0UL, u);
     C(C_DestroyObject, h, 1UL);

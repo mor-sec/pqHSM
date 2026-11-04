@@ -65,3 +65,16 @@ Each slice's exit is the harness clean apart from recorded divergences. The pilo
    - DIV-059: PIN minimum 8 on every path, at the cost of one legacy assertion (`test_input_validation`, `ulMinPinLen == 4`), or 4 everywhere.
    - The 21-row table of keep / fix / defer.
 3. **Contract-test tools, once:** none of `pkcs11-tool`, `pkcs11-provider` or p11-kit is in the build image. Proposal: fetch their Debian packages once, cache them beside the FIPS ones (`netcache/debs`), and install them offline in each harness run, as for the FIPS provider.
+
+## 6. Revision after the pilot (2026-11-05)
+
+Slice 1 closed: harness clean apart from recorded DIVs, every slice 1 DIV with a test that fails on C and passes on Rust, the architecture-critic review applied (TRANSFORMATION_NOTES § Slice 1 review). What it changes for the slices left:
+
+1. **The gate.** The C entry points not yet ported are renamed `pqhsm_c_*` and wrapped by `GATE`/`STATUS` in `p11/shim/interface.c`, which apply DIV-051's and DIV-053's refusals before the C runs. Each slice removes its wrappers as its entry points move.
+2. **DIV-001 moves with each site, from the start.** `audit` returns its result; a slice that moves an audited call fails it closed in the same commit (`audited`), and says how its effect is undone. Slice 1 missed this until the review.
+3. **Sub-slices, then one commit per DIV.** Slice 2 as: 2a find, size, destroy; 2b get and set attribute; 2c create with `fhsm_create_attrs.c`; 2d copy; then DIV-050 (destroy), DIV-056, RULE-059's history bits, RULE-061, 091, 092.
+4. **A golden per slice, first.** Slice 2's is `p11_objects.c` (harness step 4i, 1,883 rows, every attribute of every kind of object; C and hybrid identical before any port). It already caught a DIV-050 error (data objects dropped at logout).
+5. **Locks.** Shared state the C still reaches stays on pthread primitives (std's are invisible to TSan); the session-table-then-token order holds, and new code copies the token handle out of the table before calling it (review L5).
+6. **Fuzzing (§4.6, from slice 2).** The image has `proptest` but no cargo-fuzz, `libfuzzer-sys` or nightly. Slice 2 starts with proptest properties over the template parser; cargo-fuzz waits for the same one-time fetch as §5 item 3 (both need network, not yet approved).
+7. **DIV-052** moves whole to slice 6 (its one trigger is there).
+8. **Harness hygiene.** One run per output directory, and a failed `cargo test` stops the chain before the harness (one run was lost to both).

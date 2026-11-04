@@ -782,9 +782,10 @@ impl Token {
         self.check_pin(role, pin, false)
     }
 
-    /// DIV-050: logout leaves what a process that never logged in sees, the public view, plus
-    /// the session objects: every other token object goes, its value zeroised when its last
-    /// reader lets go (`Buf`'s drop). The next login reloads them from the file.
+    /// DIV-050: logout drops every private token object, the classes RULE-055 hides (secret and
+    /// private keys; C derives CKA_PRIVATE from the class), its value zeroised when its last
+    /// reader lets go (`Buf`'s drop). Public objects and session objects stay. The next login
+    /// reloads the file.
     pub fn logout(&self) {
         let mut g = self.g();
         g.drop_dek();
@@ -792,7 +793,7 @@ impl Token {
         if g.loaded {
             g.store
                 .objects
-                .retain(|o| o.owner_session != 0 || store::is_public(o));
+                .retain(|o| o.owner_session != 0 || !store::is_private_class(o.class));
             g.loaded = false;
             g.public = true;
         }
@@ -846,6 +847,10 @@ impl Token {
     /// The new wrap of the live DEK for `role`, audited, then written (H4).
     fn rewrap(&self, role: Role, new_pin: &[u8]) -> Result<(), Rv> {
         let mut g = self.g();
+        // review L1: the role may have changed since the caller's check, between the locks
+        if g.role != role || !g.dek_live {
+            return Err(NOLOGIN);
+        }
         let mut next = g.clone();
         let dek = next.dek.clone();
         let key: &[u8; 32] = dek

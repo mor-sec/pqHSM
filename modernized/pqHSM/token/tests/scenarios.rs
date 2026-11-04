@@ -46,7 +46,7 @@ pub const DIVS: &[Div] = &[
         step: 6,
         div: "DIV-050",
         c: "\trv=0x0\tn=5\ths=1,2,3,4,5",
-        rust: "\trv=0x0\tn=2\ths=3,4",
+        rust: "\trv=0x0\tn=3\ths=3,4,5",
         same_file_as: 0,
     },
     Div {

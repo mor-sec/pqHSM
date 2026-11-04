@@ -6,10 +6,13 @@
  * Each test runs in a forked child with its own tokens directory BASE/<name>, and prints its
  * name, pass or FAIL, and for a FAIL every check that answered otherwise. Exit 0 only if all
  * pass. Each must fail on the C library and pass on Rust. */
+#include <dirent.h>
 #include <dlfcn.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -202,10 +205,82 @@ static void div_050(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* The next audit write fails: RLIMIT_FSIZE at the size of the log the module has open (the
+ * newest audit.log* in FHSM_TOKENS_DIR). The write that fails latches ERROR. */
+static void fail_audit(void) {
+    const char *d = getenv("FHSM_TOKENS_DIR");
+    char p[700];
+    struct stat st;
+    off_t size = -1;
+    time_t newest = 0;
+    DIR *dd = opendir(d);
+    for (struct dirent *e; dd && (e = readdir(dd));) {
+        snprintf(p, sizeof p, "%s/%s", d, e->d_name);
+        if (!strncmp(e->d_name, "audit.log", 9) && !stat(p, &st) && S_ISREG(st.st_mode)
+            && st.st_mtime >= newest) {
+            newest = st.st_mtime;
+            size = st.st_size;
+        }
+    }
+    if (dd) closedir(dd);
+    if (size < 0) { ++bad; printf("  no audit.log* in %s\n", d); return; }
+    signal(SIGXFSZ, SIG_IGN);
+    struct rlimit rl = { (rlim_t)size, (rlim_t)size };
+    setrlimit(RLIMIT_FSIZE, &rl);
+}
+
+/* DIV-001 at slice 1's sites: a call that succeeded but could not be audited is
+ * CKR_DEVICE_ERROR (0x30). C discarded the audit result, so each returns 0x0. One process per
+ * case: the first failed write latches ERROR. */
+static void div_001_case(int which) {
+    UL h = fresh(0);
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    if (which == 0) {
+        fail_audit();
+        want("initpin, audit failing", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0x30);
+        return;
+    }
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    if (which == 1) {
+        fail_audit();
+        want("logout, audit failing", CALL(C_Logout, h), 0x30);
+        return;
+    }
+    want("logout", CALL(C_Logout, h), 0);
+    if (which == 2) {
+        fail_audit();
+        want("login user, audit failing", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0x30);
+        return;
+    }
+    want("close", CALL(C_CloseSession, h), 0);
+    fail_audit();
+    want("reinit, audit failing", CALL(C_InitToken, 0UL, SO, (UL)strlen(SO), LABEL), 0x30);
+}
+
+static void div_001(void) {
+    const char *base = getenv("FHSM_TOKENS_DIR");
+    for (int i = 0; i < 4; ++i) {
+        char d[700];
+        snprintf(d, sizeof d, "%s/%d", base, i);
+        mkdir(d, 0700);
+        fflush(stdout);
+        pid_t p = fork();
+        if (p == 0) {
+            setenv("FHSM_TOKENS_DIR", d, 1);
+            div_001_case(i);
+            fflush(stdout);
+            _exit(bad ? 1 : 0);
+        }
+        int st;
+        waitpid(p, &st, 0);
+        if (!WIFEXITED(st) || WEXITSTATUS(st)) ++bad;
+    }
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
-    { "DIV-054", div_054 }, { "DIV-050", div_050 },
+    { "DIV-054", div_054 }, { "DIV-050", div_050 }, { "DIV-001", div_001 },
 };
 
 int main(int argc, char **argv) {

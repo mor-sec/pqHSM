@@ -71,10 +71,9 @@ pub unsafe extern "C" fn pqhsm_C_OpenSession(
 
 /// `C_CloseSession` without taking the lock, for `C_CloseAllSessions` (C's nested call took
 /// nothing either).
+/// DIV-053 as amended (review M2): runs in ERROR, like `C_Logout` and `C_CloseAllSessions`, so
+/// an application can drop its keys and sessions after a failure. No data comes out.
 fn close_session(h: c_ulong) -> u32 {
-    if in_error() {
-        return FUNCTION_FAILED;
-    }
     // Before the handle returns to the pool, so its next owner inherits no operation.
     // SAFETY: C's tables, under the EXCLUSIVE lock
     unsafe { pqhsm_c_session_ops_reset(h) };
@@ -91,13 +90,17 @@ fn close_session(h: c_ulong) -> u32 {
         && before != ROLE_NONE
         && role_of(t) == ROLE_NONE
     {
-        audit(
-            EV_LOGOUT,
-            -1,
-            h as c_int,
-            before,
+        // DIV-001: the session is closed either way; undoing a logout would reload keys
+        return audited(
             rv,
-            &[(c"cause", c"last-session-closed")],
+            audit(
+                EV_LOGOUT,
+                -1,
+                h as c_int,
+                before,
+                rv,
+                &[(c"cause", c"last-session-closed")],
+            ),
         );
     }
     rv
@@ -117,9 +120,6 @@ pub extern "C" fn pqhsm_C_CloseAllSessions(slot: c_ulong) -> c_ulong {
     let _g = Held::exclusive();
     if let Err(rv) = super::lifecycle::initialized() {
         return rv.into();
-    }
-    if in_error() {
-        return FUNCTION_FAILED.into();
     }
     // DIV-055: any valid slot, and only its sessions (C took slot 0 alone and closed all).
     if slot >= MAX_SLOTS {
@@ -205,7 +205,7 @@ pub unsafe extern "C" fn pqhsm_C_Login(
     // C's char[16]: an unsigned long past 15 digits is cut.
     let digits = pin_len.to_string();
     let len = CString::new(&digits[..digits.len().min(15)]).expect("digits have no NUL");
-    audit(
+    let a = audit(
         login_event(rv),
         -1,
         h as c_int,
@@ -213,7 +213,11 @@ pub unsafe extern "C" fn pqhsm_C_Login(
         rv,
         &[(c"role", name), (c"pin_len", &len)],
     );
-    rv.into()
+    // DIV-001: a login that cannot be recorded does not stand
+    if rv == OK && a.is_err() {
+        let _ = TABLE.logout(h);
+    }
+    audited(rv, a).into()
 }
 
 /// CKU_CONTEXT_SPECIFIC (§5.6): re-authenticates the user for this session's active
@@ -235,7 +239,7 @@ fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
     // SAFETY: a token the registry holds; pin and length are the caller's, passed on as C did
     let rv = unsafe { fhsm_token_verify_pin(t.0.as_ptr(), ROLE_USER, pin, pin_len as usize) };
     let len = CString::new(pin_len.to_string()).expect("digits have no NUL");
-    audit(
+    let a = audit(
         login_event(rv),
         -1,
         h as c_int,
@@ -243,8 +247,9 @@ fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
         rv,
         &[(c"role", c"CONTEXT_SPECIFIC"), (c"pin_len", &len)],
     );
-    if rv != OK {
-        return rv;
+    // DIV-001: no grant that cannot be recorded
+    if rv != OK || a.is_err() {
+        return audited(rv, a);
     }
     // SAFETY: C's tables, under the API lock
     unsafe { pqhsm_c_session_ctx_auth_grant(h) };
@@ -253,16 +258,16 @@ fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn pqhsm_C_Logout(h: c_ulong) -> c_ulong {
-    let _g = Held::shared();
+    // Exclusive: the private objects the logout drops are zeroised now, not parked for the
+    // shared readers (`fhsm_api_free_value`).
+    let _g = Held::exclusive();
     if let Err(rv) = super::lifecycle::initialized() {
         return rv.into();
     }
-    if in_error() {
-        return FUNCTION_FAILED.into();
-    }
+    // DIV-053 as amended (review M2): runs in ERROR
     let rv = TABLE.logout(h);
-    audit(EV_LOGOUT, -1, h as c_int, ROLE_NONE, rv, &[]);
-    rv.into()
+    // DIV-001: the logout stands (undoing it would reload keys); the call reports the failure
+    audited(rv, audit(EV_LOGOUT, -1, h as c_int, ROLE_NONE, rv, &[])).into()
 }
 
 /// A PIN argument's checks, in C's order: NULL, length, embedded NUL.
@@ -292,7 +297,7 @@ pub unsafe extern "C" fn pqhsm_C_InitPIN(
     if let Err(rv) = checked_pin(pin, pin_len) {
         return rv.into();
     }
-    let Some(mut pin_c) = pin_copy(pin, pin_len) else {
+    let Some(pin_c) = pin_copy(pin, pin_len) else {
         return PIN_INVALID.into();
     };
     let t = TABLE.token(h);
@@ -303,13 +308,11 @@ pub unsafe extern "C" fn pqhsm_C_InitPIN(
         // SAFETY: a token the registry holds; a NUL-terminated PIN copy
         Some(t) => Ok(unsafe { fhsm_token_init_user_pin(t.0.as_ptr(), pin_c.as_ptr().cast()) }),
     };
-    zeroize(&mut pin_c);
+    drop(pin_c);
     match rv {
         Err(rv) => rv.into(),
-        Ok(rv) => {
-            audit(EV_SET_PIN, -1, h as c_int, ROLE_SO, rv, &[]);
-            rv.into()
-        }
+        // DIV-001: the token recorded the change before writing it; this record failing is 0x30
+        Ok(rv) => audited(rv, audit(EV_SET_PIN, -1, h as c_int, ROLE_SO, rv, &[])).into(),
     }
 }
 
@@ -334,11 +337,10 @@ pub unsafe extern "C" fn pqhsm_C_SetPIN(
     if !p11::pin_len_ok(old_len) || !p11::new_pin_len_ok(new_len) {
         return PIN_LEN_RANGE.into();
     }
-    let Some(mut op) = pin_copy(old, old_len) else {
+    let Some(op) = pin_copy(old, old_len) else {
         return PIN_INVALID.into();
     };
-    let Some(mut np) = pin_copy(new, new_len) else {
-        zeroize(&mut op);
+    let Some(np) = pin_copy(new, new_len) else {
         return PIN_INVALID.into();
     };
     let t = TABLE.token(h);
@@ -362,15 +364,11 @@ pub unsafe extern "C" fn pqhsm_C_SetPIN(
             )
         }),
     };
-    zeroize(&mut op);
-    zeroize(&mut np);
+    drop((op, np));
     match rv {
         Err(rv) => rv.into(),
         // A success is recorded by the token, before it writes the file (DIV-001); a failure here.
         Ok(OK) => OK.into(),
-        Ok(rv) => {
-            audit(EV_SET_PIN, -1, h as c_int, r, rv, &[]);
-            rv.into()
-        }
+        Ok(rv) => audited(rv, audit(EV_SET_PIN, -1, h as c_int, r, rv, &[])).into(),
     }
 }

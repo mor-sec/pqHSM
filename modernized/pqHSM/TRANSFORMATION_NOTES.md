@@ -929,7 +929,26 @@ Fifteen `C_*` move: `C_Initialize`, `C_Finalize`, `C_GetInfo`, `C_GetSlotList`, 
 
 ### DIV-050, the logout half: logout drops the private objects
 
-- **Token:** `Token::logout` keeps what a process that never logged in sees, the public view (`store::is_public`: public keys and certificates, not sensitive), plus the session objects, and marks the store unloaded with the public view visible. Every other token object is dropped from the store; its value's `Buf` is zeroised when its last reader lets go. Every logout goes through it: `C_Logout`, the last session closing, and re-init. The next login reloads the file, as a first login does, and puts the kept session objects back, with `next_handle` past their handles so none is reused (also on the DIV-010 and DIV-024 refusals, which fall back to the public view).
-- **Recorded:** the token goldens `logout_keeps_objects_rule086` steps 5-7 (the AES key is 0x60, `find` returns the two public objects) and `session_objects_rule090` step 19 (the user's secret token key is gone, the public session key stays). RULE-086's "logout keeps objects" is superseded for the private ones.
+- **Token:** `Token::logout` drops the private token objects, the classes RULE-055 hides (`store::is_private_class`: secret and private keys; C derives CKA_PRIVATE from the class), keeps every other token object and the session objects, and marks the store unloaded with what is left visible. (First cut used the file's public view, which also dropped data objects and sensitive public keys; the slice 2 golden caught it, 2026-11-05.) Each dropped object goes from the store; its value's `Buf` is zeroised when its last reader lets go. Every logout goes through it: `C_Logout`, the last session closing, and re-init. The next login reloads the file, as a first login does, and puts the kept session objects back, with `next_handle` past their handles so none is reused (also on the DIV-010 and DIV-024 refusals, which fall back to the public view).
+- **Recorded:** the token goldens `logout_keeps_objects_rule086` steps 5-7 (the AES key is 0x60, `find` returns the three public-class objects) and `session_objects_rule090` step 19 (the user's secret token key is gone, the public session key stays). RULE-086's "logout keeps objects" is superseded for the private ones.
 - **Test:** `p11_divs.c` DIV-050, SEC-001's reproduction: an AES token key works logged in; after `C_Logout`, `C_EncryptInit` is 0x60 and `C_FindObjects` does not return it; after a new login it works again. C: 0x0 after logout, and the operation left active gives 0x90 later. The key-use refusals, and an operation continued past the logout, are left to the slices that own those entry points.
 - **Harness `p4d5350`:** as for DIV-053 above, with DIV-050 failing on C and passing on the hybrid; no other diff, as expected.
+
+### Slice 1 review (architecture-critic, 2026-11-05)
+
+Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against the code.
+
+| # | Finding | Done |
+|---|---|---|
+| H1 | DIV-001 not applied at the audit sites slice 1 moved | Fixed: `audit` returns its result, `audited` maps it; see DIVERGENCES § DIV-001 in Phase 4. Test `p11_divs.c` DIV-001. One legacy assertion changes (a stream audit target: `C_Initialize` 0x30), recorded (user: "Record it (Recommended)"). |
+| H2 | `C_Logout` SHARED, so the objects DIV-050 drops wait for the shared readers before they are zeroised | Fixed: `C_Logout` takes the lock EXCLUSIVE. |
+| M1 | Private session objects survive logout, still usable by the C key-use paths | As DIV-050's Target; stated in its status. The key-use slices close it. |
+| M2 | In ERROR nobody can log out or close a session, so the keys stay loaded until `C_Finalize` | Decided (user: "Allow the three (Recommended)"): the three run in ERROR; DIV-053 amended, `p11_notinit.c` checks they are not refused. |
+| M3 | No atfork reset for the registry, session-table and state mutexes; a fork while another thread holds one deadlocks the child's `C_Initialize` | Follow-up, as C (`g_slots_mu`, `g_sess_mu`). For the slice that makes the module `pqhsm-p11`'s cdylib. |
+| M4 | RULE-035: a read-only session can open during an SO login's PIN check | Fixed: `Table::login` checks again after a successful SO login, and logs out with 0xB7. |
+| L1 | `change_pin` checks the role and rewraps under separate locks | Fixed: `rewrap` checks again. |
+| L2 | PIN copies zeroised by hand on every path | Fixed: `PinBuf` zeroises on drop. |
+| L3 | The slot registry's pthread mutex while the session table uses std | Kept: the registry is the one the C still calls; noted for the cdylib slice. |
+| L4 | `p11_notinit.c` accepts any 0x6 in ERROR; DIV-050's find check does not separate C from Rust | Noted: the 0x6 is the decided code; DIV-050's distinguishing check is the 0x60. |
+| L5 | `Table::with` asks the token for its role under the session-table mutex | Slice 2's object calls copy the token handle out first. |
+

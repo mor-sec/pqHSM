@@ -107,8 +107,7 @@ pub unsafe extern "C" fn pqhsm_C_Initialize(_init_args: *mut c_void) -> c_ulong 
         return rv.into();
     }
     let rv = fhsm_state_set(INITIALIZED);
-    audit(EV_MODULE_INIT, -1, -1, 0, rv, &[]);
-    rv.into()
+    audited(rv, audit(EV_MODULE_INIT, -1, -1, 0, rv, &[])).into()
 }
 
 /// The audit log, after the crypto layer (chaining needs HMAC). Every failure here latches
@@ -252,7 +251,8 @@ pub unsafe extern "C" fn pqhsm_C_Finalize(reserved: *mut c_void) -> c_ulong {
     if let Err(rv) = initialized() {
         return rv.into();
     }
-    audit(EV_MODULE_FINALIZE, -1, -1, 0, OK, &[]);
+    // DIV-001: shutting down cannot be suppressed, and a failed write has latched ERROR.
+    let _ = audit(EV_MODULE_FINALIZE, -1, -1, 0, OK, &[]);
     // Before the crypto layer goes down: the operation contexts freed are OpenSSL objects.
     finalize_release();
     // SAFETY: plain calls into the crypto and audit crates

@@ -155,6 +155,11 @@ impl<T: Token> Table<T> {
             return SESSION_READ_ONLY_EXISTS;
         }
         let rv = tok.login(role, pin);
+        // RULE-035 (review M4): a read-only session may have opened during the PIN check
+        if rv == OK && role == ROLE_SO && self.ro_exists(Some(tok)) {
+            tok.logout();
+            return SESSION_READ_ONLY_EXISTS;
+        }
         if rv == OK || rv == USER_ALREADY_LOGGED_IN {
             // The handle may have been closed meanwhile; a closed entry is left alone.
             let _ = self.with(h, |e| e.role = role);

@@ -7,6 +7,10 @@ M="make -f modernized/pqHSM/hybrid.mk"
 # original stays the C's. DIV-059: ulMinPinLen is 8.
 sed -i 's/ti\.ulMinPinLen != 4 ||/ti.ulMinPinLen != 8 ||/' tests/test_input_validation.c
 grep -q 'ulMinPinLen != 8' tests/test_input_validation.c || echo "DIV-059 patch did not apply" >&2
+# DIV-001: a stream audit target fails its first fdatasync, so C_Initialize reports 0x30 (C
+# returned OK into a module already in ERROR). Still announced as a stream.
+sed -i 's/^ok \$rc "a stream target still starts the module"$/[ $rc -ne 0 ]; ok $? "a stream target: C_Initialize reports the failed audit (DIV-001)"/' tests/audit_switch.sh
+grep -q 'DIV-001' tests/audit_switch.sh || echo "DIV-001 patch did not apply" >&2
 { $M all 2>&1 | tail -5; echo "build rc=$?"
   $M test-bins tools/fhsm-token tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign tools/fhsm-crypt 2>&1 | tail -3; } > /out/build.log 2>&1
 
@@ -265,6 +269,20 @@ for t in $(grep -o '^[A-Z]*-[0-9]*: ' /out/p11_divs_c.txt | tr -d ': '); do
   printf '; %s C %s, hybrid %s' "$t" "$([ "$c" = FAIL ] && echo fails || echo 'PASSES (wrong)')" "$([ "$r" = pass ] && echo passes || echo FAILS)"
 done >> /out/div_tests.txt
 
+# 4i. Phase 4 slice 2: p11_objects.c drives the nine object entry points (create, copy,
+#     destroy, get/set attribute, size, find) over every attribute of every kind of object;
+#     randomly drawn bytes print as their length. C and hybrid must print the same.
+cc -std=gnu17 -o /tmp/p11_objects modernized/pqHSM/tests-support/hybrid/p11_objects.c -ldl
+for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+  tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
+  d=$(mktemp -d)
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_objects $lib $d > /out/p11_objects_$tag.txt 2>/dev/null
+  echo "rc=$?" >> /out/p11_objects_$tag.txt
+done
+printf 'p11 objects: C %s, hybrid %s, %s rows, %s' "$(tail -1 /out/p11_objects_c.txt)" \
+  "$(tail -1 /out/p11_objects_hybrid.txt)" "$(grep -c "$(printf '\t')" /out/p11_objects_c.txt)" \
+  "$(pl_same /out/p11_objects_c.txt /out/p11_objects_hybrid.txt)" > /out/p11_objects.txt
+
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
@@ -449,6 +467,7 @@ rm -rf /tmp/wy /tmp/venv
   echo "$(cat /out/p11_tables.txt)"
   echo "$(cat /out/p11_lifecycle.txt)"
   echo "$(cat /out/div_tests.txt)"
+  cat /out/p11_objects.txt; echo
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"

@@ -432,6 +432,11 @@ pub fn serialize(store: &Store, public_only: bool) -> Vec<u8> {
     out
 }
 
+/// RULE-055's private classes: CKO_PRIVATE_KEY and CKO_SECRET_KEY.
+pub fn is_private_class(class: u32) -> bool {
+    class == 3 || class == 4
+}
+
 pub fn is_public(o: &Object) -> bool {
     o.owner_session == 0
         && (o.class == CKO_PUBLIC_KEY || o.class == CKO_CERTIFICATE)

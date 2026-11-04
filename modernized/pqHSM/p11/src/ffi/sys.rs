@@ -93,6 +93,7 @@ unsafe extern "C" {
 
 /// The `CK_RV`s these entry points return themselves (`include/fhsm_common.h`).
 pub const OK: u32 = 0;
+pub const DEVICE_ERROR: u32 = 0x30;
 pub const SLOT_ID_INVALID: u32 = 0x3;
 pub const FUNCTION_FAILED: u32 = 0x6;
 pub const ARGUMENTS_BAD: u32 = 0x7;
@@ -122,12 +123,19 @@ pub const EV_LOGIN_LOCKED: c_int = 14;
 pub const EV_LOGOUT: c_int = 16;
 pub const EV_SET_PIN: c_int = 17;
 
-/// One `fhsm_audit_event` call with up to two key/value pairs. The result is discarded, as C's
-/// `(void)` did (DIV-001 changes that later in the phase).
-pub fn audit(ev: c_int, slot: c_int, session: c_int, role: c_int, rv: u32, kv: &[(&CStr, &CStr)]) {
+/// One `fhsm_audit_event` call with up to two key/value pairs. DIV-001: `Err` when the record
+/// could not be made durable (the audit layer has latched ERROR); the caller fails closed.
+pub fn audit(
+    ev: c_int,
+    slot: c_int,
+    session: c_int,
+    role: c_int,
+    rv: u32,
+    kv: &[(&CStr, &CStr)],
+) -> Result<(), u32> {
     let end = null::<c_char>();
     // SAFETY: NUL-terminated keys and values alive for the call; the list ends with NULL
-    unsafe {
+    let r = unsafe {
         match kv {
             [] => fhsm_audit_event(ev, slot, session, role, rv, end),
             [(k, v)] => fhsm_audit_event(ev, slot, session, role, rv, k.as_ptr(), v.as_ptr(), end),
@@ -143,7 +151,16 @@ pub fn audit(ev: c_int, slot: c_int, session: c_int, role: c_int, rv: u32, kv: &
                 v2.as_ptr(),
                 end,
             ),
-        };
+        }
+    };
+    if r == OK { Ok(()) } else { Err(DEVICE_ERROR) }
+}
+
+/// DIV-001 at a call that succeeded: an audit failure becomes 0x30; a failing call keeps its rv.
+pub fn audited(rv: u32, a: Result<(), u32>) -> u32 {
+    match a {
+        Err(e) if rv == OK => e,
+        _ => rv,
     }
 }
 
