@@ -289,6 +289,18 @@ sed -e 's/^so destroy key\t0\t0\t-$/so destroy key\t0x82\t0\t-/' \
 printf ', less recorded DIVs %s' \
   "$(pl_same /out/p11_objects_c_expect.txt /out/p11_objects_hybrid.txt)" >> /out/p11_objects.txt
 
+# 4j. Phase 4 slice 2c: fhsm_parse_create_attrs, C's file against the staticlib's Rust, over
+#     the fuzz corpus and 200,000 seeded templates (every path and rv). Must be identical.
+CAD=modernized/pqHSM/tests-support/hybrid/create_attrs_diff.c
+cc -std=gnu17 -O1 -Iinclude -o /tmp/cad_c $CAD src/fhsm_create_attrs.c
+cc -std=gnu17 -O1 -Iinclude -o /tmp/cad_r $CAD modernized/pqHSM/target/release/libpqhsm_module.a \
+  -Wl,--gc-sections -lssl -lcrypto -lpthread -ldl -lm
+/tmp/cad_c 200000 fuzz/corpus/create_attrs/* > /out/create_attrs_c.txt; echo "rc=$?" >> /out/create_attrs_c.txt
+/tmp/cad_r 200000 fuzz/corpus/create_attrs/* > /out/create_attrs_rust.txt; echo "rc=$?" >> /out/create_attrs_rust.txt
+printf 'create attrs: C %s, Rust %s, %s cases, %s' "$(tail -1 /out/create_attrs_c.txt)" \
+  "$(tail -1 /out/create_attrs_rust.txt)" "$(grep -c '^rv=' /out/create_attrs_c.txt)" \
+  "$(pl_same /out/create_attrs_c.txt /out/create_attrs_rust.txt)" > /out/create_attrs.txt
+
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
@@ -474,6 +486,7 @@ rm -rf /tmp/wy /tmp/venv
   echo "$(cat /out/p11_lifecycle.txt)"
   echo "$(cat /out/div_tests.txt)"
   cat /out/p11_objects.txt; echo
+  cat /out/create_attrs.txt; echo
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"

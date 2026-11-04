@@ -63,7 +63,7 @@ $(OBJDIR)/src/fhsm_tpm.o $(OBJDIR)/src/fhsm_token_tpm.o $(OBJDIR)/src/fhsm_token
 $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o $(OBJDIR)/src/fhsm_drbg.o \
 $(OBJDIR)/kat/fhsm_kat_vectors.o $(OBJDIR)/kat/cavp_extended.o $(OBJDIR)/src/fhsm_pairwise.o \
 $(OBJDIR)/src/fhsm_composite.o $(OBJDIR)/src/fhsm_session.o $(OBJDIR)/src/fhsm_state.o \
-$(OBJDIR)/src/fhsm_apilock.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
+$(OBJDIR)/src/fhsm_apilock.o $(OBJDIR)/src/fhsm_create_attrs.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 

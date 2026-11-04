@@ -5,3 +5,4 @@
 pub mod p11;
 pub mod session;
 pub mod state;
+pub mod template;

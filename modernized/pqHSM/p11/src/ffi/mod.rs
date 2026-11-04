@@ -2,6 +2,7 @@
 
 mod apilock;
 mod attrs;
+mod create_attrs;
 mod lifecycle;
 mod login;
 mod objects;
