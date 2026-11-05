@@ -1033,3 +1033,10 @@ No HIGH findings. Applied:
 - **L5, M3:** recorded above (RULE-091's undo; what in copy.rs is dead until slice 6).
 
 Not applied: L1 (copy computes its scope twice, with opposite defaults on a failed lookup) and L2 (a failed mechanism-list read skips the subset check); neither is reachable, since the source's value lookup fails first.
+
+## Slice 3: digest
+
+### 3a: golden first
+
+- `tests-support/hybrid/p11_digest.c` (harness step 4k), written from the C before the port: C_DigestInit's checks in order and every digest mechanism (12, plus an HMAC and RSA) one-shot and in parts, with size queries and 1-byte buffers; C_Digest's and C_DigestUpdate's argument checks and which of them end the operation; C_DigestKey over secret, sensitive, non-private, session, mechanism-restricted, data and unknown objects, logged in and out, mixed with data; two sessions at once, a closed and reused handle, context login, logout, finalize and a fork. 385 rows on C.
+- Against the hybrid before the port it differed in 12 lines, all recorded: DIV-050 (logged out, C digested the user's secret keys; the hybrid answers 0x60) and DIV-051 (0x190 after `C_Finalize`). `p11_digest_expect.sed` records the five rows by exact match.
