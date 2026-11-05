@@ -1064,3 +1064,29 @@ Recorded, not applied:
 - **L2:** a digest that has absorbed a key with `C_DigestKey` survives logout, so `C_DigestFinal` gives H(key) afterwards. In scope for DIV-050's "operations under way end at logout" work (slices 4-7).
 - **L1:** golden gaps: handles 128 and 129 on all five calls, a key handle above 32 bits, `*pulDigestLen` on the error paths, a threaded digest test. The build is the strict profile, so SHA-1 and MD5 are only refused, and the provider-missing branch is not reached.
 - **L3:** not observable: on an EVP failure in `C_DigestFinal`, C writes back the length cast to 32 bits; Rust leaves it.
+
+## Slice 4: encrypt and decrypt
+
+### 4a: golden first
+
+- `tests-support/hybrid/p11_crypt.c` (harness step 4l), written from the C before the port: Init's checks in order and every parameter shape; single-part round trips for AES-ECB, CBC, CBC-PAD, CTR, GCM, CCM, KW and KWP at three key sizes, with size queries, 1-byte buffers and tampered input; the same in parts; RSA-OAEP over nine digests, labels and length limits; key classes, usage, allowed mechanisms, logged out and as SO; two sessions, close and reuse, context login, logout, finalize, a fork, and a multipart context left by an error. 2142 rows on C. `p11_crypt_expect.sed` records the DIV rows.
+
+### 4b: the eight entry points in Rust
+
+- `p11/src/ffi/crypt.rs`: `C_EncryptInit`, `C_Encrypt`, `C_EncryptUpdate`, `C_EncryptFinal` and the four `C_Decrypt*`, in C's check order, each under the shared API lock with DIV-051's and DIV-053's gate. `hybrid.mk` moves them to the Rust-owned list; `interface.c` forwards them.
+- **The tables:** C's `g_op_enc` and `g_op_dec` (and the OAEP parameters) become `crypt::ENC` and `DEC`, one `Mutex<Op>` per handle. Reset at session open and close, finalize, after a fork (contexts forgotten); `C_Login(CKU_CONTEXT_SPECIFIC)` counts them and grants them (`grant`), and decryption of an ALWAYS_AUTHENTICATE key needs that grant, as C.
+- **Crypto:** `pqhsm_crypto::cipher` holds thin EVP wrappers (cipher context, RSA key and OAEP context), so the call sequences and each failure's code stay in `crypt.rs`, where C had them. The AAD, the label and every scratch output are cleansed on drop.
+- **Kept as C:** GCM tag_bits 0 is taken as 128; the bare 12-byte GCM IV from any block of 12-47 bytes; GCM and CCM are always audited, a failure with its rv; a tag mismatch zeroes the caller's whole buffer; `C_Decrypt` checks its arguments before looking up the key, `C_Encrypt` after; the RSA PKCS#1 v1.5, X.509 and DES3 paths are ported but refused in the strict build (MECHANISM_INVALID, as C).
+- **DIV-001:** a single-part success is computed into scratch, recorded, then copied out, so a failed record writes nothing.
+- shortcut: the same fork window as the digest slots (review M1 of slice 3); first in M3's atfork work.
+- **Golden:** step 4l identical to C less the recorded rows: DIV-050 (logged-out and SO key use 0x60, operations ended at logout 0x91), DIV-051, DIV-061, DIV-062. Unit tests: the parameter parser's shapes and bounds for GCM, CTR, CCM, CBC, KW and OAEP; ECB in parts equals one call; a GCM tag round trip.
+- **Untested by the harness:** the all-mechanisms profile's RSA PKCS#1, X.509 and DES3 paths (the harness builds only strict).
+
+### DIV-050, the encrypt and decrypt part
+
+- Init answers 0x60 for a secret or private key, token or session, unless the user is logged in, right after the key lookup. `C_Logout` ends every encryption and decryption under way on such a key of that token (`crypt::end_private`, under C_Logout's exclusive lock). The logged-out session key is the SEC-001 hole that slice 1 left (review M1); sign and the rest close it in slices 5-7.
+- **Test:** `p11_divs.c` DIV-050, the session key logged out and as SO (C 0, hybrid 0x60) and an encryption across a logout (C 0, hybrid 0x91).
+
+### DIV-061 and DIV-062
+
+- DIV-061: single-part AES-ECB, CBC, CBC-PAD and CTR with a key of another length is 0x62 (C read 32 bytes of it). DIV-062: each Init builds a fresh operation, so no context an error left carries on. Both found by the 4a golden; tests `p11_divs.c` DIV-061 and DIV-062.

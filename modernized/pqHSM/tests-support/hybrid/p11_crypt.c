@@ -470,6 +470,18 @@ static void s_parts(void) {
         { UL rv = call(h, MSG, 16UL, buf, &len); snprintf(l, sizeof l, "%s single after update", n); row(l, rv, len, buf, 16); }
         len = sizeof buf;
         R("final after single", fin(h, buf, &len));
+        /* A multipart context an error left behind, then a new operation on another key. */
+        Mech cbc = { 0x1082, IV, 16 };
+        R("init stale ecb", init(h, &ecb, k));
+        len = sizeof buf;
+        R("update stale ecb", upd(h, MSG, 16UL, buf, &len));
+        R("update 2^31 ends it", upd(h, buf, 0x80000000UL, buf, &len));
+        R("init cbc, the other key", init(h, &cbc, k32));
+        len = sizeof buf;
+        memset(buf, 0xAA, sizeof buf);
+        { UL rv = upd(h, MSG, 16UL, buf, &len); snprintf(l, sizeof l, "%s update cbc, the other key", n); row(l, rv, len, buf, 16); }
+        len = sizeof buf;
+        R("final cbc, the other key", fin(h, buf, &len));
 #undef R
     }
 }

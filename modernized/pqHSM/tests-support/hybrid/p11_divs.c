@@ -229,6 +229,71 @@ static void div_050(void) {
     want("logout before the session key's digest", CALL(C_Logout, h), 0);
     want("digestinit logged out", CALL(C_DigestInit, h, &sha256), 0);
     want("digest the session key logged out", CALL(C_DigestKey, h, sk), 0x60);
+    CALL(C_DigestFinal, h, ct, &out);
+    /* Slice 4: the session key is the user's too. Logged out or as SO it cannot be used, and
+     * the logout ends the encryption under way on it. C let both use it. */
+    want("encryptinit the session key logged out", CALL(C_EncryptInit, h, &ecb, sk), 0x60);
+    want("login user for the session key", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("encryptinit the session key", CALL(C_EncryptInit, h, &ecb, sk), 0);
+    want("logout under the encryption", CALL(C_Logout, h), 0);
+    out = sizeof ct;
+    want("encrypt after the logout", CALL(C_Encrypt, h, pt, 16UL, ct, &out), 0x91);
+    want("login so for the session key", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("so encryptinit the session key", CALL(C_EncryptInit, h, &ecb, sk), 0x60);
+    CALL(C_Finalize, NULL);
+}
+
+/* A user session and an AES session key of `n` bytes (key[i] = i). */
+static UL user_key(UL *h, UL n) {
+    UL k = 0, cls = 4, kt = 0x1f;
+    unsigned char no = 0, key[32];
+    for (int i = 0; i < 32; ++i) key[i] = (unsigned char)i;
+    struct { UL type; void *p; UL len; } t[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &no, 1 },
+        { 0x011, key, n },
+    };
+    *h = fresh(0);
+    want("login so", CALL(C_Login, *h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, *h, USER, (UL)strlen(USER)), 0);
+    want("logout so", CALL(C_Logout, *h), 0);
+    want("login user", CALL(C_Login, *h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("create the key", CALL(C_CreateObject, *h, t, 4UL, &k), 0);
+    return k;
+}
+
+/* DIV-061: single-part AES-ECB with a 20-byte key is CKR_KEY_SIZE_RANGE and ends the
+ * operation. C took it for AES-256 and read 32 bytes of the 20. */
+static void div_061(void) {
+    UL h, k = user_key(&h, 20), out = 64;
+    unsigned char pt[16] = { 2 }, ct[64];
+    struct { UL m; void *p; UL len; } ecb = { 0x1081, NULL, 0 };
+    want("encryptinit", CALL(C_EncryptInit, h, &ecb, k), 0);
+    want("encrypt with a 20-byte key", CALL(C_Encrypt, h, pt, 16UL, ct, &out), 0x62);
+    out = 64;
+    want("the operation ended", CALL(C_Encrypt, h, pt, 16UL, ct, &out), 0x91);
+    want("decryptinit", CALL(C_DecryptInit, h, &ecb, k), 0);
+    out = 64;
+    want("decrypt with a 20-byte key", CALL(C_Decrypt, h, pt, 16UL, ct, &out), 0x62);
+    CALL(C_Finalize, NULL);
+}
+
+/* DIV-062: an Init after a multipart error starts afresh. C kept the old context, so the next
+ * update went on under the old key and mode. */
+static void div_062(void) {
+    UL h, k = user_key(&h, 16), out = 64, n;
+    unsigned char iv[16] = { 7 }, pt[16] = { 2 }, ct[64], want_ct[64];
+    struct { UL m; void *p; UL len; } ecb = { 0x1081, NULL, 0 }, cbc = { 0x1082, iv, 16 };
+    want("encryptinit cbc", CALL(C_EncryptInit, h, &cbc, k), 0);
+    want("encrypt cbc", CALL(C_Encrypt, h, pt, 16UL, want_ct, &out), 0);
+    want("encryptinit ecb", CALL(C_EncryptInit, h, &ecb, k), 0);
+    out = 64;
+    want("update ecb", CALL(C_EncryptUpdate, h, pt, 16UL, ct, &out), 0);
+    out = 64;
+    want("update 2^31 ends it", CALL(C_EncryptUpdate, h, ct, 0x80000000UL, ct, &out), 0x21);
+    want("encryptinit cbc again", CALL(C_EncryptInit, h, &cbc, k), 0);
+    n = 64;
+    want("update cbc", CALL(C_EncryptUpdate, h, pt, 16UL, ct, &n), 0);
+    want("the update is the cbc encryption", n == 16 && !memcmp(ct, want_ct, 16), 1);
     CALL(C_Finalize, NULL);
 }
 
@@ -260,6 +325,18 @@ static void fail_audit(void) {
  * CKR_DEVICE_ERROR (0x30). C discarded the audit result, so each returns 0x0. One process per
  * case: the first failed write latches ERROR. */
 static void div_001_case(int which) {
+    if (which == 4) {
+        /* Slice 4: a C_Encrypt that cannot be audited writes nothing. */
+        UL hs, k = user_key(&hs, 16), out = 64;
+        unsigned char pt[16] = { 2 }, ct[64];
+        struct { UL m; void *p; UL len; } ecb = { 0x1081, NULL, 0 };
+        memset(ct, 0xAA, sizeof ct);
+        want("encryptinit", CALL(C_EncryptInit, hs, &ecb, k), 0);
+        fail_audit();
+        want("encrypt, audit failing", CALL(C_Encrypt, hs, pt, 16UL, ct, &out), 0x30);
+        want("nothing written", ct[0] == 0xAA && ct[15] == 0xAA && out == 64, 1);
+        return;
+    }
     UL h = fresh(0);
     want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
     if (which == 0) {
@@ -286,7 +363,7 @@ static void div_001_case(int which) {
 
 static void div_001(void) {
     const char *base = getenv("FHSM_TOKENS_DIR");
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         char d[700];
         snprintf(d, sizeof d, "%s/%d", base, i);
         mkdir(d, 0700);
@@ -461,7 +538,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "DIV-054", div_054 }, { "DIV-050", div_050 }, { "DIV-001", div_001 },
     { "DIV-060", div_060 }, { "DIV-056", div_056 },
     { "RULE-092", rule_092 }, { "RULE-091", rule_091 }, { "RULE-061", rule_061 },
-    { "RULE-059", rule_059 },
+    { "RULE-059", rule_059 }, { "DIV-061", div_061 }, { "DIV-062", div_062 },
 };
 
 int main(int argc, char **argv) {

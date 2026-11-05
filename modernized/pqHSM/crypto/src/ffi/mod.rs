@@ -4,6 +4,7 @@
 //! `include/fhsm_drbg.h`, and the primitives over libcrypto with (feature `ffi`) the C ABI of
 //! `include/fhsm_crypto.h`.
 
+pub mod cipher;
 pub mod prim;
 pub(crate) mod sys;
 

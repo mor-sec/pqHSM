@@ -4,6 +4,7 @@ mod apilock;
 mod attrs;
 mod copy;
 mod create_attrs;
+mod crypt;
 mod digest;
 mod lifecycle;
 mod login;

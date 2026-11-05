@@ -10,6 +10,7 @@ pub mod lifecycle;
 pub mod mem;
 #[cfg(feature = "ffi")]
 pub use ffi::KatRecord;
+pub use ffi::cipher;
 pub use ffi::prim;
 /// The module locks that a fork child takes afresh; the self-test crate uses it too.
 #[cfg(feature = "ffi")]

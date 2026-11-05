@@ -147,7 +147,7 @@ pub(super) fn forget_all() {
 ///
 /// # Safety
 /// `p` is readable for `n` bytes when `n` is not zero.
-unsafe fn bytes<'a>(p: *const u8, n: usize) -> &'a [u8] {
+pub(super) unsafe fn bytes<'a>(p: *const u8, n: usize) -> &'a [u8] {
     if n == 0 {
         &[]
     } else {
@@ -160,7 +160,7 @@ unsafe fn bytes<'a>(p: *const u8, n: usize) -> &'a [u8] {
 ///
 /// # Safety
 /// `out_len` points to a CK_ULONG.
-unsafe fn sized(out: *mut u8, out_len: *mut c_ulong, need: c_ulong) -> Option<u32> {
+pub(super) unsafe fn sized(out: *mut u8, out_len: *mut c_ulong, need: c_ulong) -> Option<u32> {
     // SAFETY: the caller's
     if !out.is_null() && unsafe { *out_len } >= need {
         return None;

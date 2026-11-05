@@ -63,6 +63,7 @@ pub unsafe extern "C" fn pqhsm_C_OpenSession(
             // SAFETY: C's tables, under the API lock
             unsafe { pqhsm_c_session_ops_reset(h) };
             super::digest::reset(h);
+            super::crypt::reset(h);
             TABLE.attach(h, Some(t));
             OK.into()
         }
@@ -79,6 +80,7 @@ fn close_session(h: c_ulong) -> u32 {
     // SAFETY: C's tables, under the EXCLUSIVE lock
     unsafe { pqhsm_c_session_ops_reset(h) };
     super::digest::reset(h);
+    super::crypt::reset(h);
     let t = TABLE.token(h);
     if let Some(t) = t {
         // SAFETY: a token the registry holds
@@ -230,7 +232,7 @@ fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
     match unsafe { pqhsm_c_session_has_active_op(h) } {
         a if a < 0 => return SESSION_HANDLE_INVALID,
         // A digest is an active operation too (slice 3); its grant below is never read.
-        0 if !super::digest::active(h) => return OPERATION_NOT_INITIALIZED,
+        0 if !super::digest::active(h) && !super::crypt::active(h) => return OPERATION_NOT_INITIALIZED,
         _ => {}
     }
     let Some(t) = TABLE.token(h) else {
@@ -256,6 +258,7 @@ fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
     }
     // SAFETY: C's tables, under the API lock
     unsafe { pqhsm_c_session_ctx_auth_grant(h) };
+    super::crypt::grant(h);
     OK
 }
 
@@ -268,7 +271,12 @@ pub extern "C" fn pqhsm_C_Logout(h: c_ulong) -> c_ulong {
         return rv.into();
     }
     // DIV-053 as amended (review M2): runs in ERROR
+    let tok = TABLE.token(h);
     let rv = TABLE.logout(h);
+    // DIV-050: the operations under way on the user's keys end with the login.
+    if let (OK, Some(t)) = (rv, tok) {
+        super::crypt::end_private(t);
+    }
     // DIV-001: the logout stands (undoing it would reload keys); the call reports the failure
     audited(rv, audit(EV_LOGOUT, -1, h as c_int, ROLE_NONE, rv, &[])).into()
 }

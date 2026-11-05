@@ -35,6 +35,7 @@ fn reset_after_fork() {
     // SAFETY: C's tables, under the EXCLUSIVE lock
     unsafe { pqhsm_c_ops_forget_all() };
     super::digest::forget_all();
+    super::crypt::forget_all();
     fhsm_state_reset_after_fork();
 }
 
@@ -43,6 +44,7 @@ fn finalize_release() {
     // SAFETY: C's tables, under the EXCLUSIVE lock
     unsafe { pqhsm_c_ops_release_all() };
     super::digest::release_all();
+    super::crypt::release_all();
     super::objects::reset_finds();
     TABLE.reset_all();
     slots::close_all();
