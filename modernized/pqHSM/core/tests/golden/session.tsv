@@ -6,13 +6,6 @@ attach 0 1	0xb3	-
 token 0	0	-
 role 0	0	-
 info 0	0xb3 99 99 99	-
-close 128	0xb3	-
-login 128 2 pin	0xb3	-
-logout 128	0xb3	-
-attach 128 1	0xb3	-
-token 128	0	-
-role 128	0	-
-info 128	0xb3 99 99 99	-
 close 129	0xb3	-
 login 129 2 pin	0xb3	-
 logout 129	0xb3	-
@@ -20,6 +13,13 @@ attach 129 1	0xb3	-
 token 129	0	-
 role 129	0	-
 info 129	0xb3 99 99 99	-
+close 130	0xb3	-
+login 130 2 pin	0xb3	-
+logout 130	0xb3	-
+attach 130 1	0xb3	-
+token 130	0	-
+role 130	0	-
+info 130	0xb3 99 99 99	-
 close 18446744073709551615	0xb3	-
 login 18446744073709551615 2 pin	0xb3	-
 logout 18446744073709551615	0xb3	-
@@ -254,14 +254,15 @@ open 3 6	0 124	-
 open 3 6	0 125	-
 open 3 6	0 126	-
 open 3 6	0 127	-
+open 3 6	0 128	-
 open 3 6	0x2 0	-
 open 3 6	0x2 0	-
 open 3 6	0x2 0	-
 open 3 6	0x2 0	-
 exists_on_slot 3	1	-
-close 127	0	-
-open 3 2	0 127	-
-info 127	0 3 2 0	-
+close 128	0	-
+open 3 2	0 128	-
+info 128	0 3 2 0	-
 tokset 2 2	-	-
 reset_all	-	-
 info 1	0xb3 99 99 99	-

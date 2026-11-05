@@ -345,8 +345,9 @@ pub extern "C" fn pqhsm_C_DestroyObject(h: c_ulong, o: c_ulong) -> c_ulong {
     {
         return ACTION_PROHIBITED.into();
     }
+    // RULE-092: an unknown handle is CKR_OBJECT_HANDLE_INVALID; C answered 0x60.
     // SAFETY: as above
-    unsafe { fhsm_token_object_destroy(t, o as u32) }.into()
+    lookup_rv(unsafe { fhsm_token_object_destroy(t, o as u32) }).into()
 }
 
 #[cfg(test)]

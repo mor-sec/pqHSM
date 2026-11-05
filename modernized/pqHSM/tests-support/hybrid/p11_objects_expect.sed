@@ -4,6 +4,8 @@
 # DIV-050: the SO cannot destroy the user's key, so the find after it sees it.
 s/^so destroy key\t0\t0\t-$/so destroy key\t0x82\t0\t-/
 s/^find after destroys found\t0\t0x2\t3,5$/find after destroys found\t0\t0x3\t4,5,3/
+# RULE-092: an unknown handle on destroy is 0x82.
+s/^destroy \(token again\|bad handle\|handle 0\)\t0x60\t/destroy \1\t0x82\t/
 # DIV-060: a copy asked to be uncopyable stays so.
 s/^copy made uncopyable attr 0x171\t0\t0x1\t01$/copy made uncopyable attr 0x171\t0\t0x1\t00/
 # DIV-056: copies of the CKA_SIGN=FALSE source keep SIGN FALSE and its mechanism list.

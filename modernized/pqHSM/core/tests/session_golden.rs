@@ -117,5 +117,5 @@ fn replays_the_c_session_table() {
         );
         rows += 1;
     }
-    assert_eq!(rows, 274);
+    assert_eq!(rows, 275);
 }

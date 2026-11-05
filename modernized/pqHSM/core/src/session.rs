@@ -12,9 +12,10 @@
 use std::ffi::{c_int, c_ulong};
 use std::sync::{Mutex, MutexGuard};
 
-/// `FHSM_MAX_SESSIONS`: handles run from 1 to `MAX - 1`. No build sets `-DFHSM_MAX_SESSIONS`,
-/// so it is fixed here, as the store's cap is.
-pub const MAX: usize = 128;
+/// `FHSM_MAX_SESSIONS`: handles run from 1 to `MAX - 1`. RULE-091: 129, so the 128 sessions
+/// `C_GetTokenInfo` advertises can all be open (C's 128 allowed 127). `hybrid.mk` builds C's
+/// per-session tables with the same value.
+pub const MAX: usize = 129;
 
 pub const OK: u32 = 0;
 pub const HOST_MEMORY: u32 = 0x2;

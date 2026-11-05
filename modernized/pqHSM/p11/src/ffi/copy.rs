@@ -544,8 +544,12 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
         it != 0
     });
     if !want_token {
-        // SAFETY: as above (C ignores the result)
-        unsafe { fhsm_token_object_mark_session(tok, new, h as u32) };
+        // RULE-091: a copy that cannot be made a session object is not left a token object.
+        // SAFETY: as above
+        let r = unsafe { fhsm_token_object_mark_session(tok, new, h as u32) };
+        if r != OK {
+            return Err(undo(r));
+        }
     }
     let mut pf = 0u8;
     // SAFETY: as above

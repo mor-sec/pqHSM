@@ -85,8 +85,10 @@ gen_x509: $(GEN_DIR)/gen_x509.c $(OBJDIR)/src/fhsm_composite.o
 
 # Phase 4 slice 1a (session table) goldens: the legacy src/fhsm_session.c alone, against the
 # generator's stub token. Used only by regen_session.sh.
+# RULE-091: built at the Rust table's 129 (core::session::MAX), so the recording is C's own
+# behaviour at the size the module now uses.
 gen_session: $(GEN_DIR)/gen_session.c src/fhsm_session.c
-	$(CC) $(CFLAGS) -o $@ $^ -lpthread
+	$(CC) $(CFLAGS) -DFHSM_MAX_SESSIONS=129 -o $@ $^ -lpthread
 
 # Phase 4 slice 1b (module state) goldens: the legacy src/fhsm_state.c alone, against the
 # generator's recording fhsm_audit_event. Used only by regen_state.sh.

@@ -340,11 +340,44 @@ static void div_056(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* RULE-092: destroying a handle that names no object is CKR_OBJECT_HANDLE_INVALID (0x82),
+ * once more after the object is gone. C answered CKR_KEY_HANDLE_INVALID (0x60). */
+static void rule_092(void) {
+    UL h = fresh(0), o = 0, cls = 0;
+    unsigned char no = 0;
+    struct { UL type; void *p; UL len; } t[] = { { 0x0, &cls, sizeof cls }, { 0x1, &no, 1 } };
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    want("logout so", CALL(C_Logout, h), 0);
+    want("login user", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("create a data object", CALL(C_CreateObject, h, t, 2UL, &o), 0);
+    want("destroy it", CALL(C_DestroyObject, h, o), 0);
+    want("destroy it again", CALL(C_DestroyObject, h, o), 0x82);
+    want("destroy a handle never issued", CALL(C_DestroyObject, h, 999UL), 0x82);
+    CALL(C_Finalize, NULL);
+}
+
+/* RULE-091: the 128 sessions C_GetTokenInfo advertises can all be open, and the last one
+ * can run an operation. C's table held 127. */
+static void rule_091(void) {
+    UL s = fresh(0), n = 0, out = 64;   /* fresh's session is the first */
+    unsigned char md[64];
+    struct { UL m; void *p; UL len; } sha = { 0x250, NULL, 0 };   /* CKM_SHA256 */
+    for (n = 1; n < 128; ++n)
+        if (CALL(C_OpenSession, 0UL, 4UL, NULL, NULL, &s) != 0) break;
+    want("128 sessions open", n, 128);
+    want("digestinit on the last", CALL(C_DigestInit, s, &sha), 0);
+    want("digest on the last", CALL(C_Digest, s, (void *)"abc", 3UL, md, &out), 0);
+    want("a 129th is refused", CALL(C_OpenSession, 0UL, 4UL, NULL, NULL, &s), 0x2);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
     { "DIV-054", div_054 }, { "DIV-050", div_050 }, { "DIV-001", div_001 },
     { "DIV-060", div_060 }, { "DIV-056", div_056 },
+    { "RULE-092", rule_092 }, { "RULE-091", rule_091 },
 };
 
 int main(int argc, char **argv) {
