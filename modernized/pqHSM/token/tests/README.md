@@ -224,7 +224,7 @@ would otherwise succeed returns 0x30 (DIV-001, H4).
 | 1 | TPM audit key with no value (`:1279,1284,1497,1505,1509,1516`) | Fix: DIV-023 |
 | 2 | Parse failure after GCM still logs in (`:1529-1531`, `:1006`) | Fix: DIV-024 |
 | 3 | `fhsm_rng_bytes` results ignored | Fix: DIV-025 |
-| 4 | `mech_allowed` OK for an unknown handle / nothing loaded (`:2354`, `:2334`) | Deferred to Phase 4: pinned as C |
+| 4 | `mech_allowed` OK for an unknown handle / nothing loaded (`:2354`, `:2334`) | Deferred to Phase 4; fixed there as RULE-061 (`scenarios.rs` `DIVS`) |
 | 5 | `destroy_session_objects` checks no login (`:2036`) | Deferred to Phase 4: pinned as C |
 | 6 | `get_tmpl` returns bytes past `len` (`:2408`) | Fix: DIV-026 |
 | 7 | `object_create` audit logs the untruncated label (`:1941`) | Kept as C |

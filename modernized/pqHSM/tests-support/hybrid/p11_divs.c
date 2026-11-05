@@ -372,12 +372,34 @@ static void rule_091(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* RULE-061: the allowed-mechanism check refuses a key it cannot find. C_UnwrapKey runs it
+ * before its login check and its own lookup, so with the public view loaded and no login an
+ * unknown unwrapping key is 0x60 where C, letting it through, answered 0x101. */
+static void rule_061(void) {
+    UL h = fresh(0), k = 0, cls = 4, kt = 0x1f;
+    unsigned char yes = 1, key[16] = { 1 }, wrapped[24] = { 0 };
+    struct { UL type; void *p; UL len; } t[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &yes, 1 },
+        { 0x011, key, sizeof key },
+    };
+    struct { UL m; void *p; UL len; } kw = { 0x2109, NULL, 0 };   /* CKM_AES_KEY_WRAP */
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    want("logout so", CALL(C_Logout, h), 0);
+    want("login user", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("create a token key", CALL(C_CreateObject, h, t, 4UL, &k), 0);
+    want("logout user", CALL(C_Logout, h), 0);
+    want("unwrap with an unknown key", CALL(C_UnwrapKey, h, &kw, 999UL, wrapped,
+                                            (UL)sizeof wrapped, t, 2UL, &k), 0x60);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
     { "DIV-054", div_054 }, { "DIV-050", div_050 }, { "DIV-001", div_001 },
     { "DIV-060", div_060 }, { "DIV-056", div_056 },
-    { "RULE-092", rule_092 }, { "RULE-091", rule_091 },
+    { "RULE-092", rule_092 }, { "RULE-091", rule_091 }, { "RULE-061", rule_061 },
 };
 
 int main(int argc, char **argv) {

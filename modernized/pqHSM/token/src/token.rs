@@ -1255,20 +1255,16 @@ impl Token {
     }
 
     pub fn object_mech_allowed(&self, h: Handle, mech: u32) -> Result<(), Rv> {
+        // RULE-061: what it cannot find is refused, not allowed.
         let g = self.g();
-        if g.visible().is_err() {
-            return Ok(());
-        }
-        match g.obj(h) {
-            Err(_) => Ok(()),
-            Ok(o) if o.flags2 & store::OBJF2_HAS_ALLOWED_MECH == 0 => Ok(()),
-            Ok(o) => {
-                if o.allowed[..o.allowed_count as usize].contains(&mech) {
-                    Ok(())
-                } else {
-                    Err(Rv::MECHANISM_INVALID)
-                }
-            }
+        g.visible()?;
+        let o = g.obj(h)?;
+        if o.flags2 & store::OBJF2_HAS_ALLOWED_MECH == 0
+            || o.allowed[..o.allowed_count as usize].contains(&mech)
+        {
+            Ok(())
+        } else {
+            Err(Rv::MECHANISM_INVALID)
         }
     }
 

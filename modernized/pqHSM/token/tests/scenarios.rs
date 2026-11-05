@@ -760,6 +760,31 @@ pub const DIVS: &[Div] = &[
         rust: "C~6c6162656c4a554e4b2d706173742d6c656e~>6c6162656c00000000000000000000000000",
         same_file_as: 0,
     },
+    // RULE-061: the policy check refuses what it cannot find.
+    Div {
+        scenario: "logout_keeps_objects_rule086",
+        step: 14,
+        div: "RULE-061",
+        c: "\trv=0x0",
+        rust: "\trv=0x60",
+        same_file_as: 0,
+    },
+    Div {
+        scenario: "public_view_absent",
+        step: 7,
+        div: "RULE-061",
+        c: "\trv=0x0",
+        rust: "\trv=0x101",
+        same_file_as: 0,
+    },
+    Div {
+        scenario: "policy_attrs_rule061",
+        step: 11,
+        div: "RULE-061",
+        c: "\trv=0x0",
+        rust: "\trv=0x60",
+        same_file_as: 0,
+    },
 ];
 
 /// DIV-024: a store that authenticates but does not parse fails the login with 0x6, and the
@@ -968,8 +993,10 @@ fn the_div_table_matches_divergences_md() {
             );
         } else {
             assert!(
-                plan.contains(&format!("**{id}")) || plan.contains(&format!("{id}:")),
-                "{id} is not in PHASE2_PLAN.md"
+                plan.contains(&format!("**{id}"))
+                    || plan.contains(&format!("{id}:"))
+                    || divs.contains(&format!("| {id} ")),
+                "{id} is not in PHASE2_PLAN.md or DIVERGENCES.md's rule table"
             );
         }
     }
