@@ -990,7 +990,11 @@ Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against 
 - `C_CopyObject` is `p11/src/ffi/copy.rs`, in C's order: the ERROR and not-initialized gate, NULL out, `check_template`, CKA_TRUSTED (SO only), the read-only check, the session, CKA_COPYABLE=FALSE on the source (0x1B) before the login check, then the source read, the override template, the add, and the helpers. Any helper's failure destroys the copy.
 - **The helpers** C's other creation paths apply after the object exists are here too: `check_trusted`, `check_ro_token`, `apply_allowed_mechs`, `apply_nested_all` (unwrap, derive, wrap), `apply_encap_flags`, `apply_obj_meta`. `C_CreateObject`, generate, unwrap and derive keep calling C's static copies until they move (slice 6, plan §6 revised 2026-11-05, user: "Helpers + copy now (Recommended)").
 - **Kept as C:**
-  - a nonzero source flags2 or flags3 byte replaces the copy's whole byte, after the template's CKA_COPYABLE=FALSE was ORed in: from any source with a flags2 bit set (allowed mechanisms, a nested template, a decapsulate restriction), a copy asked to be uncopyable comes out copyable. Golden row "copy made uncopyable attr 0x171" reads 01 on C and Rust. Candidate defect, recorded, not fixed here.
+  - ~~a nonzero source flags2 byte replaces the copy's~~: fixed as DIV-060 (the next commit; a copy asked to be uncopyable came out copyable from a restricted source). flags3 is still copied as C copies it.
   - the session marking's result is ignored (RULE-091, a later commit).
   - a mechanism list truncates each CK_ULONG to the record's u32.
 - **Golden first:** `p11_objects.c`'s copy scenario gained 19 cases and shows 16 attributes of each copy (1,995 rows). They showed that copy's override loop refuses, as 0x12, every attribute outside its list: dates, CKA_APPLICATION, CKA_ALLOWED_MECHANISMS, the nested templates and CKA_DECAPSULATE. A copy keeps the source's dates and application but cannot set its own, and the helpers, called after the add as C calls them, find nothing to apply. **Their logic is therefore not yet exercised by any golden**; that comes when create, generate, unwrap and derive call them (slice 6). Recorded with the defect above: a copy template cannot restrict a copy the way the spec allows (candidate, not fixed).
+
+### DIV-060, a copy keeps its restrictions
+
+- `copy.rs` ORs the source's flags2 into the copy's instead of replacing it. Test `p11_divs.c` DIV-060 (C fails, Rust passes); step 4i's sed records the one golden row (`copy made uncopyable attr 0x171`, 01→00).

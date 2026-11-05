@@ -285,6 +285,7 @@ printf 'p11 objects: C %s, hybrid %s, %s rows, %s' "$(tail -1 /out/p11_objects_c
   "$(pl_same /out/p11_objects_c.txt /out/p11_objects_hybrid.txt)" > /out/p11_objects.txt
 sed -e 's/^so destroy key\t0\t0\t-$/so destroy key\t0x82\t0\t-/' \
     -e 's/^find after destroys found\t0\t0x2\t3,5$/find after destroys found\t0\t0x3\t4,5,3/' \
+    -e 's/^copy made uncopyable attr 0x171\t0\t0x1\t01$/copy made uncopyable attr 0x171\t0\t0x1\t00/' \
   /out/p11_objects_c.txt > /out/p11_objects_c_expect.txt
 printf ', less recorded DIVs %s' \
   "$(pl_same /out/p11_objects_c_expect.txt /out/p11_objects_hybrid.txt)" >> /out/p11_objects.txt

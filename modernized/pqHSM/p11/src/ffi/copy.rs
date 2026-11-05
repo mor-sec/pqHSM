@@ -471,14 +471,18 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
         // SAFETY: as above
         unsafe { fhsm_token_object_set_flags2(tok, new, cf2 | OBJF2_NOT_COPYABLE) };
     }
-    // The source's second and third flag bytes: as in C, a nonzero source byte replaces
-    // the copy's whole byte.
+    // DIV-060: the source's restrictions are added to the copy's. C replaced the copy's
+    // byte, so a copy asked to be uncopyable came out copyable from a restricted source.
     let mut b = 0u8;
     // SAFETY: as above
     if unsafe { fhsm_token_object_get_flags2(tok, o, &mut b) } == OK && b != 0 {
+        let mut cf2 = 0u8;
         // SAFETY: as above
-        unsafe { fhsm_token_object_set_flags2(tok, new, b) };
+        unsafe { fhsm_token_object_get_flags2(tok, new, &mut cf2) };
+        // SAFETY: as above
+        unsafe { fhsm_token_object_set_flags2(tok, new, cf2 | b) };
     }
+    // The third byte describes the key, not a restriction on it; a copy is the same key.
     b = 0;
     // SAFETY: as above
     if unsafe { fhsm_token_object_get_flags3(tok, o, &mut b) } == OK && b != 0 {

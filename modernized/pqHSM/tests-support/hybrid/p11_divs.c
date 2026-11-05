@@ -287,10 +287,32 @@ static void div_001(void) {
     }
 }
 
+/* DIV-060: a copy made uncopyable stays uncopyable when its source carries a restriction
+ * (here, allowed mechanisms). C overwrote the copy's restriction byte with the source's. */
+static void div_060(void) {
+    UL h = fresh(0), k = 0, c = 0, c2 = 0, cls = 4, kt = 0x1f, mech = 0x1081;
+    unsigned char yes = 1, no = 0, key[16] = { 1 }, got = 0xAA;
+    struct { UL type; void *p; UL len; } t[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &yes, 1 },
+        { 0x011, key, sizeof key }, { 0x40000600, &mech, sizeof mech },
+    }, nocopy = { 0x171, &no, 1 }, ask = { 0x171, &got, 1 };
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    want("logout so", CALL(C_Logout, h), 0);
+    want("login user", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("create a key with allowed mechanisms", CALL(C_CreateObject, h, t, 5UL, &k), 0);
+    want("copy it, uncopyable", CALL(C_CopyObject, h, k, &nocopy, 1UL, &c), 0);
+    want("the copy reads uncopyable", CALL(C_GetAttributeValue, h, c, &ask, 1UL), 0);
+    want("CKA_COPYABLE is FALSE", got, 0);
+    want("copying the copy is refused", CALL(C_CopyObject, h, c, NULL, 0UL, &c2), 0x1B);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
     { "DIV-054", div_054 }, { "DIV-050", div_050 }, { "DIV-001", div_001 },
+    { "DIV-060", div_060 },
 };
 
 int main(int argc, char **argv) {
