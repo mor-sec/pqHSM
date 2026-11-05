@@ -1076,7 +1076,7 @@ Recorded, not applied:
 - `p11/src/ffi/crypt.rs`: `C_EncryptInit`, `C_Encrypt`, `C_EncryptUpdate`, `C_EncryptFinal` and the four `C_Decrypt*`, in C's check order, each under the shared API lock with DIV-051's and DIV-053's gate. `hybrid.mk` moves them to the Rust-owned list; `interface.c` forwards them.
 - **The tables:** C's `g_op_enc` and `g_op_dec` (and the OAEP parameters) become `crypt::ENC` and `DEC`, one `Mutex<Op>` per handle. Reset at session open and close, finalize, after a fork (contexts forgotten); `C_Login(CKU_CONTEXT_SPECIFIC)` counts them and grants them (`grant`), and decryption of an ALWAYS_AUTHENTICATE key needs that grant, as C.
 - **Crypto:** `pqhsm_crypto::cipher` holds thin EVP wrappers (cipher context, RSA key and OAEP context), so the call sequences and each failure's code stay in `crypt.rs`, where C had them. The AAD, the label and every scratch output are cleansed on drop.
-- **Kept as C:** GCM tag_bits 0 is taken as 128; the bare 12-byte GCM IV from any block of 12-47 bytes; GCM and CCM are always audited, a failure with its rv; a tag mismatch zeroes the caller's whole buffer; `C_Decrypt` checks its arguments before looking up the key, `C_Encrypt` after; the RSA PKCS#1 v1.5, X.509 and DES3 paths are ported but refused in the strict build (MECHANISM_INVALID, as C).
+- **Kept as C:** GCM tag_bits 0 is taken as 128; the bare 12-byte GCM IV from any block of 12-47 bytes; GCM and CCM are always audited, a failure with its rv; a tag mismatch zeroes the caller's whole buffer; `C_Decrypt` checks its arguments before looking up the key, `C_Encrypt` after; the RSA PKCS#1 v1.5, X.509 and DES3 paths are ported but refused in the strict build (MECHANISM_INVALID, as C). Multipart GCM decryption never succeeds: nothing sets the tag, so `C_DecryptFinal` is 0x40 after `C_DecryptUpdate` has returned unauthenticated plaintext (step 4l records it). A candidate defect, no DIV.
 - **DIV-001:** a single-part success is computed into scratch, recorded, then copied out, so a failed record writes nothing.
 - shortcut: the same fork window as the digest slots (review M1 of slice 3); first in M3's atfork work.
 - **Golden:** step 4l identical to C less the recorded rows: DIV-050 (logged-out and SO key use 0x60, operations ended at logout 0x91), DIV-051, DIV-061, DIV-062. Unit tests: the parameter parser's shapes and bounds for GCM, CTR, CCM, CBC, KW and OAEP; ECB in parts equals one call; a GCM tag round trip.
@@ -1090,3 +1090,19 @@ Recorded, not applied:
 ### DIV-061 and DIV-062
 
 - DIV-061: single-part AES-ECB, CBC, CBC-PAD and CTR with a key of another length is 0x62 (C read 32 bytes of it). DIV-062: each Init builds a fresh operation, so no context an error left carries on. Both found by the 4a golden; tests `p11_divs.c` DIV-061 and DIV-062.
+
+### Slice 4 review (architecture critic, 2026-11-06)
+
+No HIGH findings. Applied:
+- **M1:** `end_private` frees the operation whole (`Op::IDLE`), so the logout drops the user's key schedule in the cipher context, not only the operation's flag.
+- **M2:** recorded under DIV-001: a failing single-part call writes nothing (C left partial plaintext); test `p11_divs.c` DIV-001 case 5.
+- **M3:** scratch is allocated with `try_reserve_exact`; failure is HOST_MEMORY, not an abort of the host. A cost of DIV-001: a single-part call holds a second copy of its output.
+- **L1:** the DIV-001 login rollback also ends operations begun on the user's keys meanwhile.
+- **L2:** scratch is cleansed over its whole allocation.
+- **L3:** the `C_DigestKey`-after-logout item joins DIV-050's remaining list; multipart GCM decryption is listed above.
+- **L4 (in part):** `p11_divs.c` DIV-050 checks that a logout ends another session's encryption and a decryption in parts.
+- Nit: `rv::MECHANISM_PARAM_INVALID` in place of the bare 0x71.
+Recorded, not applied:
+- **L4 rest:** no test that an operation on a public key survives logout (needs an RSA key in `p11_divs.c`), or that another token's survive.
+- Nits: `cipher::cleanse` beside `sys::zeroize` (the second calls C, which the unit tests cannot link); `kind()` keeps C's integer codes; `object`'s lifetime is not tied to the `Held` guard.
+

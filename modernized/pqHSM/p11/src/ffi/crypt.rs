@@ -23,6 +23,7 @@ use super::objects::{CKO_PRIVATE_KEY, CKO_SECRET_KEY, access_denied, gate};
 use super::session::{TABLE, Tok, fhsm_session_role};
 use super::sys::*;
 
+const HOST_MEMORY: u32 = 0x2;
 const DATA_LEN_RANGE: u32 = 0x21;
 const ENCRYPTED_DATA_INVALID: u32 = 0x40;
 const ENCRYPTED_DATA_LEN_RANGE: u32 = 0x41;
@@ -75,13 +76,20 @@ struct Secret(Vec<u8>);
 
 impl Secret {
     const NONE: Secret = Secret(Vec::new());
-    fn zeroed(n: usize) -> Self {
-        Self(vec![0; n])
+    /// `n` zero bytes, or HOST_MEMORY: an input can be 2 GiB, and C wrote in place.
+    fn zeroed(n: usize) -> Result<Self, u32> {
+        let mut v = Vec::new();
+        v.try_reserve_exact(n).map_err(|_| HOST_MEMORY)?;
+        v.resize(n, 0);
+        Ok(Self(v))
     }
 }
 
 impl Drop for Secret {
     fn drop(&mut self) {
+        // The whole allocation: a truncated tail may have held output.
+        let cap = self.0.capacity();
+        self.0.resize(cap, 0);
         cleanse(&mut self.0);
     }
 }
@@ -198,12 +206,12 @@ pub(super) fn grant(h: c_ulong) {
 }
 
 /// DIV-050: the logout of `t` ends every operation under way on one of its user's keys; the
-/// next call answers 0x91. Under C_Logout's EXCLUSIVE lock, so no call holds a slot.
+/// next call answers 0x91, and the operation is freed with its key schedule.
 pub(super) fn end_private(t: Tok) {
     for s in ENC[1..].iter().chain(&DEC[1..]) {
         let mut o = lock(s);
         if o.active && o.private && o.tok == Some(t) {
-            o.active = false;
+            *o = Op::IDLE;
         }
     }
 }
@@ -639,16 +647,16 @@ fn block_ctx(enc: bool, op: &Op, kv: &[u8], kt: u32) -> Result<Cipher, u32> {
 }
 
 /// Update and Final of a whole input into scratch with room for `cap` bytes and two blocks;
-/// the bytes made.
-fn run(enc: bool, x: &mut Cipher, inp: &[u8], cap: usize) -> Option<Secret> {
-    let mut o = Secret::zeroed(cap + 32);
+/// the bytes made, HOST_MEMORY, or `fail` when the cipher fails.
+fn run(enc: bool, x: &mut Cipher, inp: &[u8], cap: usize, fail: u32) -> Result<Secret, u32> {
+    let mut o = Secret::zeroed(cap + 32)?;
     // SAFETY: o has room for the input plus two blocks; inp readable; its length <= MAX_INPUT
     unsafe {
-        let a = x.update(enc, o.0.as_mut_ptr(), inp.as_ptr(), inp.len())?;
-        let b = x.finish(enc, o.0.as_mut_ptr().add(a))?;
+        let a = x.update(enc, o.0.as_mut_ptr(), inp.as_ptr(), inp.len()).ok_or(fail)?;
+        let b = x.finish(enc, o.0.as_mut_ptr().add(a)).ok_or(fail)?;
         o.0.truncate(a + b);
     }
-    Some(o)
+    Ok(o)
 }
 
 /// The OAEP context for this operation's parameters.
@@ -739,7 +747,7 @@ unsafe fn encrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, data: &[
             if let Some(rv) = unsafe { sized(out, out_len, need as c_ulong) } {
                 return rv;
             }
-            let mut o = Secret::zeroed(need);
+            let mut o = or_end!(op, Secret::zeroed(need));
             // SAFETY: o holds need bytes
             if !unsafe { x.run(o.0.as_mut_ptr(), &mut need, data) } {
                 return op.end(FUNCTION_FAILED);
@@ -773,10 +781,10 @@ unsafe fn encrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, data: &[
             let mode = if op.mech == KW { "WRAP" } else { "WRAP-PAD" };
             let name = aes_name(mode, kv.len()).expect("checked length");
             let mut x = or_end!(op, keyed(true, name, kv, op.iv(), true));
-            match run(true, &mut x, data, need) {
+            match run(true, &mut x, data, need, FUNCTION_FAILED) {
                 // SAFETY: *out_len >= need, the wrap's length (sized)
-                Some(o) => unsafe { emit(true, h, op, &o.0, out, out_len) },
-                None => op.end(FUNCTION_FAILED),
+                Ok(o) => unsafe { emit(true, h, op, &o.0, out, out_len) },
+                Err(rv) => op.end(rv),
             }
         }
         ECB | CBC | CBC_PAD | CTR | DES3_CBC => {
@@ -786,10 +794,10 @@ unsafe fn encrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, data: &[
             if let Some(rv) = unsafe { sized(out, out_len, need as c_ulong) } {
                 return rv;
             }
-            match run(true, &mut x, data, need) {
+            match run(true, &mut x, data, need, FUNCTION_FAILED) {
                 // SAFETY: *out_len >= need >= the bytes made (sized)
-                Some(o) => unsafe { emit(true, h, op, &o.0, out, out_len) },
-                None => op.end(FUNCTION_FAILED),
+                Ok(o) => unsafe { emit(true, h, op, &o.0, out, out_len) },
+                Err(rv) => op.end(rv),
             }
         }
         CCM | GCM => {
@@ -807,7 +815,7 @@ unsafe fn encrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, data: &[
                 return op.end(KEY_SIZE_RANGE);
             };
             let mut x = or_end!(op, Cipher::new());
-            let mut o = Secret::zeroed(n + tag + 16);
+            let mut o = or_end!(op, Secret::zeroed(n + tag + 16));
             let Some(len) = aead_seal(gcm, &mut x, c, op, kv, data, &mut o.0) else {
                 return fail_recorded(true, h, op, FUNCTION_FAILED, FUNCTION_FAILED);
             };
@@ -884,7 +892,7 @@ fn rsa_decrypt(x: &mut PkeyCtx, max: usize, enc: &[u8]) -> Result<Secret, u32> {
     if max == 0 {
         return Err(ENCRYPTED_DATA_INVALID);
     }
-    let mut o = Secret::zeroed(max);
+    let mut o = Secret::zeroed(max)?;
     let mut got = max;
     // SAFETY: o holds max bytes
     if !unsafe { x.run(o.0.as_mut_ptr(), &mut got, enc) } || got > max {
@@ -978,10 +986,11 @@ unsafe fn decrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, enc: &[u
             let mode = if op.mech == KW { "WRAP" } else { "WRAP-PAD" };
             let name = aes_name(mode, kv.len()).expect("checked length");
             let mut x = or_end!(op, keyed(false, name, kv, op.iv(), true));
-            match run(false, &mut x, enc, upper) {
+            match run(false, &mut x, enc, upper, ENCRYPTED_DATA_INVALID) {
                 // SAFETY: the caller's
-                Some(o) => unsafe { emit_or_retry(h, op, &o, out, out_len) },
-                None => fail_recorded(false, h, op, ENCRYPTED_DATA_INVALID, ENCRYPTED_DATA_INVALID),
+                Ok(o) => unsafe { emit_or_retry(h, op, &o, out, out_len) },
+                Err(ENCRYPTED_DATA_INVALID) => fail_recorded(false, h, op, ENCRYPTED_DATA_INVALID, ENCRYPTED_DATA_INVALID),
+                Err(rv) => op.end(rv),
             }
         }
         ECB | CBC | CBC_PAD | CTR | DES3_CBC => {
@@ -990,10 +999,10 @@ unsafe fn decrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, enc: &[u
             if let Some(rv) = unsafe { sized(out, out_len, n as c_ulong) } {
                 return rv;
             }
-            match run(false, &mut x, enc, n) {
+            match run(false, &mut x, enc, n, ENCRYPTED_DATA_INVALID) {
                 // SAFETY: *out_len >= n >= the bytes made (sized)
-                Some(o) => unsafe { emit(false, h, op, &o.0, out, out_len) },
-                None => op.end(ENCRYPTED_DATA_INVALID),
+                Ok(o) => unsafe { emit(false, h, op, &o.0, out, out_len) },
+                Err(rv) => op.end(rv),
             }
         }
         CCM | GCM => {
@@ -1014,7 +1023,7 @@ unsafe fn decrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, enc: &[u
                 return op.end(KEY_SIZE_RANGE);
             };
             let mut x = or_end!(op, Cipher::new());
-            let mut o = Secret::zeroed(ct + 16);
+            let mut o = or_end!(op, Secret::zeroed(ct + 16));
             match aead_open(gcm, &mut x, c, op, kv, enc, &mut o.0) {
                 Ok(len) => {
                     o.0.truncate(len);
@@ -1163,7 +1172,7 @@ unsafe fn update(enc: bool, h: c_ulong, inp: *const u8, n: c_ulong, out: *mut u8
         // decrypt_update_exact_len: what this update would write, from a copy of the context
         let x = op.ctx.as_ref().expect("made above");
         let exact = x.try_clone().and_then(|mut p| {
-            let mut o = Secret::zeroed(need.max(1));
+            let mut o = Secret::zeroed(need.max(1))?;
             // SAFETY: o has room for the input plus a block; inp readable
             unsafe { p.update(false, o.0.as_mut_ptr(), inp.as_ptr(), inp.len()) }.ok_or(FUNCTION_FAILED)
         });
@@ -1280,7 +1289,7 @@ pub unsafe extern "C" fn pqhsm_C_DecryptFinal(h: c_ulong, out: *mut u8, out_len:
         // decrypt_final_exact_len, from a copy of the context
         let x = op.ctx.as_ref().expect("made above");
         let exact = x.try_clone().and_then(|mut p| {
-            let mut o = Secret::zeroed(bound);
+            let mut o = Secret::zeroed(bound)?;
             // SAFETY: o holds a block
             unsafe { p.finish(false, o.0.as_mut_ptr()) }.ok_or(ENCRYPTED_DATA_INVALID)
         });

@@ -219,7 +219,12 @@ pub unsafe extern "C" fn pqhsm_C_Login(
     );
     // DIV-001: a login that cannot be recorded does not stand
     if rv == OK && a.is_err() {
+        let tok = TABLE.token(h);
         let _ = TABLE.logout(h);
+        // DIV-050: an operation another thread began on the user's key in the meantime ends.
+        if let Some(t) = tok {
+            super::crypt::end_private(t);
+        }
     }
     audited(rv, a).into()
 }

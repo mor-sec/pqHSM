@@ -240,6 +240,19 @@ static void div_050(void) {
     want("encrypt after the logout", CALL(C_Encrypt, h, pt, 16UL, ct, &out), 0x91);
     want("login so for the session key", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
     want("so encryptinit the session key", CALL(C_EncryptInit, h, &ecb, sk), 0x60);
+    /* The logout ends the operations of every session on the token, decryptions in parts too. */
+    UL h2 = 0, n2 = 64;
+    want("logout so for the sessions", CALL(C_Logout, h), 0);
+    want("login user for the sessions", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("open a second session", CALL(C_OpenSession, 0UL, 6UL, NULL, NULL, &h2), 0);
+    want("encryptinit in the second", CALL(C_EncryptInit, h2, &ecb, sk), 0);
+    want("decryptinit in the first", CALL(C_DecryptInit, h, &ecb, sk), 0);
+    want("decryptupdate before the logout", CALL(C_DecryptUpdate, h, pt, 16UL, ct, &n2), 0);
+    want("logout in the first", CALL(C_Logout, h), 0);
+    n2 = 64;
+    want("the second's encryption ended", CALL(C_EncryptUpdate, h2, pt, 16UL, ct, &n2), 0x91);
+    n2 = 64;
+    want("the first's decryption ended", CALL(C_DecryptUpdate, h, pt, 16UL, ct, &n2), 0x91);
     CALL(C_Finalize, NULL);
 }
 
@@ -325,6 +338,21 @@ static void fail_audit(void) {
  * CKR_DEVICE_ERROR (0x30). C discarded the audit result, so each returns 0x0. One process per
  * case: the first failed write latches ERROR. */
 static void div_001_case(int which) {
+    if (which == 5) {
+        /* A failing single-part call writes nothing either: CBC-PAD over bad padding (the last
+         * plaintext byte is 0). C left the first block's plaintext in the buffer. */
+        UL hs, k = user_key(&hs, 16), out = 64;
+        unsigned char iv[16] = { 7 }, pt[32] = { 0 }, ct[64], got[64];
+        struct { UL m; void *p; UL len; } cbc = { 0x1082, iv, 16 }, pad = { 0x1085, iv, 16 };
+        want("encryptinit cbc", CALL(C_EncryptInit, hs, &cbc, k), 0);
+        want("encrypt cbc", CALL(C_Encrypt, hs, pt, 32UL, ct, &out), 0);
+        memset(got, 0xAA, sizeof got);
+        out = 64;
+        want("decryptinit cbc-pad", CALL(C_DecryptInit, hs, &pad, k), 0);
+        want("decrypt, bad padding", CALL(C_Decrypt, hs, ct, 32UL, got, &out), 0x40);
+        want("nothing written on the failure", got[0] == 0xAA && got[15] == 0xAA, 1);
+        return;
+    }
     if (which == 4) {
         /* Slice 4: a C_Encrypt that cannot be audited writes nothing. */
         UL hs, k = user_key(&hs, 16), out = 64;
@@ -363,7 +391,7 @@ static void div_001_case(int which) {
 
 static void div_001(void) {
     const char *base = getenv("FHSM_TOKENS_DIR");
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 6; ++i) {
         char d[700];
         snprintf(d, sizeof d, "%s/%d", base, i);
         mkdir(d, 0700);

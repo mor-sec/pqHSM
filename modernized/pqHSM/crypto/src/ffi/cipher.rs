@@ -280,7 +280,7 @@ impl PkeyCtx {
             let fetch = |n: Option<&CStr>| n.map_or(null_mut(), |n| EVP_MD_fetch(null_mut(), n.as_ptr(), null()));
             let (h, g) = (fetch(md), fetch(mgf));
             let r = if h.is_null() || g.is_null() {
-                Err(0x71) // CKR_MECHANISM_PARAM_INVALID
+                Err(rv::MECHANISM_PARAM_INVALID)
             } else if EVP_PKEY_CTX_set_rsa_oaep_md(c.ctx.0, h) <= 0
                 || EVP_PKEY_CTX_set_rsa_mgf1_md(c.ctx.0, g) <= 0
             {

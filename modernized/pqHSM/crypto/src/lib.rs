@@ -25,6 +25,7 @@ pub mod rv {
     pub const ENCRYPTED_DATA_INVALID: u32 = 0x40;
     pub const KEY_SIZE_RANGE: u32 = 0x62;
     pub const MECHANISM_INVALID: u32 = 0x70;
+    pub const MECHANISM_PARAM_INVALID: u32 = 0x71;
     pub const KAT_FAILED: u32 = 0x8000_0001;
     pub const INTEGRITY_FAILED: u32 = 0x8000_0002;
     pub const FIPS_NOT_APPROVED: u32 = 0x8000_0003;
