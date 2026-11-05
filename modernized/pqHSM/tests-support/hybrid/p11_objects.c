@@ -374,7 +374,11 @@ static void s_copy(void) {
     Attr nc[] = { AT(0x0, c_secret), AT(0x100, k_aes), AT(0x1, T), AT(0x11, key16),
                   AT(0x171, Fb) };
     UL nocopy = create(h, "create uncopyable", nc, 5);
-    static const UL show[] = { 0x1, 0x3, 0x103, 0x104, 0x108, 0x162, 0x170, 0x171, 0x40000600 };
+    Attr dt[] = { AT(0x0, c_secret), AT(0x100, k_aes), AT(0x1, T), AT(0x11, key16),
+                  AB(0x110, "20260101", 8), AB(0x10, "app", 3) };
+    UL dated = create(h, "create dated", dt, 6);
+    static const UL show[] = { 0x1, 0x3, 0x10, 0x86, 0x102, 0x103, 0x104, 0x108, 0x110, 0x111,
+                               0x162, 0x170, 0x171, 0x172, 0x634, 0x40000600 };
 #define CP(label, from, ...) do { Attr t_[] = { __VA_ARGS__ }; UL o_ = 0xAAAA; \
         UL rv_ = P11(C_CopyObject, h, from, t_, sizeof t_ / sizeof t_[0], &o_); \
         row(label, rv_, o_, NULL, 0, 0); \
@@ -394,6 +398,26 @@ static void s_copy(void) {
     { Attr inner[] = { AT(0x108, T) };
       CP("copy wrap template", src, AB(0x40000211, inner, sizeof inner)); }
     CP("copy uncopyable", nocopy, AB(0x3, "x", 1));
+    CP("copy extractable false", src, AT(0x162, Fb));
+    CP("copy id", src, AB(0x102, "ab", 2));
+    CP("copy id 33", src, AB(0x102, "0123456789abcdef0123456789abcdef!", 33));
+    CP("copy unknown attribute", src, AB(0x7FFFFFF0, "x", 1));
+    CP("copy unmodifiable undestroyable", src, AT(0x170, Fb), AT(0x172, Fb));
+    CP("copy made uncopyable", src, AT(0x171, Fb));
+    CP("copy token long", src, AB(0x1, &mech, sizeof mech));
+    CP("copy trusted by user", src, AT(0x86, T));
+    CP("copy decapsulate false", src, AT(0x634, Fb));
+    CP("copy mechs odd length", src, AB(0x40000600, &mech, 3));
+    CP("copy dated plain", dated, AB(0x3, "d", 1));
+    CP("copy dated new dates", dated, AB(0x111, "20271231", 8), AB(0x10, "", 0));
+    CP("copy bad date", src, AB(0x110, "20261301", 8));
+    CP("copy long application", src, AB(0x10, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef!", 65));
+    { Attr inner[] = { AT(0x1, T) };
+      CP("copy wrap template unsupported", src, AB(0x40000211, inner, sizeof inner)); }
+    { Attr inner[] = { AT(0x108, T), AT(0x108, T), AT(0x108, T), AT(0x108, T), AT(0x108, T) };
+      CP("copy unwrap template 5", src, AB(0x40000212, inner, sizeof inner)); }
+    { Attr inner[] = { AT(0x108, T) };
+      CP("copy derive template", src, AB(0x40000213, inner, sizeof inner)); }
     CP("copy bad handle", 999UL, AB(0x3, "x", 1));
     { UL o = 0xAAAA;
       row("copy null out", P11(C_CopyObject, h, src, NULL, 0UL, NULL), o, NULL, 0, 0);

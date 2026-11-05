@@ -21,26 +21,26 @@ use super::sys::*;
 const UNAVAILABLE: c_ulong = c_ulong::MAX;
 const BUFFER_TOO_SMALL: u32 = 0x150;
 const ATTRIBUTE_SENSITIVE: u32 = 0x11;
-const ATTRIBUTE_TYPE_INVALID: u32 = 0x12;
-const ATTRIBUTE_READ_ONLY: u32 = 0x10;
+pub(super) const ATTRIBUTE_TYPE_INVALID: u32 = 0x12;
+pub(super) const ATTRIBUTE_READ_ONLY: u32 = 0x10;
 
 const CKO_DATA: u32 = 0;
 const CKO_CERTIFICATE: u32 = 1;
-const CKO_PUBLIC_KEY: u32 = 2;
+pub(super) const CKO_PUBLIC_KEY: u32 = 2;
 const CKK_ML_KEM: u32 = 0x49;
 const CKK_ML_DSA: u32 = 0x4A;
 
-const CKA_TOKEN: c_ulong = 0x1;
-const CKA_PRIVATE: c_ulong = 0x2;
-const CKA_APPLICATION: c_ulong = 0x10;
-const CKA_VALUE: c_ulong = 0x11;
+pub(super) const CKA_TOKEN: c_ulong = 0x1;
+pub(super) const CKA_PRIVATE: c_ulong = 0x2;
+pub(super) const CKA_APPLICATION: c_ulong = 0x10;
+pub(super) const CKA_VALUE: c_ulong = 0x11;
 const CKA_CERTIFICATE_TYPE: c_ulong = 0x80;
 const CKA_ISSUER: c_ulong = 0x81;
 const CKA_SERIAL_NUMBER: c_ulong = 0x82;
-const CKA_TRUSTED: c_ulong = 0x86;
-const CKA_KEY_TYPE: c_ulong = 0x100;
+pub(super) const CKA_TRUSTED: c_ulong = 0x86;
+pub(super) const CKA_KEY_TYPE: c_ulong = 0x100;
 const CKA_SUBJECT: c_ulong = 0x101;
-const CKA_SENSITIVE: c_ulong = 0x103;
+pub(super) const CKA_SENSITIVE: c_ulong = 0x103;
 const CKA_ENCRYPT: c_ulong = 0x104;
 const CKA_DECRYPT: c_ulong = 0x105;
 const CKA_WRAP: c_ulong = 0x106;
@@ -50,40 +50,40 @@ const CKA_SIGN_RECOVER: c_ulong = 0x109;
 const CKA_VERIFY: c_ulong = 0x10A;
 const CKA_VERIFY_RECOVER: c_ulong = 0x10B;
 const CKA_DERIVE: c_ulong = 0x10C;
-const CKA_START_DATE: c_ulong = 0x110;
-const CKA_END_DATE: c_ulong = 0x111;
+pub(super) const CKA_START_DATE: c_ulong = 0x110;
+pub(super) const CKA_END_DATE: c_ulong = 0x111;
 const CKA_MODULUS: c_ulong = 0x120;
 const CKA_MODULUS_BITS: c_ulong = 0x121;
 const CKA_PUBLIC_EXPONENT: c_ulong = 0x122;
-const CKA_VALUE_LEN: c_ulong = 0x161;
-const CKA_EXTRACTABLE: c_ulong = 0x162;
+pub(super) const CKA_VALUE_LEN: c_ulong = 0x161;
+pub(super) const CKA_EXTRACTABLE: c_ulong = 0x162;
 const CKA_LOCAL: c_ulong = 0x163;
 const CKA_NEVER_EXTRACTABLE: c_ulong = 0x164;
 const CKA_ALWAYS_SENSITIVE: c_ulong = 0x165;
-const CKA_MODIFIABLE: c_ulong = 0x170;
-const CKA_COPYABLE: c_ulong = 0x171;
-const CKA_DESTROYABLE: c_ulong = 0x172;
+pub(super) const CKA_MODIFIABLE: c_ulong = 0x170;
+pub(super) const CKA_COPYABLE: c_ulong = 0x171;
+pub(super) const CKA_DESTROYABLE: c_ulong = 0x172;
 const CKA_EC_PARAMS: c_ulong = 0x180;
 const CKA_EC_POINT: c_ulong = 0x181;
 const CKA_ALWAYS_AUTHENTICATE: c_ulong = 0x202;
 const CKA_WRAP_WITH_TRUSTED: c_ulong = 0x210;
 const CKA_PARAMETER_SET: c_ulong = 0x61D;
-const CKA_ENCAPSULATE: c_ulong = 0x633;
-const CKA_DECAPSULATE: c_ulong = 0x634;
-const CKA_WRAP_TEMPLATE: c_ulong = 0x4000_0211;
-const CKA_UNWRAP_TEMPLATE: c_ulong = 0x4000_0212;
-const CKA_DERIVE_TEMPLATE: c_ulong = 0x4000_0213;
-const CKA_ALLOWED_MECHANISMS: c_ulong = 0x4000_0600;
+pub(super) const CKA_ENCAPSULATE: c_ulong = 0x633;
+pub(super) const CKA_DECAPSULATE: c_ulong = 0x634;
+pub(super) const CKA_WRAP_TEMPLATE: c_ulong = 0x4000_0211;
+pub(super) const CKA_UNWRAP_TEMPLATE: c_ulong = 0x4000_0212;
+pub(super) const CKA_DERIVE_TEMPLATE: c_ulong = 0x4000_0213;
+pub(super) const CKA_ALLOWED_MECHANISMS: c_ulong = 0x4000_0600;
 
-const OBJF_SENSITIVE: u8 = 0x01;
-const OBJF_EXTRACTABLE: u8 = 0x02;
-const OBJF_UNMODIFIABLE: u8 = 0x04;
+pub(super) const OBJF_SENSITIVE: u8 = 0x01;
+pub(super) const OBJF_EXTRACTABLE: u8 = 0x02;
+pub(super) const OBJF_UNMODIFIABLE: u8 = 0x04;
 const OBJF_LOCAL: u8 = 0x10;
 const OBJF_ALWAYS_AUTH: u8 = 0x20;
 const OBJF_TRUSTED: u8 = 0x40;
-const OBJF2_NO_ENCAPSULATE: u8 = 0x01;
-const OBJF2_NO_DECAPSULATE: u8 = 0x02;
-const OBJF2_NOT_COPYABLE: u8 = 0x04;
+pub(super) const OBJF2_NO_ENCAPSULATE: u8 = 0x01;
+pub(super) const OBJF2_NO_DECAPSULATE: u8 = 0x02;
+pub(super) const OBJF2_NOT_COPYABLE: u8 = 0x04;
 const OBJF2_HAS_ALLOWED_MECH: u8 = 0x08;
 const OBJF2_HAS_WRAP_TMPL: u8 = 0x10;
 const OBJF2_HAS_UNWRAP_TMPL: u8 = 0x20;
@@ -97,11 +97,11 @@ const USAGE_WRAP: u8 = 0x10;
 const USAGE_UNWRAP: u8 = 0x20;
 const USAGE_DERIVE: u8 = 0x40;
 const USAGE_VALID: u8 = 0x80;
-const META_START_DATE: c_int = 0;
-const META_END_DATE: c_int = 1;
-const META_APPLICATION: c_int = 2;
-const POLICY_MECH_MAX: usize = 8;
-const POLICY_ATTR_MAX: usize = 4;
+pub(super) const META_START_DATE: c_int = 0;
+pub(super) const META_END_DATE: c_int = 1;
+pub(super) const META_APPLICATION: c_int = 2;
+pub(super) const POLICY_MECH_MAX: usize = 8;
+pub(super) const POLICY_ATTR_MAX: usize = 4;
 /// ML-DSA-87's raw public key, the largest of the six (C's `pqc_raw`).
 const PQC_RAW_MAX: usize = 2592;
 
@@ -109,10 +109,10 @@ const PQC_RAW_MAX: usize = 2592;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PolicyAttr {
-    kind_: u32,
-    kind: u8,
-    len: u8,
-    value: [u8; 48],
+    pub(super) kind_: u32,
+    pub(super) kind: u8,
+    pub(super) len: u8,
+    pub(super) value: [u8; 48],
 }
 
 type Getter = unsafe extern "C" fn(*mut fhsm_token_t, u32, *mut u8) -> u32;
@@ -557,7 +557,7 @@ unsafe fn nested(a: &mut Attr, t: *mut fhsm_token_t, o: u32, too_small: &mut boo
 }
 
 /// `fhsm_date_wellformed`: empty, or eight digits with a month and day in range.
-fn date_ok(d: &[u8]) -> bool {
+pub(super) fn date_ok(d: &[u8]) -> bool {
     if d.is_empty() {
         return true;
     }
