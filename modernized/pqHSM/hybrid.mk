@@ -25,7 +25,7 @@
 # Rust symbol out of the module's dynamic symbol table: fhsm_audit_* stay hidden, as in C.
 include Makefile
 # RULE-091: C's per-session operation tables match the Rust session table (core::session::MAX).
-CFLAGS += -DFHSM_MAX_SESSIONS=129
+override CFLAGS += -DFHSM_MAX_SESSIONS=129
 
 PQHSM_DIR  := modernized/pqHSM
 PQHSM_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_module.a

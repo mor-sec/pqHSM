@@ -312,7 +312,7 @@ static void div_060(void) {
  * template may only narrow them. C dropped the usage byte (an ENCRYPT=FALSE key's copy
  * encrypted) and refused every one of these attributes in a copy template as unknown. */
 static void div_056(void) {
-    UL h = fresh(0), ro = 0, k = 0, c = 0, x = 0xAAAA, cls = 4, kt = 0x1f, mech = 0x1081;
+    UL h = fresh(0), ro = 0, k = 0, w = 0, c = 0, x = 0xAAAA, cls = 4, kt = 0x1f, mech = 0x1081;
     UL wide[2] = { 0x1081, 0x1082 };
     unsigned char yes = 1, no = 0, key[16] = { 1 }, got = 0xAA;
     struct { UL type; void *p; UL len; } t[] = {
@@ -335,6 +335,15 @@ static void div_056(void) {
     want("a copy may narrow DECRYPT", CALL(C_CopyObject, h, k, &decrypt, 1UL, &c), 0);
     want("read DECRYPT", CALL(C_GetAttributeValue, h, c, &ask, 1UL), 0);
     want("DECRYPT is FALSE", got, 0);
+    /* The source's wrap template goes with the copy: one row, read back by length. */
+    struct { UL type; void *p; UL len; } extr = { 0x162, &yes, 1 }, wt[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x011, key, sizeof key },
+        { 0x40000211, &extr, sizeof extr },
+    }, rd = { 0x40000211, NULL, 0 };
+    want("create a key with a wrap template", CALL(C_CreateObject, h, wt, 4UL, &w), 0);
+    want("copy it", CALL(C_CopyObject, h, w, &label, 1UL, &c), 0);
+    want("read the copy's wrap template", CALL(C_GetAttributeValue, h, c, &rd, 1UL), 0);
+    want("the copy's wrap template has one row", rd.len, sizeof extr);
     want("open read-only", CALL(C_OpenSession, 0UL, 4UL, NULL, NULL, &ro), 0);
     want("an inherited token copy from read-only", CALL(C_CopyObject, ro, k, &label, 1UL, &x), 0xB5);
     CALL(C_Finalize, NULL);
@@ -423,6 +432,9 @@ static void rule_059(void) {
     want("copy ALWAYS_SENSITIVE", hist(h, c, 0x165), 0);
     want("copy NEVER_EXTRACTABLE", hist(h, c, 0x164), 0);
     want("copy SENSITIVE", hist(h, c, 0x103), 1);
+    want("copy the locked key as it is", CALL(C_CopyObject, h, k, NULL, 0UL, &c), 0);
+    want("plain copy ALWAYS_SENSITIVE", hist(h, c, 0x165), 0);
+    want("plain copy NEVER_EXTRACTABLE", hist(h, c, 0x164), 0);
     CALL(C_Finalize, NULL);
 }
 

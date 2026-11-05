@@ -551,45 +551,55 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
             return Err(undo(r));
         }
     }
-    let mut pf = 0u8;
+    // Each flags byte is worked out whole and written once, checked: a copy that would lose a
+    // restriction or its history is undone, not returned.
+    let (mut pf_now, mut f2_now, mut f3_now, mut src_f2, mut src_f3) = (0u8, 0u8, 0u8, 0u8, 0u8);
     // SAFETY: as above
-    if unsafe { fhsm_token_object_get_flags(tok, new, &mut pf) } == OK {
-        if bbool(t, CKA_MODIFIABLE) == Some(false) {
-            pf |= OBJF_UNMODIFIABLE;
-        }
-        if bbool(t, CKA_DESTROYABLE) == Some(false) {
-            pf |= OBJF_UNDESTROYABLE;
-        }
-        // SAFETY: as above
-        unsafe { fhsm_token_object_set_flags(tok, new, pf) };
+    let r = unsafe { fhsm_token_object_get_flags(tok, new, &mut pf_now) };
+    if r != OK {
+        return Err(undo(r));
     }
-    if bbool(t, CKA_COPYABLE) == Some(false) {
-        let mut cf2 = 0u8;
-        // SAFETY: as above
-        unsafe { fhsm_token_object_get_flags2(tok, new, &mut cf2) };
-        // SAFETY: as above
-        unsafe { fhsm_token_object_set_flags2(tok, new, cf2 | OBJF2_NOT_COPYABLE) };
+    // SAFETY: as above
+    unsafe {
+        fhsm_token_object_get_flags2(tok, new, &mut f2_now);
+        fhsm_token_object_get_flags3(tok, new, &mut f3_now);
+        fhsm_token_object_get_flags2(tok, o, &mut src_f2);
+        fhsm_token_object_get_flags3(tok, o, &mut src_f3);
+    }
+    let mut pf = pf_now;
+    if bbool(t, CKA_MODIFIABLE) == Some(false) {
+        pf |= OBJF_UNMODIFIABLE;
+    }
+    if bbool(t, CKA_DESTROYABLE) == Some(false) {
+        pf |= OBJF_UNDESTROYABLE;
     }
     // DIV-060: the source's restrictions are added to the copy's. C replaced the copy's
     // byte, so a copy asked to be uncopyable came out copyable from a restricted source.
-    let mut b = 0u8;
-    // SAFETY: as above
-    if unsafe { fhsm_token_object_get_flags2(tok, o, &mut b) } == OK && b != 0 {
-        let mut cf2 = 0u8;
-        // SAFETY: as above
-        unsafe { fhsm_token_object_get_flags2(tok, new, &mut cf2) };
-        // SAFETY: as above
-        unsafe { fhsm_token_object_set_flags2(tok, new, cf2 | b) };
+    let mut f2 = f2_now | src_f2;
+    if bbool(t, CKA_COPYABLE) == Some(false) {
+        f2 |= OBJF2_NOT_COPYABLE;
     }
     // The third byte describes the key, not a restriction on it; a copy is the same key, with
     // the history its own SENSITIVE and EXTRACTABLE add (RULE-059).
-    b = 0;
-    // SAFETY: as above
-    unsafe { fhsm_token_object_get_flags3(tok, o, &mut b) };
-    b |= history(src_flags, flags);
-    if b != 0 {
+    let f3 = f3_now | src_f3 | history(src_flags, flags);
+    type Set = unsafe extern "C" fn(*mut fhsm_token_t, u32, u8) -> u32;
+    let put = |now: u8, want: u8, set: Set| {
         // SAFETY: as above
-        unsafe { fhsm_token_object_set_flags3(tok, new, b) };
+        if want == now {
+            OK
+        } else {
+            unsafe { set(tok, new, want) }
+        }
+    };
+    let mut r = put(f3_now, f3, fhsm_token_object_set_flags3);
+    if r == OK {
+        r = put(f2_now, f2, fhsm_token_object_set_flags2);
+    }
+    if r == OK {
+        r = put(pf_now, pf, fhsm_token_object_set_flags);
+    }
+    if r != OK {
+        return Err(undo(r));
     }
     let (mut cp, mut cl, mut cc, mut ck) = (null(), 0usize, 0u32, 0u32);
     // SAFETY: as above
@@ -626,7 +636,10 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
         let arg = |i: usize| got[i].map_or((null(), 0), |l| (bufs[i].as_ptr(), l));
         let [s, e, a] = [arg(0), arg(1), arg(2)];
         // SAFETY: as above; a NULL pointer leaves that field
-        unsafe { fhsm_token_object_set_meta(tok, new, s.0, s.1, e.0, e.1, a.0, a.1) };
+        let r = unsafe { fhsm_token_object_set_meta(tok, new, s.0, s.1, e.0, e.1, a.0, a.1) };
+        if r != OK {
+            return Err(undo(r));
+        }
     }
     let r = apply_obj_meta(tok, t, new);
     if r != OK {
