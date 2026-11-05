@@ -1,6 +1,6 @@
 # Phase 4 plan: PKCS#11 API layer, lifecycle and sessions
 
-Status: **APPROVED 2026-11-03** (user: "I approve the plan"; drafted after "continue with recommended approach"). §5 item 2 decided 2026-11-03 (DIV-053 "Status calls only", DIV-054 "Re-wrap only", DIV-059 "8 everywhere", table "Approve as drafted"). Item 3, the contract-test tools, is still open; it is needed from slice 5.
+Status: **APPROVED 2026-11-03** (user: "I approve the plan"; drafted after "continue with recommended approach"). §5 item 2 decided 2026-11-03 (DIV-053 "Status calls only", DIV-054 "Re-wrap only", DIV-059 "8 everywhere", table "Approve as drafted"). Item 3, the contract-test tools, decided 2026-11-06 (user: "Fetch once (Recommended)"): opensc 0.26.1-2 (pkcs11-tool), pkcs11-provider 1.0-3 and p11-kit 0.25.5-3, with the four packages the image lacks for them, fetched once from the image's Debian snapshot into `netcache/debs` (git-ignored; checksums in `netcache/debs.sha256`) and installed offline with `dpkg -i` (checked with `--network=none`).
 Brief: `MODERNIZATION_BRIEF.md` Phase 4. Entry criteria: Phase 3 exit met and Q12–Q17 ticked (2026-11-03). Still open: the `DIVERGENCES.md` decisions (drafted, § Phase 4; four parts await the user, §5 below), and the pilot slice, which is slice 1 here.
 Method: `/modernize-transform`, slice by slice, as in Phases 2 and 3: characterisation goldens from the C, the Rust implementation behind the same ABI, the C object emptied in `hybrid.mk`, a harness run, then a review.
 
