@@ -206,12 +206,29 @@ static void div_050(void) {
     want("logout user again", CALL(C_Logout, h), 0);
     want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
     struct { UL type; void *p; UL len; } relabel = { 0x3 /* CKA_LABEL */, (void *)"so's", 4 };
+    /* Nor digest it: the key is not sensitive, so C digests it for the SO. */
+    struct { UL m; void *p; UL len; } sha256 = { 0x250, NULL, 0 };
+    want("so digestinit", CALL(C_DigestInit, h, &sha256), 0);
+    want("so digests the user's key", CALL(C_DigestKey, h, k), 0x60);
+    out = sizeof ct; /* a refusal does not end the digest (as C); end it */
+    want("so digestfinal", CALL(C_DigestFinal, h, ct, &out), 0);
     /* Before the destroy, so on C the key is still there to relabel. */
     want("so relabels the user's key", CALL(C_SetAttributeValue, h, k, &relabel, 1UL), 0x82);
     want("so destroys the user's key", CALL(C_DestroyObject, h, k), 0x82);
     want("logout so again", CALL(C_Logout, h), 0);
     want("login user a third time", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
     want("the key survived", CALL(C_EncryptInit, h, &ecb, k), 0);
+    /* A private session key stays after logout (the Target keeps it); it is not digested. */
+    unsigned char no = 0;
+    struct { UL type; void *p; UL len; } st[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &no, 1 },
+        { 0x011, key, sizeof key },
+    };
+    UL sk = 0;
+    want("create a session key", CALL(C_CreateObject, h, st, 4UL, &sk), 0);
+    want("logout before the session key's digest", CALL(C_Logout, h), 0);
+    want("digestinit logged out", CALL(C_DigestInit, h, &sha256), 0);
+    want("digest the session key logged out", CALL(C_DigestKey, h, sk), 0x60);
     CALL(C_Finalize, NULL);
 }
 

@@ -11,7 +11,7 @@ use pqhsm_crypto::prim::{Hasher, hash_size, md_available};
 
 use super::apilock::Held;
 use super::attrs::OBJF_SENSITIVE;
-use super::objects::{CKO_SECRET_KEY, gate};
+use super::objects::{CKO_SECRET_KEY, access_denied, class_of, gate};
 use super::session::TABLE;
 use super::sys::*;
 
@@ -93,8 +93,9 @@ impl Dig {
 }
 
 /// One slot per session handle, as C's table; handle 0 and those past the table have none.
-/// shortcut: a fork while another thread holds a slot leaves the child's slot stuck (as the
-/// find state's, review M3); upgrade with the atfork work.
+/// shortcut: a fork while another thread is inside a digest call (up to 2 GiB of hashing) makes
+/// the child's C_Initialize deadlock in `forget_all` (review M1); fix first in the M3 atfork
+/// work: a prepare handler takes every slot in order, parent and child handlers release them.
 static DIGESTS: [Mutex<Dig>; MAX] = [const { Mutex::new(Dig::IDLE) }; MAX];
 
 /// `op_slot(g_op_dig, h)`.
@@ -296,11 +297,16 @@ pub unsafe extern "C" fn pqhsm_C_DigestKey(h: c_ulong, key: c_ulong) -> c_ulong 
     let Some(mut d) = active_slot(h) else {
         return OPERATION_NOT_INITIALIZED.into();
     };
-    let Some(t) = TABLE.token(h) else {
+    let Some(tok) = TABLE.token(h) else {
         return SESSION_HANDLE_INVALID.into();
     };
     // C's narrowing: the token's handles are 32-bit.
-    let (t, k) = (t.0.as_ptr(), key as u32);
+    let (t, k) = (tok.0.as_ptr(), key as u32);
+    // DIV-050: a secret or private key is the user's alone; before anything reads it (C let the
+    // SO digest the user's keys). An object whose lookup fails goes on to C's checks.
+    if class_of(tok, k).is_ok_and(|c| access_denied(tok, c)) {
+        return KEY_HANDLE_INVALID.into();
+    }
     // Digesting a key's value is a use of it, so its allowed mechanisms apply.
     // SAFETY: a token the registry holds
     let rv = unsafe { fhsm_token_object_mech_allowed(t, k, d.mech) };
@@ -323,7 +329,8 @@ pub unsafe extern "C" fn pqhsm_C_DigestKey(h: c_ulong, key: c_ulong) -> c_ulong 
     if class != CKO_SECRET_KEY {
         return KEY_INDIGESTIBLE.into();
     }
-    // SAFETY: the token's value of vl bytes, alive under the API lock
+    // SAFETY: the token's value of vl bytes. Alive for this call: whatever frees a value runs
+    // under the EXCLUSIVE lock, or is parked by apilock.rs until no call is in flight
     d.feed(unsafe { bytes(v, vl) }, false).into()
 }
 

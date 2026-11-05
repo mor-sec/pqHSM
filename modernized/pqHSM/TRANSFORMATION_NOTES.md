@@ -1048,5 +1048,19 @@ Not applied: L1 (copy computes its scope twice, with opposite defaults on a fail
 - **Crypto:** the multipart context is `pqhsm_crypto::prim::Hasher` (EVP, C's lazy-init order and error codes: HOST_MEMORY, then FUNCTION_FAILED), and `md_available` is C's `fhsm_md_available`, both beside `prim::digest`. The one-shot paths call `fhsm_hash_oneshot` through its C ABI, as the C did, which keeps its ERROR check. `pqhsm-p11` now depends on `pqhsm-crypto`.
 - **Kept as C:** `C_Digest` after updates hashes only its own data; its DATA_LEN_RANGE and NULL-data errors end the operation but leave the context for the next `C_DigestInit` to free; a NULL length pointer to `C_Digest` or `C_DigestFinal` does not end it; `C_DigestKey`'s refusals (allowed mechanisms, sensitive, lookup, class) and its failed update do not end it; the key handle is narrowed to 32 bits.
 - **Candidate defect, kept:** PKCS#11 says any error but BUFFER_TOO_SMALL ends a digest; `C_DigestKey`'s refusals and the NULL length pointer do not. No DIV; recorded for a decision.
-- shortcut: as the find state, a fork while another thread holds a digest slot leaves it locked in the child (review M3's atfork work).
+- shortcut: a fork while another thread is inside a digest call makes the child's `C_Initialize` deadlock (it locks every slot to forget it), and a digest call can hash 2 GiB. Worse than the find state's window (review M1); first in M3's atfork work.
 - **Golden:** step 4k identical to C, less the recorded rows, before and after the port. Unit tests: every digest mechanism names a hash of its size; a `Hasher` in parts equals the one-shot.
+
+### DIV-050, the C_DigestKey part
+
+- `C_DigestKey` answers 0x60 for a secret or private key unless the token is logged in as the user, before the allowed-mechanism check and the value read; a key whose lookup fails goes on to C's checks. In C (and the 3b port, which kept it) the SO could digest the user's non-sensitive secret keys, and anyone a private session key after logout: a digest of a key is a test of a guess at it. Found by the automated security review of 3b; decided 2026-11-05 (user: "Fix, under DIV-050 (Recommended)").
+- **Test:** `p11_divs.c` DIV-050, the SO's `C_DigestKey` on the user's key (C 0, hybrid 0x60). The digest golden has no SO scenario, so step 4k is unchanged.
+- **Test** (review M2): `p11_divs.c` DIV-050 also digests a private session key after logout (C 0, hybrid 0x60); the logged-out golden rows use token objects, which logout already unloads.
+
+### Slice 3 review (architecture critic, 2026-11-05)
+
+No HIGH findings. Applied: M1 (the fork shortcut is a deadlock of the child's `C_Initialize`, not a stuck slot; text corrected, first in M3's atfork work), M2 (the session-key test above), L4 (the SAFETY comment on the token value cites apilock.rs's parking).
+Recorded, not applied:
+- **L2:** a digest that has absorbed a key with `C_DigestKey` survives logout, so `C_DigestFinal` gives H(key) afterwards. In scope for DIV-050's "operations under way end at logout" work (slices 4-7).
+- **L1:** golden gaps: handles 128 and 129 on all five calls, a key handle above 32 bits, `*pulDigestLen` on the error paths, a threaded digest test. The build is the strict profile, so SHA-1 and MD5 are only refused, and the provider-missing branch is not reached.
+- **L3:** not observable: on an EVP failure in `C_DigestFinal`, C writes back the length cast to 32 bits; Rust leaves it.
