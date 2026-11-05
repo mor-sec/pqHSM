@@ -394,12 +394,45 @@ static void rule_061(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* RULE-059: ALWAYS_SENSITIVE and NEVER_EXTRACTABLE are history. A key made readable and then
+ * made sensitive and unextractable, by set-attribute or in a copy, was never always sensitive;
+ * C computed both from the current flags and answered TRUE. */
+static UL hist(UL h, UL o, UL type) {
+    unsigned char v = 9;
+    struct { UL type; void *p; UL len; } a = { type, &v, 1 };
+    UL rv = CALL(C_GetAttributeValue, h, o, &a, 1UL);
+    return rv ? 0x100 | rv : v;
+}
+
+static void rule_059(void) {
+    UL h = fresh(0), k = 0, c = 0, cls = 4, kt = 0x1f;
+    unsigned char no = 0, yes = 1, key[16] = { 1 };
+    struct { UL type; void *p; UL len; } t[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x011, key, sizeof key },
+        { 0x103, &no, 1 }, { 0x162, &yes, 1 },
+    }, lock[] = { { 0x103, &yes, 1 }, { 0x162, &no, 1 } };
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    want("logout so", CALL(C_Logout, h), 0);
+    want("login user", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("create a readable key", CALL(C_CreateObject, h, t, 5UL, &k), 0);
+    want("copy it locked", CALL(C_CopyObject, h, k, lock, 2UL, &c), 0);
+    want("lock the key", CALL(C_SetAttributeValue, h, k, lock, 2UL), 0);
+    want("key ALWAYS_SENSITIVE", hist(h, k, 0x165), 0);
+    want("key NEVER_EXTRACTABLE", hist(h, k, 0x164), 0);
+    want("copy ALWAYS_SENSITIVE", hist(h, c, 0x165), 0);
+    want("copy NEVER_EXTRACTABLE", hist(h, c, 0x164), 0);
+    want("copy SENSITIVE", hist(h, c, 0x103), 1);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
     { "DIV-054", div_054 }, { "DIV-050", div_050 }, { "DIV-001", div_001 },
     { "DIV-060", div_060 }, { "DIV-056", div_056 },
     { "RULE-092", rule_092 }, { "RULE-091", rule_091 }, { "RULE-061", rule_061 },
+    { "RULE-059", rule_059 },
 };
 
 int main(int argc, char **argv) {

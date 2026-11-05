@@ -21,7 +21,8 @@ use super::attrs::{
     OBJF_EXTRACTABLE, OBJF_SENSITIVE, OBJF_UNMODIFIABLE, OBJF2_HAS_ALLOWED_MECH,
     OBJF2_HAS_DERIVE_TMPL, OBJF2_HAS_UNWRAP_TMPL, OBJF2_HAS_WRAP_TMPL, OBJF2_NO_DECAPSULATE,
     OBJF2_NO_ENCAPSULATE, OBJF2_NOT_COPYABLE, POLICY_ATTR_MAX, POLICY_MECH_MAX, PolicyAttr,
-    USAGE_VALID, date_ok, fhsm_token_object_get_tmpl, usage_defaults, usage_of,
+    USAGE_VALID, date_ok, fhsm_token_object_get_flags3, fhsm_token_object_get_tmpl,
+    fhsm_token_object_set_flags3, history, usage_defaults, usage_of,
 };
 use super::objects::{
     Attr, CKA_CLASS, CKA_ID, CKA_LABEL, CKF_RW_SESSION, OBJF_UNDESTROYABLE, check_template, gate,
@@ -61,8 +62,6 @@ unsafe extern "C" {
     ) -> u32;
     fn fhsm_token_object_set_usage(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
     fn fhsm_token_object_mark_session(t: *mut fhsm_token_t, h: u32, owner: u32) -> u32;
-    fn fhsm_token_object_get_flags3(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
-    fn fhsm_token_object_set_flags3(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
     fn fhsm_token_object_set_allowed_mechs(
         t: *mut fhsm_token_t,
         h: u32,
@@ -377,6 +376,7 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
     let mut flags = 0u8;
     // SAFETY: as above
     unsafe { fhsm_token_object_get_flags(tok, o, &mut flags) };
+    let src_flags = flags;
     // DIV-056: the source's usage byte and allowed mechanisms, which the template may only
     // narrow. C carried neither, so a CKA_SIGN=FALSE key's copy could sign.
     let mut usage = 0u8;
@@ -581,10 +581,13 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
         // SAFETY: as above
         unsafe { fhsm_token_object_set_flags2(tok, new, cf2 | b) };
     }
-    // The third byte describes the key, not a restriction on it; a copy is the same key.
+    // The third byte describes the key, not a restriction on it; a copy is the same key, with
+    // the history its own SENSITIVE and EXTRACTABLE add (RULE-059).
     b = 0;
     // SAFETY: as above
-    if unsafe { fhsm_token_object_get_flags3(tok, o, &mut b) } == OK && b != 0 {
+    unsafe { fhsm_token_object_get_flags3(tok, o, &mut b) };
+    b |= history(src_flags, flags);
+    if b != 0 {
         // SAFETY: as above
         unsafe { fhsm_token_object_set_flags3(tok, new, b) };
     }

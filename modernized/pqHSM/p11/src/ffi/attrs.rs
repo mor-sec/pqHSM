@@ -77,6 +77,25 @@ pub(super) const CKA_ALLOWED_MECHANISMS: c_ulong = 0x4000_0600;
 
 pub(super) const OBJF_SENSITIVE: u8 = 0x01;
 pub(super) const OBJF_EXTRACTABLE: u8 = 0x02;
+// RULE-059: history in the third flags byte (0x01 is FHSM_OBJF3_ED_CURVE_NAME). Clear in every
+// record written before them, which reads as before: the history is the current flags.
+/// The key was once not sensitive.
+pub(super) const OBJF3_WAS_NOT_SENSITIVE: u8 = 0x02;
+/// The key was once extractable.
+pub(super) const OBJF3_WAS_EXTRACTABLE: u8 = 0x04;
+
+/// The history bits a flags change from `before` to `after` must record: SENSITIVE turned on,
+/// EXTRACTABLE turned off. The reverse moves are refused, so these are the only losses.
+pub(super) fn history(before: u8, after: u8) -> u8 {
+    let mut h = 0;
+    if before & OBJF_SENSITIVE == 0 && after & OBJF_SENSITIVE != 0 {
+        h |= OBJF3_WAS_NOT_SENSITIVE;
+    }
+    if before & OBJF_EXTRACTABLE != 0 && after & OBJF_EXTRACTABLE == 0 {
+        h |= OBJF3_WAS_EXTRACTABLE;
+    }
+    h
+}
 pub(super) const OBJF_UNMODIFIABLE: u8 = 0x04;
 const OBJF_LOCAL: u8 = 0x10;
 const OBJF_ALWAYS_AUTH: u8 = 0x20;
@@ -141,6 +160,8 @@ unsafe extern "C" {
         sel: *mut c_ulong,
     ) -> c_int;
     fn pqhsm_c_pqc_raw_pub(v: *const u8, n: usize, out: *mut u8, out_len: *mut usize) -> c_int;
+    pub(super) fn fhsm_token_object_get_flags3(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
+    pub(super) fn fhsm_token_object_set_flags3(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
     pub(super) fn fhsm_token_object_get_tmpl(
         t: *mut fhsm_token_t,
         h: u32,
@@ -441,6 +462,7 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
             | CKA_ALWAYS_SENSITIVE
             | CKA_NEVER_EXTRACTABLE => {
                 let (_, of) = flags_of(t, o, fhsm_token_object_get_flags);
+                let (_, f3) = flags_of(t, o, fhsm_token_object_get_flags3);
                 let set = |bit: u8| of & bit != 0;
                 b = [u8::from(match a.kind {
                     CKA_MODIFIABLE => !set(OBJF_UNMODIFIABLE),
@@ -448,8 +470,11 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
                     CKA_LOCAL => set(OBJF_LOCAL),
                     CKA_ALWAYS_AUTHENTICATE => set(OBJF_ALWAYS_AUTH),
                     CKA_TRUSTED => set(OBJF_TRUSTED),
-                    CKA_ALWAYS_SENSITIVE => set(OBJF_SENSITIVE),
-                    _ => !set(OBJF_EXTRACTABLE), // CKA_NEVER_EXTRACTABLE
+                    CKA_ALWAYS_SENSITIVE => {
+                        set(OBJF_SENSITIVE) && f3 & OBJF3_WAS_NOT_SENSITIVE == 0
+                    }
+                    // CKA_NEVER_EXTRACTABLE
+                    _ => !set(OBJF_EXTRACTABLE) && f3 & OBJF3_WAS_EXTRACTABLE == 0,
                 })];
                 &b
             }
@@ -778,6 +803,16 @@ unsafe fn set(h: c_ulong, t: *mut fhsm_token_t, o: u32, tmpl: &[Attr]) -> u32 {
             return r;
         }
     }
+    let was = history(flags_now, flags);
+    if was != 0 {
+        // Before the flags, so a failed write cannot leave the key looking always sensitive.
+        let (_, f3) = flags_of(t, o, fhsm_token_object_get_flags3);
+        // SAFETY: as above
+        let r = unsafe { fhsm_token_object_set_flags3(t, o, f3 | was) };
+        if r != OK {
+            return r;
+        }
+    }
     if flags != flags_now {
         // SAFETY: as above
         let r = unsafe { fhsm_token_object_set_flags(t, o, flags) };
@@ -812,6 +847,20 @@ mod tests {
         assert!(!date_ok(b"20260100"));
         assert!(!date_ok(b"2026010"));
         assert!(!date_ok(b"2026a101"));
+    }
+
+    #[test]
+    fn history_records_only_the_one_way_moves() {
+        let (s, x) = (OBJF_SENSITIVE, OBJF_EXTRACTABLE);
+        assert_eq!(history(0, s), OBJF3_WAS_NOT_SENSITIVE);
+        assert_eq!(history(x, 0), OBJF3_WAS_EXTRACTABLE);
+        assert_eq!(
+            history(x, s),
+            OBJF3_WAS_NOT_SENSITIVE | OBJF3_WAS_EXTRACTABLE
+        );
+        assert_eq!(history(s, s), 0);
+        assert_eq!(history(0, 0), 0);
+        assert_eq!(history(s | x, s | x), 0);
     }
 
     #[test]
