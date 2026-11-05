@@ -998,3 +998,9 @@ Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against 
 ### DIV-060, a copy keeps its restrictions
 
 - `copy.rs` ORs the source's flags2 into the copy's instead of replacing it. Test `p11_divs.c` DIV-060 (C fails, Rust passes); step 4i's sed records the one golden row (`copy made uncopyable attr 0x171`, 01→00).
+
+### DIV-056, a copy keeps its source's usage and policy
+
+- `copy.rs` reads the source's usage byte and mechanism list before the override template, and writes them, with the three nested templates, to the copy after the add. The template may narrow: a usage attribute TRUE→FALSE (`attrs.rs`'s `usage_of` and `usage_defaults`, shared with get-attribute), or a mechanism list that is a subset of the source's. Widening is 0x10, a nested template 0xD1. A copy inheriting CKA_TOKEN from a token object needs a read-write session (0xB5), checked before CKA_COPYABLE.
+- Step 4i's recorded rows moved from inline `sed -e` into `tests-support/hybrid/p11_objects_expect.sed`, one commented block per DIV. DIV-056's 74 lines: SIGN FALSE and the list carried on every copy of the source, the new codes, the narrowing copy's 16 attribute rows, and the handles of the copies after it, each one more.
+- `apply_nested_all` has no caller now (copy refuses nested templates); kept, marked, for slice 6.

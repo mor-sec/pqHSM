@@ -272,7 +272,7 @@ done >> /out/div_tests.txt
 # 4i. Phase 4 slice 2: p11_objects.c drives the nine object entry points (create, copy,
 #     destroy, get/set attribute, size, find) over every attribute of every kind of object;
 #     randomly drawn bytes print as their length. C and hybrid must print the same, less the
-#     recorded rows: DIV-050, the SO cannot destroy the user's key (exact rows, nothing else).
+#     recorded rows in p11_objects_expect.sed (DIV-050, 056, 060; exact rows, nothing else).
 cc -std=gnu17 -o /tmp/p11_objects modernized/pqHSM/tests-support/hybrid/p11_objects.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
@@ -283,9 +283,7 @@ done
 printf 'p11 objects: C %s, hybrid %s, %s rows, %s' "$(tail -1 /out/p11_objects_c.txt)" \
   "$(tail -1 /out/p11_objects_hybrid.txt)" "$(grep -c "$(printf '\t')" /out/p11_objects_c.txt)" \
   "$(pl_same /out/p11_objects_c.txt /out/p11_objects_hybrid.txt)" > /out/p11_objects.txt
-sed -e 's/^so destroy key\t0\t0\t-$/so destroy key\t0x82\t0\t-/' \
-    -e 's/^find after destroys found\t0\t0x2\t3,5$/find after destroys found\t0\t0x3\t4,5,3/' \
-    -e 's/^copy made uncopyable attr 0x171\t0\t0x1\t01$/copy made uncopyable attr 0x171\t0\t0x1\t00/' \
+sed -f modernized/pqHSM/tests-support/hybrid/p11_objects_expect.sed \
   /out/p11_objects_c.txt > /out/p11_objects_c_expect.txt
 printf ', less recorded DIVs %s' \
   "$(pl_same /out/p11_objects_c_expect.txt /out/p11_objects_hybrid.txt)" >> /out/p11_objects.txt

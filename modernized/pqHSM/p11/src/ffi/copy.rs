@@ -18,9 +18,10 @@ use super::attrs::{
     CKA_END_DATE, CKA_EXTRACTABLE, CKA_KEY_TYPE, CKA_MODIFIABLE, CKA_PRIVATE, CKA_SENSITIVE,
     CKA_START_DATE, CKA_TOKEN, CKA_TRUSTED, CKA_UNWRAP_TEMPLATE, CKA_VALUE, CKA_VALUE_LEN,
     CKA_WRAP_TEMPLATE, CKO_PUBLIC_KEY, META_APPLICATION, META_END_DATE, META_START_DATE,
-    OBJF_EXTRACTABLE, OBJF_SENSITIVE, OBJF_UNMODIFIABLE, OBJF2_NO_DECAPSULATE,
+    OBJF_EXTRACTABLE, OBJF_SENSITIVE, OBJF_UNMODIFIABLE, OBJF2_HAS_ALLOWED_MECH,
+    OBJF2_HAS_DERIVE_TMPL, OBJF2_HAS_UNWRAP_TMPL, OBJF2_HAS_WRAP_TMPL, OBJF2_NO_DECAPSULATE,
     OBJF2_NO_ENCAPSULATE, OBJF2_NOT_COPYABLE, POLICY_ATTR_MAX, POLICY_MECH_MAX, PolicyAttr,
-    date_ok,
+    USAGE_VALID, date_ok, fhsm_token_object_get_tmpl, usage_defaults, usage_of,
 };
 use super::objects::{
     Attr, CKA_CLASS, CKA_ID, CKA_LABEL, CKF_RW_SESSION, OBJF_UNDESTROYABLE, check_template, gate,
@@ -58,6 +59,7 @@ unsafe extern "C" {
         flags: u8,
         out: *mut u32,
     ) -> u32;
+    fn fhsm_token_object_set_usage(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
     fn fhsm_token_object_mark_session(t: *mut fhsm_token_t, h: u32, owner: u32) -> u32;
     fn fhsm_token_object_get_flags3(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
     fn fhsm_token_object_set_flags3(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
@@ -211,6 +213,9 @@ fn apply_nested_tmpl(
 }
 
 /// The three nested templates, in C's order: unwrap, derive, wrap.
+// shortcut: no caller until create, generate, unwrap and derive move (slice 6); copy refuses
+// nested templates (DIV-056).
+#[allow(dead_code)]
 pub(super) fn apply_nested_all(tok: *mut fhsm_token_t, t: &[Attr], h: u32) -> u32 {
     for (attr, which) in [
         (CKA_UNWRAP_TEMPLATE, TMPL_UNWRAP),
@@ -316,6 +321,19 @@ pub unsafe extern "C" fn pqhsm_C_CopyObject(
 /// # Safety
 /// `tok` is a token the registry holds; `t` is a checked template.
 unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result<u32, u32> {
+    // DIV-056: a copy that inherits CKA_TOKEN from a token object is a token object too, so
+    // a read-only session may not make it. C checked only a CKA_TOKEN in the template.
+    let mut src_tok: c_int = 0;
+    // SAFETY: the caller's token; an out pointer of our own
+    if find(t, CKA_TOKEN).is_none()
+        && unsafe { fhsm_token_object_is_token(tok, o, &mut src_tok) } == OK
+        && src_tok != 0
+        && TABLE
+            .info(h)
+            .is_ok_and(|(_, flags, _)| flags & CKF_RW_SESSION == 0)
+    {
+        return Err(SESSION_READ_ONLY);
+    }
     // CKA_COPYABLE=FALSE on the source: refused before anything is read.
     let mut sf2 = 0u8;
     // SAFETY: the caller's token; out pointers of our own, here and below
@@ -359,6 +377,19 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
     let mut flags = 0u8;
     // SAFETY: as above
     unsafe { fhsm_token_object_get_flags(tok, o, &mut flags) };
+    // DIV-056: the source's usage byte and allowed mechanisms, which the template may only
+    // narrow. C carried neither, so a CKA_SIGN=FALSE key's copy could sign.
+    let mut usage = 0u8;
+    // SAFETY: as above
+    unsafe { fhsm_token_object_get_usage(tok, o, &mut usage) };
+    let mut f2 = 0u8;
+    // SAFETY: as above
+    unsafe { fhsm_token_object_get_flags2(tok, o, &mut f2) };
+    let (mut mechs, mut n_mechs) = ([0u32; POLICY_MECH_MAX], POLICY_MECH_MAX as u8);
+    let src_mechs = f2 & OBJF2_HAS_ALLOWED_MECH != 0
+        // SAFETY: as above; mechs has n_mechs slots
+        && unsafe { fhsm_token_object_get_allowed_mechs(tok, o, mechs.as_mut_ptr(), &mut n_mechs) }
+            == OK;
 
     // The override template: set-attribute's rules, but the class-changing three are
     // CKR_TEMPLATE_INCONSISTENT here (v3.2 §C.6.7.3).
@@ -403,7 +434,40 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
                     return Err(ATTRIBUTE_VALUE_INVALID);
                 }
             }
-            CKA_CLASS | CKA_KEY_TYPE | CKA_VALUE => return Err(TEMPLATE_INCONSISTENT),
+            CKA_CLASS | CKA_KEY_TYPE | CKA_VALUE | CKA_WRAP_TEMPLATE | CKA_UNWRAP_TEMPLATE
+            | CKA_DERIVE_TEMPLATE => return Err(TEMPLATE_INCONSISTENT),
+            // DIV-056: a usage attribute may go TRUE to FALSE only.
+            k if usage_of(k, class).is_some() => {
+                if a.len != 1 {
+                    return Err(ATTRIBUTE_VALUE_INVALID);
+                }
+                let (bit, _) = usage_of(k, class).expect("matched");
+                if usage & USAGE_VALID == 0 {
+                    // No explicit usage yet: start from the class defaults it reads as.
+                    usage = usage_defaults(class);
+                }
+                let has = usage & bit != 0;
+                match (v[0] != 0, has) {
+                    (true, false) => return Err(ATTRIBUTE_READ_ONLY),
+                    (false, true) => usage &= !bit,
+                    _ => {}
+                }
+            }
+            // DIV-056: a mechanism list must be a subset of the source's.
+            CKA_ALLOWED_MECHANISMS => {
+                let w = size_of::<c_ulong>();
+                if !v.len().is_multiple_of(w) || v.len() / w > POLICY_MECH_MAX {
+                    return Err(ATTRIBUTE_VALUE_INVALID);
+                }
+                let src = &mechs[..n_mechs as usize];
+                if src_mechs
+                    && v.chunks_exact(w).any(|c| {
+                        !src.contains(&(c_ulong::from_ne_bytes(c.try_into().expect("w")) as u32))
+                    })
+                {
+                    return Err(ATTRIBUTE_READ_ONLY);
+                }
+            }
             _ => return Err(ATTRIBUTE_TYPE_INVALID),
         }
     }
@@ -432,11 +496,42 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
         unsafe { fhsm_token_object_destroy(tok, new) };
         r
     };
-    let r = apply_allowed_mechs(tok, t, new);
-    if r != OK {
-        return Err(undo(r));
+    // DIV-056: the usage byte, the mechanism list (the template's if it gave one) and the
+    // three nested templates, in full.
+    // SAFETY: as above
+    let mut r = unsafe { fhsm_token_object_set_usage(tok, new, usage) };
+    if r == OK {
+        r = if find(t, CKA_ALLOWED_MECHANISMS).is_some() {
+            apply_allowed_mechs(tok, t, new)
+        } else if src_mechs {
+            // SAFETY: as above; mechs holds n_mechs
+            unsafe { fhsm_token_object_set_allowed_mechs(tok, new, mechs.as_ptr(), n_mechs) }
+        } else {
+            OK
+        };
     }
-    let r = apply_nested_all(tok, t, new);
+    for (bit, which) in [
+        (OBJF2_HAS_UNWRAP_TMPL, TMPL_UNWRAP),
+        (OBJF2_HAS_DERIVE_TMPL, TMPL_DERIVE),
+        (OBJF2_HAS_WRAP_TMPL, TMPL_WRAP),
+    ] {
+        if r != OK || f2 & bit == 0 {
+            continue;
+        }
+        let mut ent = [PolicyAttr {
+            kind_: 0,
+            kind: 0,
+            len: 0,
+            value: [0; POLICY_VALUE_MAX],
+        }; POLICY_ATTR_MAX];
+        let mut cnt = POLICY_ATTR_MAX as u8;
+        // SAFETY: as above; ent has cnt slots
+        r = unsafe { fhsm_token_object_get_tmpl(tok, o, which, ent.as_mut_ptr(), &mut cnt) };
+        if r == OK {
+            // SAFETY: as above; ent holds cnt
+            r = unsafe { fhsm_token_object_set_tmpl(tok, new, which, ent.as_ptr(), cnt) };
+        }
+    }
     if r != OK {
         return Err(undo(r));
     }

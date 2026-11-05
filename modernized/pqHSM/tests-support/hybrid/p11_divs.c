@@ -308,11 +308,43 @@ static void div_060(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* DIV-056: a copy keeps its source's usage, mechanism list and nested templates, and its
+ * template may only narrow them. C dropped the usage byte (an ENCRYPT=FALSE key's copy
+ * encrypted) and refused every one of these attributes in a copy template as unknown. */
+static void div_056(void) {
+    UL h = fresh(0), ro = 0, k = 0, c = 0, x = 0xAAAA, cls = 4, kt = 0x1f, mech = 0x1081;
+    UL wide[2] = { 0x1081, 0x1082 };
+    unsigned char yes = 1, no = 0, key[16] = { 1 }, got = 0xAA;
+    struct { UL type; void *p; UL len; } t[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &yes, 1 },
+        { 0x011, key, sizeof key }, { 0x104, &no, 1 }, { 0x40000600, &mech, sizeof mech },
+    }, label = { 0x3, "c", 1 }, encrypt = { 0x104, &yes, 1 }, decrypt = { 0x105, &no, 1 },
+       widen = { 0x40000600, wide, sizeof wide }, nest = { 0x40000211, &decrypt, sizeof decrypt },
+       ask = { 0x105, &got, 1 };
+    struct { UL m; void *p; UL len; } ecb = { 0x1081, NULL, 0 };
+    want("login so", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("initpin", CALL(C_InitPIN, h, USER, (UL)strlen(USER)), 0);
+    want("logout so", CALL(C_Logout, h), 0);
+    want("login user", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("create an ENCRYPT=FALSE key", CALL(C_CreateObject, h, t, 6UL, &k), 0);
+    want("copy it", CALL(C_CopyObject, h, k, &label, 1UL, &c), 0);
+    want("the copy may not encrypt", CALL(C_EncryptInit, h, &ecb, c), 0x68);
+    want("a copy may not widen ENCRYPT", CALL(C_CopyObject, h, k, &encrypt, 1UL, &x), 0x10);
+    want("a copy may not widen the mechanisms", CALL(C_CopyObject, h, k, &widen, 1UL, &x), 0x10);
+    want("a copy template has no nested template", CALL(C_CopyObject, h, k, &nest, 1UL, &x), 0xD1);
+    want("a copy may narrow DECRYPT", CALL(C_CopyObject, h, k, &decrypt, 1UL, &c), 0);
+    want("read DECRYPT", CALL(C_GetAttributeValue, h, c, &ask, 1UL), 0);
+    want("DECRYPT is FALSE", got, 0);
+    want("open read-only", CALL(C_OpenSession, 0UL, 4UL, NULL, NULL, &ro), 0);
+    want("an inherited token copy from read-only", CALL(C_CopyObject, ro, k, &label, 1UL, &x), 0xB5);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
     { "DIV-054", div_054 }, { "DIV-050", div_050 }, { "DIV-001", div_001 },
-    { "DIV-060", div_060 },
+    { "DIV-060", div_060 }, { "DIV-056", div_056 },
 };
 
 int main(int argc, char **argv) {

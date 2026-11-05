@@ -84,10 +84,10 @@ const OBJF_TRUSTED: u8 = 0x40;
 pub(super) const OBJF2_NO_ENCAPSULATE: u8 = 0x01;
 pub(super) const OBJF2_NO_DECAPSULATE: u8 = 0x02;
 pub(super) const OBJF2_NOT_COPYABLE: u8 = 0x04;
-const OBJF2_HAS_ALLOWED_MECH: u8 = 0x08;
-const OBJF2_HAS_WRAP_TMPL: u8 = 0x10;
-const OBJF2_HAS_UNWRAP_TMPL: u8 = 0x20;
-const OBJF2_HAS_DERIVE_TMPL: u8 = 0x40;
+pub(super) const OBJF2_HAS_ALLOWED_MECH: u8 = 0x08;
+pub(super) const OBJF2_HAS_WRAP_TMPL: u8 = 0x10;
+pub(super) const OBJF2_HAS_UNWRAP_TMPL: u8 = 0x20;
+pub(super) const OBJF2_HAS_DERIVE_TMPL: u8 = 0x40;
 const OBJF2_WRAP_WITH_TRUSTED: u8 = 0x80;
 const USAGE_ENCRYPT: u8 = 0x01;
 const USAGE_DECRYPT: u8 = 0x02;
@@ -96,7 +96,7 @@ const USAGE_VERIFY: u8 = 0x08;
 const USAGE_WRAP: u8 = 0x10;
 const USAGE_UNWRAP: u8 = 0x20;
 const USAGE_DERIVE: u8 = 0x40;
-const USAGE_VALID: u8 = 0x80;
+pub(super) const USAGE_VALID: u8 = 0x80;
 pub(super) const META_START_DATE: c_int = 0;
 pub(super) const META_END_DATE: c_int = 1;
 pub(super) const META_APPLICATION: c_int = 2;
@@ -141,7 +141,7 @@ unsafe extern "C" {
         sel: *mut c_ulong,
     ) -> c_int;
     fn pqhsm_c_pqc_raw_pub(v: *const u8, n: usize, out: *mut u8, out_len: *mut usize) -> c_int;
-    fn fhsm_token_object_get_tmpl(
+    pub(super) fn fhsm_token_object_get_tmpl(
         t: *mut fhsm_token_t,
         h: u32,
         which: c_int,
@@ -169,6 +169,37 @@ fn flags_of(t: *mut fhsm_token_t, o: u32, get: Getter) -> (u32, u8) {
     // SAFETY: a token the registry holds; an out pointer of our own
     let rv = unsafe { get(t, o, &mut f) };
     (rv, f)
+}
+
+/// The usage bit behind a usage attribute, and its class default (`fhsm_usage_bool`'s callers).
+pub(super) fn usage_of(kind: c_ulong, class: u32) -> Option<(u8, bool)> {
+    Some(match kind {
+        CKA_ENCRYPT => (USAGE_ENCRYPT, class != CKO_PRIVATE_KEY),
+        CKA_VERIFY => (USAGE_VERIFY, class != CKO_PRIVATE_KEY),
+        CKA_WRAP => (USAGE_WRAP, class != CKO_PRIVATE_KEY),
+        CKA_DECRYPT => (USAGE_DECRYPT, class != CKO_PUBLIC_KEY),
+        CKA_SIGN => (USAGE_SIGN, class != CKO_PUBLIC_KEY),
+        CKA_UNWRAP => (USAGE_UNWRAP, class != CKO_PUBLIC_KEY),
+        CKA_DERIVE => (USAGE_DERIVE, false),
+        _ => return None,
+    })
+}
+
+/// The explicit usage byte an object without one reads as: its class defaults.
+pub(super) fn usage_defaults(class: u32) -> u8 {
+    [
+        CKA_ENCRYPT,
+        CKA_DECRYPT,
+        CKA_SIGN,
+        CKA_VERIFY,
+        CKA_WRAP,
+        CKA_UNWRAP,
+        CKA_DERIVE,
+    ]
+    .into_iter()
+    .filter_map(|k| usage_of(k, class))
+    .filter(|&(_, d)| d)
+    .fold(USAGE_VALID, |u, (b, _)| u | b)
 }
 
 /// `fhsm_usage_bool`: the stored usage bit if the object carries explicit usage, else the
@@ -433,15 +464,7 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
             }
             CKA_ENCRYPT | CKA_VERIFY | CKA_WRAP | CKA_DECRYPT | CKA_SIGN | CKA_UNWRAP
             | CKA_DERIVE => {
-                let (bit, dflt) = match a.kind {
-                    CKA_ENCRYPT => (USAGE_ENCRYPT, class != CKO_PRIVATE_KEY),
-                    CKA_VERIFY => (USAGE_VERIFY, class != CKO_PRIVATE_KEY),
-                    CKA_WRAP => (USAGE_WRAP, class != CKO_PRIVATE_KEY),
-                    CKA_DECRYPT => (USAGE_DECRYPT, class != CKO_PUBLIC_KEY),
-                    CKA_SIGN => (USAGE_SIGN, class != CKO_PUBLIC_KEY),
-                    CKA_UNWRAP => (USAGE_UNWRAP, class != CKO_PUBLIC_KEY),
-                    _ => (USAGE_DERIVE, false), // CKA_DERIVE
-                };
+                let (bit, dflt) = usage_of(a.kind, class).expect("a usage attribute");
                 b = [usage_bool(t, o, bit, dflt)];
                 &b
             }
