@@ -87,6 +87,7 @@ unsafe extern "C" {
     ) -> u32;
     pub fn fhsm_token_object_is_token(t: *mut fhsm_token_t, h: u32, out: *mut c_int) -> u32;
     pub fn fhsm_token_object_get_flags(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
+    pub fn fhsm_token_object_mech_allowed(t: *mut fhsm_token_t, h: u32, mech: u32) -> u32;
     pub fn fhsm_token_object_destroy(t: *mut fhsm_token_t, h: u32) -> u32;
     pub fn fhsm_token_object_get_label(
         t: *mut fhsm_token_t,
@@ -142,6 +143,9 @@ unsafe extern "C" {
     pub fn fhsm_crypto_init() -> u32;
     pub fn fhsm_crypto_finalize();
     pub fn fhsm_zeroize(p: *mut c_void, n: usize);
+    pub fn fhsm_hash_oneshot(alg: c_int, data: Slice, out: *mut u8, out_len: *mut usize) -> u32;
+    /// src/gen/fhsm_dispatch.c: 1 in the nist-approved-only build.
+    pub static fhsm_build_fips_strict: c_int;
 
     // p11/shim/pkcs11_tu.c: C's statics, by accessor.
     pub fn pqhsm_c_session_ops_reset(h: c_ulong);

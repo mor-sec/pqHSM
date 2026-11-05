@@ -18,3 +18,5 @@ ffi = []
 [dependencies]
 libc.workspace = true
 pqhsm-core = { path = "../core" }
+# The digest primitives (slice 3); the module links the crate with its C ABI already.
+pqhsm-crypto = { path = "../crypto" }

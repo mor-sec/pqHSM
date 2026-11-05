@@ -62,6 +62,7 @@ pub unsafe extern "C" fn pqhsm_C_OpenSession(
             // A pooled handle may carry a closed session's operation state.
             // SAFETY: C's tables, under the API lock
             unsafe { pqhsm_c_session_ops_reset(h) };
+            super::digest::reset(h);
             TABLE.attach(h, Some(t));
             OK.into()
         }
@@ -77,6 +78,7 @@ fn close_session(h: c_ulong) -> u32 {
     // Before the handle returns to the pool, so its next owner inherits no operation.
     // SAFETY: C's tables, under the EXCLUSIVE lock
     unsafe { pqhsm_c_session_ops_reset(h) };
+    super::digest::reset(h);
     let t = TABLE.token(h);
     if let Some(t) = t {
         // SAFETY: a token the registry holds
@@ -227,7 +229,8 @@ fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
     // SAFETY: C's tables, under the API lock
     match unsafe { pqhsm_c_session_has_active_op(h) } {
         a if a < 0 => return SESSION_HANDLE_INVALID,
-        0 => return OPERATION_NOT_INITIALIZED,
+        // A digest is an active operation too (slice 3); its grant below is never read.
+        0 if !super::digest::active(h) => return OPERATION_NOT_INITIALIZED,
         _ => {}
     }
     let Some(t) = TABLE.token(h) else {

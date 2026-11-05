@@ -47,6 +47,8 @@ unsafe extern "C" {
         bsize: usize,
     ) -> OSSL_PARAM;
     fn OSSL_PARAM_construct_int(key: *const c_char, buf: *mut c_int) -> OSSL_PARAM;
+    fn ERR_set_mark() -> c_int;
+    fn ERR_pop_to_mark() -> c_int;
 }
 
 /// `FHSM_PBKDF2_MAX_OUT`.
@@ -137,6 +139,67 @@ pub fn digest(alg: u32, data: &[u8], out: &mut [u8]) -> Result<usize, u32> {
         ok(EVP_DigestUpdate(ctx.0, data.as_ptr().cast(), data.len()))?;
         ok(EVP_DigestFinal_ex(ctx.0, out.as_mut_ptr(), &mut n))?;
         Ok(n as usize)
+    }
+}
+
+/// `fhsm_md_available` (`src/fhsm_pkcs11.c:1526-1534`): can the loaded providers compute this
+/// digest? The fetch is bracketed so a failure leaves nothing on the error queue.
+pub fn md_available(alg: u32) -> bool {
+    let Ok((_, name)) = hash(alg) else {
+        return false;
+    };
+    // SAFETY: name is a C string; the fetched object is freed at once
+    unsafe {
+        ERR_set_mark();
+        let md = EVP_MD_fetch(null_mut(), name.as_ptr(), null());
+        let ok = !md.is_null();
+        EVP_MD_free(md);
+        ERR_pop_to_mark();
+        ok
+    }
+}
+
+/// A multipart digest: the EVP context `C_DigestUpdate` and `C_DigestKey` feed
+/// (`src/fhsm_pkcs11.c:11932-12067`), freed on drop.
+pub struct Hasher(Owned<EVP_MD_CTX>);
+
+// SAFETY: the context is owned by this value alone, and OpenSSL contexts may move between threads
+unsafe impl Send for Hasher {}
+
+impl Hasher {
+    /// C's lazy init, in its order: HOST_MEMORY if no context, FUNCTION_FAILED if the fetch or
+    /// the init fails.
+    pub fn new(alg: u32) -> Result<Self, u32> {
+        // SAFETY: as in digest
+        unsafe {
+            let ctx = Owned::new(EVP_MD_CTX_new(), EVP_MD_CTX_free, rv::HOST_MEMORY)?;
+            let name = hash(alg).map_err(|_| rv::FUNCTION_FAILED)?.1;
+            let md = Owned::new(
+                EVP_MD_fetch(null_mut(), name.as_ptr(), null()),
+                EVP_MD_free,
+                rv::FUNCTION_FAILED,
+            )?;
+            ok(EVP_DigestInit_ex2(ctx.0, md.0, null()))?;
+            Ok(Self(ctx))
+        }
+    }
+
+    pub fn update(&mut self, data: &[u8]) -> Result<(), u32> {
+        // SAFETY: a live context; data readable for its length
+        ok(unsafe { EVP_DigestUpdate(self.0.0, data.as_ptr().cast(), data.len()) })
+    }
+
+    /// The digest in front of `out`, which the caller has sized for it, and its length.
+    pub fn finish(self, out: &mut [u8]) -> Result<usize, u32> {
+        let mut n = 0;
+        // SAFETY: a live context; out has room for the digest (caller)
+        ok(unsafe { EVP_DigestFinal_ex(self.0.0, out.as_mut_ptr(), &mut n) })?;
+        Ok(n as usize)
+    }
+
+    /// Drop the context without freeing it: after a fork it is the parent's.
+    pub fn forget(self) {
+        std::mem::forget(self);
     }
 }
 

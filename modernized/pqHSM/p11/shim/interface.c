@@ -67,6 +67,13 @@ FWD(C_SetAttributeValue, (UL h, UL o, void *t, UL n), (h, o, t, n))
 /* Phase 4 slice 2d: copy (p11/src/ffi/copy.rs). */
 FWD(C_CopyObject, (UL h, UL o, void *t, UL n, void *no), (h, o, t, n, no))
 
+/* Phase 4 slice 3: digest (p11/src/ffi/digest.rs). */
+FWD(C_DigestInit, (UL h, void *m), (h, m))
+FWD(C_Digest, (UL h, void *d, UL dn, void *o, void *on), (h, d, dn, o, on))
+FWD(C_DigestUpdate, (UL h, void *d, UL dn), (h, d, dn))
+FWD(C_DigestKey, (UL h, UL k), (h, k))
+FWD(C_DigestFinal, (UL h, void *o, void *on), (h, o, on))
+
 /* Phase 4 slice 1, DIV-051 and DIV-053: the entry points still in C refuse with
  * CKR_CRYPTOKI_NOT_INITIALIZED outside an initialised process, and in ERROR, as Rust's do. hybrid.mk renames C's to pqhsm_c_<name>; these
  * take the exported names. shortcut: the gate is read before the C takes the API lock, so a call
@@ -98,11 +105,6 @@ GATE(C_DecryptInit, (UL h, P m, UL k), (h, m, k))
 GATE(C_Decrypt, (UL h, P e, UL en, P d, P dn), (h, e, en, d, dn))
 GATE(C_DecryptUpdate, (UL h, P e, UL en, P d, P dn), (h, e, en, d, dn))
 GATE(C_DecryptFinal, (UL h, P d, P dn), (h, d, dn))
-GATE(C_DigestInit, (UL h, P m), (h, m))
-GATE(C_Digest, (UL h, P d, UL dn, P o, P on), (h, d, dn, o, on))
-GATE(C_DigestUpdate, (UL h, P d, UL dn), (h, d, dn))
-GATE(C_DigestKey, (UL h, UL k), (h, k))
-GATE(C_DigestFinal, (UL h, P o, P on), (h, o, on))
 GATE(C_SignInit, (UL h, P m, UL k), (h, m, k))
 GATE(C_Sign, (UL h, P d, UL dn, P s, P sn), (h, d, dn, s, sn))
 GATE(C_SignUpdate, (UL h, P d, UL dn), (h, d, dn))
