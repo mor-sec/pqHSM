@@ -1303,3 +1303,8 @@ Nothing high: every path's order, codes and writes as C's; the profile rule equa
 - **L1:** the golden pins the 32-bit narrowing: `0x100000250` is SHA-256's info, `0x100000350` the GENERIC family's minimum 1 (RULE-014 compares the type whole).
 - **L2:** stale comments in `hybrid.mk` and `p11_misc_expect.sed`.
 - **Nits:** the generator refuses an unknown argument rather than overwrite the table; `misc.rs` cites `:1455-1653`.
+
+### 8b-i: the operation-table hooks removed
+
+- `pqhsm_c_session_ops_reset`, `_has_active_op`, `_ctx_auth_grant`, `pqhsm_c_ops_forget_all` and `_release_all` (`p11/shim/pkcs11_tu.c`) reached C's operation tables, find state and OAEP tables. Only C's entry points fill those, and since 8a none runs, so every hook read zeros and reset nothing. Removed with their calls (`login.rs`, `lifecycle.rs`) and declarations (`sys.rs`).
+- The one answer they gave that could differ, `fhsm_session_has_active_op`'s -1 for handle 0 or one past its tables (`:2161-2165`), is now `context_login`'s own check against `core::session::MAX`, the 129 C's tables were built with (RULE-091, `hybrid.mk`). Golden: step 4h's `s_context` ("context bad handle 0", "context bad handle 999").

@@ -60,8 +60,6 @@ pub unsafe extern "C" fn pqhsm_C_OpenSession(
             // SAFETY: non-NULL, and by the caller's contract writable
             unsafe { *out = h };
             // A pooled handle may carry a closed session's operation state.
-            // SAFETY: C's tables, under the API lock
-            unsafe { pqhsm_c_session_ops_reset(h) };
             super::digest::reset(h);
             super::crypt::reset(h);
             super::sign::reset(h);
@@ -78,8 +76,6 @@ pub unsafe extern "C" fn pqhsm_C_OpenSession(
 /// an application can drop its keys and sessions after a failure. No data comes out.
 fn close_session(h: c_ulong) -> u32 {
     // Before the handle returns to the pool, so its next owner inherits no operation.
-    // SAFETY: C's tables, under the EXCLUSIVE lock
-    unsafe { pqhsm_c_session_ops_reset(h) };
     super::digest::reset(h);
     super::crypt::reset(h);
     super::sign::reset(h);
@@ -236,14 +232,13 @@ pub unsafe extern "C" fn pqhsm_C_Login(
 /// operations. Not the session login, which would answer ALREADY_LOGGED_IN without looking
 /// at the PIN.
 fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
-    // SAFETY: C's tables, under the API lock
-    match unsafe { pqhsm_c_session_has_active_op(h) } {
-        a if a < 0 => return SESSION_HANDLE_INVALID,
-        // A digest is an active operation too (slice 3); its grant below is never read.
-        0 if !super::digest::active(h) && !super::crypt::active(h) && !super::sign::active(h) => {
-            return OPERATION_NOT_INITIALIZED;
-        }
-        _ => {}
+    // C's operation tables answered -1 for a handle outside them (slice 8b: Rust's own now).
+    if h == 0 || h as usize >= MAX {
+        return SESSION_HANDLE_INVALID;
+    }
+    // A digest is an active operation too (slice 3); its grant below is never read.
+    if !super::digest::active(h) && !super::crypt::active(h) && !super::sign::active(h) {
+        return OPERATION_NOT_INITIALIZED;
     }
     let Some(t) = TABLE.token(h) else {
         return SESSION_HANDLE_INVALID;
@@ -266,8 +261,6 @@ fn context_login(h: c_ulong, pin: *const c_char, pin_len: c_ulong) -> u32 {
     if rv != OK || a.is_err() {
         return audited(rv, a);
     }
-    // SAFETY: C's tables, under the API lock
-    unsafe { pqhsm_c_session_ctx_auth_grant(h) };
     super::crypt::grant(h);
     super::sign::grant(h);
     OK

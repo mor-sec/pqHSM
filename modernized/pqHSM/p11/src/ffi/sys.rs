@@ -4,7 +4,7 @@
 //! which later slices own).
 #![allow(non_camel_case_types)]
 
-use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr::null;
 
 /// `struct fhsm_token_s`, opaque.
@@ -196,12 +196,7 @@ unsafe extern "C" {
         sig_len: usize,
     ) -> u32;
 
-    // p11/shim/pkcs11_tu.c: C's statics, by accessor.
-    pub fn pqhsm_c_session_ops_reset(h: c_ulong);
-    pub fn pqhsm_c_session_has_active_op(h: c_ulong) -> c_int;
-    pub fn pqhsm_c_session_ctx_auth_grant(h: c_ulong);
-    pub fn pqhsm_c_ops_forget_all();
-    pub fn pqhsm_c_ops_release_all();
+    // p11/shim/pkcs11_tu.c: the build profile's audit switch.
     pub static pqhsm_c_audit_mandatory: c_int;
 }
 

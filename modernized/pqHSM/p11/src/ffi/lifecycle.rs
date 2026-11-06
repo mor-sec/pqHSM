@@ -32,8 +32,6 @@ fn reset_after_fork() {
     slots::close_all();
     TABLE.reset_all();
     super::objects::reset_finds();
-    // SAFETY: C's tables, under the EXCLUSIVE lock
-    unsafe { pqhsm_c_ops_forget_all() };
     super::digest::forget_all();
     super::crypt::forget_all();
     super::sign::forget_all();
@@ -42,8 +40,6 @@ fn reset_after_fork() {
 
 /// `fhsm_finalize_release`: the same, in the owning process, so the contexts are freed.
 fn finalize_release() {
-    // SAFETY: C's tables, under the EXCLUSIVE lock
-    unsafe { pqhsm_c_ops_release_all() };
     super::digest::release_all();
     super::crypt::release_all();
     super::sign::release_all();
