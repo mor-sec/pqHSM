@@ -15,6 +15,7 @@
 # Slice 1b: src/fhsm_state.c. Slice 1c: src/fhsm_apilock.c. Slice 1d: C_Initialize to C_SetPIN
 # (fifteen entry points of src/fhsm_pkcs11.c) and the slot registry. Slice 2: the object
 # entry points but C_CreateObject. Slice 3: the five digest entry points and their table.
+# Slices 4 to 6b: encrypt and decrypt, sign and verify, key generation, C_CreateObject.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -97,12 +98,12 @@ PQHSM_P11_RUST := C_GetFunctionList C_GetInterfaceList C_GetInterface \
                   C_DecryptInit C_Decrypt C_DecryptUpdate C_DecryptFinal \
                   C_SignInit C_Sign C_SignUpdate C_SignFinal \
                   C_VerifyInit C_Verify C_VerifyUpdate C_VerifyFinal \
-                  C_GenerateKey C_GenerateKeyPair
+                  C_GenerateKey C_GenerateKeyPair C_CreateObject
 # Slice 1, DIV-051: the rest stay C's, renamed pqhsm_c_<name>; the shim's gated wrappers take
 # their names. C declares its entry points visible, so the renamed ones are made local once the
 # shim is linked to them.
 PQHSM_P11_GATED := C_GetMechanismList C_GetMechanismInfo C_WaitForSlotEvent C_GetFunctionStatus \
-                   C_CancelFunction C_SeedRandom C_GenerateRandom C_CreateObject \
+                   C_CancelFunction C_SeedRandom C_GenerateRandom \
                    C_WrapKey C_UnwrapKey C_DeriveKey \
                    C_EncapsulateKey C_DecapsulateKey
 $(OBJDIR)/src/fhsm_pkcs11.o: src/fhsm_pkcs11.c $(PQHSM_P11_TU) $(PQHSM_P11_SHIM) $(PQHSM_LIB)

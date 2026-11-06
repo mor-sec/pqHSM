@@ -776,6 +776,73 @@ static void rule_017(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* libcrypto, for keys to import; declared here because evp.h's EVP_PKEY_decapsulate would
+ * clash with the interposer's. */
+void *EVP_PKEY_Q_keygen(void *lib, const char *props, const char *type, ...);
+int EVP_PKEY_get_bn_param(const void *k, const char *name, void **bn);
+int BN_bn2bin(const void *bn, unsigned char *to);
+void BN_free(void *bn);
+void EVP_PKEY_free(void *k);
+
+/* RSA key k's eight components, n to iqmp, into v; their lengths into l. */
+static void rsa_parts(void *k, unsigned char v[8][512], UL l[8]) {
+    static const char *nm[8] = { "n", "e", "d", "rsa-factor1", "rsa-factor2", "rsa-exponent1",
+                                 "rsa-exponent2", "rsa-coefficient1" };
+    for (int i = 0; i < 8; ++i) {
+        void *bn = NULL;
+        EVP_PKEY_get_bn_param(k, nm[i], &bn);
+        l[i] = bn ? (UL)BN_bn2bin(bn, v[i]) : 0;
+        BN_free(bn);
+    }
+}
+
+/* DIV-065: an imported RSA key is checked. C stored an empty modulus and a key whose d is
+ * another key's, and failed n, e and d alone with 0x6 after asking OpenSSL for the primes. */
+static void div_065(void) {
+    UL h, o, pub = 2, priv = 3, rsa = 0, l[8], lb[8];
+    static unsigned char v[8][512], w[8][512];
+    user_key(&h, 16);
+    void *a = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
+    void *b = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048);
+    if (!a || !b) { printf("  RSA keygen failed\n"); exit(1); }
+    rsa_parts(a, v, l);
+    rsa_parts(b, w, lb);
+    Attr pt[] = { { 0x0, &pub, sizeof pub }, { 0x100, &rsa, sizeof rsa }, { 0x120, v[0], 0 },
+                  { 0x122, v[1], l[1] } };
+    want("an empty modulus", CALL(C_CreateObject, h, pt, 4UL, &o), 0x13);
+    Attr k[10] = { { 0x0, &priv, sizeof priv }, { 0x100, &rsa, sizeof rsa } };
+    for (int i = 0; i < 8; ++i) k[2 + i] = (Attr){ i ? 0x121 + (UL)i : 0x120, v[i], l[i] };  /* e is 0x122 */
+    k[4] = (Attr){ 0x123, w[2], lb[2] };
+    want("another key's d", CALL(C_CreateObject, h, k, 10UL, &o), 0x13);
+    k[4] = (Attr){ 0x123, v[2], l[2] };
+    want("n, e and d alone", CALL(C_CreateObject, h, k, 5UL, &o), 0xD0);
+    want("the whole key", CALL(C_CreateObject, h, k, 10UL, &o), 0);
+    EVP_PKEY_free(a);
+    EVP_PKEY_free(b);
+    CALL(C_Finalize, NULL);
+}
+
+int EVP_PKEY_get_raw_public_key(const void *k, unsigned char *pub, size_t *len);
+
+/* DIV-066: an imported ML-KEM public key keeps CKA_ENCAPSULATE FALSE. C's rebuilt-key path
+ * never applied it, so the key read back (and encapsulated) as TRUE. */
+static void div_066(void) {
+    UL h, o, pub = 2, kem = 0x49, set = 1;
+    unsigned char raw[800], f = 0, got = 0xAA;
+    size_t n = sizeof raw;
+    user_key(&h, 16);
+    void *k = EVP_PKEY_Q_keygen(NULL, NULL, "ML-KEM-512");
+    if (!k || EVP_PKEY_get_raw_public_key(k, raw, &n) != 1) { printf("  ML-KEM keygen failed\n"); exit(1); }
+    EVP_PKEY_free(k);
+    Attr t[] = { { 0x0, &pub, sizeof pub }, { 0x100, &kem, sizeof kem }, { 0x11, raw, n },
+                 { 0x61D, &set, sizeof set }, { 0x633, &f, 1 } };
+    want("create", CALL(C_CreateObject, h, t, 5UL, &o), 0);
+    Attr ask = { 0x633, &got, 1 };
+    want("read ENCAPSULATE", CALL(C_GetAttributeValue, h, o, &ask, 1UL), 0);
+    want("ENCAPSULATE reads FALSE", got, 0);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
@@ -785,7 +852,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-059", rule_059 }, { "DIV-061", div_061 }, { "DIV-062", div_062 },
     { "DIV-063", div_063 }, { "DIV-052", div_052 }, { "DIV-064", div_064 },
     { "RULE-006", rule_006 }, { "RULE-014", rule_014 }, { "RULE-015", rule_015 },
-    { "RULE-017", rule_017 },
+    { "RULE-017", rule_017 }, { "DIV-065", div_065 }, { "DIV-066", div_066 },
 };
 
 int main(int argc, char **argv) {

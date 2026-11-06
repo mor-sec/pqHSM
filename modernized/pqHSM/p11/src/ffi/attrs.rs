@@ -99,7 +99,7 @@ pub(super) fn history(before: u8, after: u8) -> u8 {
 pub(super) const OBJF_UNMODIFIABLE: u8 = 0x04;
 pub(super) const OBJF_LOCAL: u8 = 0x10;
 pub(super) const OBJF_ALWAYS_AUTH: u8 = 0x20;
-const OBJF_TRUSTED: u8 = 0x40;
+pub(super) const OBJF_TRUSTED: u8 = 0x40;
 pub(super) const OBJF2_NO_ENCAPSULATE: u8 = 0x01;
 pub(super) const OBJF2_NO_DECAPSULATE: u8 = 0x02;
 pub(super) const OBJF2_NOT_COPYABLE: u8 = 0x04;

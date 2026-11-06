@@ -60,17 +60,17 @@ unsafe extern "C" {
 const KEY_SIZE_RANGE: u32 = 0x62;
 const MECHANISM_INVALID: u32 = 0x70;
 const MECHANISM_PARAM_INVALID: u32 = 0x71;
-const TEMPLATE_INCOMPLETE: u32 = 0xD0;
-const TEMPLATE_INCONSISTENT: u32 = 0xD1;
-const CURVE_NOT_SUPPORTED: u32 = 0x140;
+pub(super) const TEMPLATE_INCOMPLETE: u32 = 0xD0;
+pub(super) const TEMPLATE_INCONSISTENT: u32 = 0xD1;
+pub(super) const CURVE_NOT_SUPPORTED: u32 = 0x140;
 const HOST_MEMORY: u32 = 0x2;
 const FIPS_NOT_APPROVED: u32 = 0x8000_0003;
 const EV_KAT_REPORT: c_int = 3;
 
 const CKM_RSA_PKCS_KEY_PAIR_GEN: c_ulong = 0x0;
-const CKM_ML_KEM_KEY_PAIR_GEN: c_ulong = 0xF;
-const CKM_ML_DSA_KEY_PAIR_GEN: c_ulong = 0x1C;
-const CKM_SLH_DSA_KEY_PAIR_GEN: c_ulong = 0x2D;
+pub(super) const CKM_ML_KEM_KEY_PAIR_GEN: c_ulong = 0xF;
+pub(super) const CKM_ML_DSA_KEY_PAIR_GEN: c_ulong = 0x1C;
+pub(super) const CKM_SLH_DSA_KEY_PAIR_GEN: c_ulong = 0x2D;
 const CKM_DES3_KEY_GEN: c_ulong = 0x131;
 const CKM_GENERIC_SECRET_KEY_GEN: c_ulong = 0x350;
 const CKM_PKCS5_PBKD2: c_ulong = 0x3B0;
@@ -81,23 +81,23 @@ const CKM_AES_KEY_GEN: c_ulong = 0x1080;
 const CKM_HKDF_KEY_GEN: c_ulong = 0x402C;
 const CKM_COMPOSITE: c_ulong = 0x8000_4202;
 
-const CKK_RSA: u32 = 0x0;
-const CKK_EC: u32 = 0x3;
+pub(super) const CKK_RSA: u32 = 0x0;
+pub(super) const CKK_EC: u32 = 0x3;
 const CKK_GENERIC_SECRET: u32 = 0x10;
 const CKK_DES3: u32 = 0x15;
 const CKK_AES: u32 = 0x1F;
-const CKK_EC_EDWARDS: u32 = 0x40;
-const CKK_EC_MONTGOMERY: u32 = 0x41;
+pub(super) const CKK_EC_EDWARDS: u32 = 0x40;
+pub(super) const CKK_EC_MONTGOMERY: u32 = 0x41;
 const CKK_HKDF: u32 = 0x42;
-const CKK_SLH_DSA: u32 = 0x4B;
+pub(super) const CKK_SLH_DSA: u32 = 0x4B;
 const CKK_COMPOSITE: u32 = 0x8000_4202;
 
 const CKA_MODULUS_BITS: c_ulong = 0x121;
 const CKA_PUBLIC_EXPONENT: c_ulong = 0x122;
-const CKA_EC_PARAMS: c_ulong = 0x180;
-const CKA_ALWAYS_AUTHENTICATE: c_ulong = 0x202;
+pub(super) const CKA_EC_PARAMS: c_ulong = 0x180;
+pub(super) const CKA_ALWAYS_AUTHENTICATE: c_ulong = 0x202;
 const CKA_WRAP_WITH_TRUSTED: c_ulong = 0x210;
-const CKA_PARAMETER_SET: c_ulong = 0x61D;
+pub(super) const CKA_PARAMETER_SET: c_ulong = 0x61D;
 const CKA_USAGE: [(c_ulong, u8); 7] = [
     (0x104, USAGE_ENCRYPT),
     (0x105, USAGE_DECRYPT),
@@ -146,23 +146,23 @@ const SLH_DSA_SETS: [&CStr; 12] = [
 ];
 
 /// `ed_curves[]` and `ecm_curves[]`: the OID or RFC 8032 curveName, and the algorithm.
-const ED_CURVES: [(&[u8], &CStr); 4] = [
+pub(super) const ED_CURVES: [(&[u8], &CStr); 4] = [
     (b"\x06\x03\x2B\x65\x70", c"ED25519"),
     (b"\x06\x03\x2B\x65\x71", c"ED448"),
     (b"\x13\x0Cedwards25519", c"ED25519"),
     (b"\x13\x0Aedwards448", c"ED448"),
 ];
-const ECM_CURVES: [(&[u8], &CStr); 2] = [
+pub(super) const ECM_CURVES: [(&[u8], &CStr); 2] = [
     (b"\x06\x03\x2B\x65\x6E", c"X25519"),
     (b"\x06\x03\x2B\x65\x6F", c"X448"),
 ];
 
-fn match_curve(table: &[(&[u8], &'static CStr)], v: &[u8]) -> Option<&'static CStr> {
+pub(super) fn match_curve(table: &[(&[u8], &'static CStr)], v: &[u8]) -> Option<&'static CStr> {
     table.iter().find(|(d, _)| *d == v).map(|(_, n)| *n)
 }
 
 /// `fhsm_check_bool_attr_lengths` or `fhsm_check_ulong_attr_lengths`, over one template.
-fn check_lengths(t: &[Attr], kinds: &[c_ulong], len: c_ulong) -> Result<(), u32> {
+pub(super) fn check_lengths(t: &[Attr], kinds: &[c_ulong], len: c_ulong) -> Result<(), u32> {
     let bad = t
         .iter()
         .any(|a| kinds.contains(&a.kind) && !a.value.is_null() && a.len != len);
@@ -175,7 +175,7 @@ fn check_lengths(t: &[Attr], kinds: &[c_ulong], len: c_ulong) -> Result<(), u32>
 
 /// A CK_ULONG row: `None` if absent, `Some(None)` if not read whole (NULL, or a length other
 /// than `sizeof(CK_ULONG)`).
-fn ulong(t: &[Attr], kind: c_ulong) -> Option<Option<c_ulong>> {
+pub(super) fn ulong(t: &[Attr], kind: c_ulong) -> Option<Option<c_ulong>> {
     find(t, kind).map(|a| {
         (!a.value.is_null() && a.len as usize == size_of::<c_ulong>())
             .then(|| c_ulong::from_ne_bytes(bytes(a).try_into().unwrap_or_default()))
@@ -183,7 +183,7 @@ fn ulong(t: &[Attr], kind: c_ulong) -> Option<Option<c_ulong>> {
 }
 
 /// `fhsm_compute_usage`: the class's defaults, then each usage attribute the template sets.
-fn compute_usage(class: u32, t: &[Attr]) -> u8 {
+pub(super) fn compute_usage(class: u32, t: &[Attr]) -> u8 {
     let mut u = USAGE_VALID
         | match class {
             CKO_SECRET_KEY => {
@@ -210,7 +210,7 @@ fn compute_usage(class: u32, t: &[Attr]) -> u8 {
 
 /// `fhsm_apply_token_scope`: a session object unless CKA_TOKEN is TRUE; MODIFIABLE,
 /// DESTROYABLE and COPYABLE FALSE and WRAP_WITH_TRUSTED TRUE stored as flags.
-fn apply_token_scope(tok: *mut fhsm_token_t, h: c_ulong, t: &[Attr], o: u32) {
+pub(super) fn apply_token_scope(tok: *mut fhsm_token_t, h: c_ulong, t: &[Attr], o: u32) {
     // SAFETY (each call here): a token the registry holds; out pointers of our own. C ignores
     // the results.
     if bbool(t, CKA_TOKEN) != Some(true) {
@@ -243,7 +243,7 @@ fn apply_token_scope(tok: *mut fhsm_token_t, h: c_ulong, t: &[Attr], o: u32) {
 
 /// `fhsm_parse_unwrap_template`: the UNWRAP_SENS flag of a CKA_SENSITIVE TRUE entry; any
 /// other shape is nothing to enforce here (`fhsm_apply_nested_tmpl` judges it).
-fn parse_unwrap_template(t: &[Attr]) -> u8 {
+pub(super) fn parse_unwrap_template(t: &[Attr]) -> u8 {
     let Some(a) = find(t, CKA_UNWRAP_TEMPLATE) else {
         return 0;
     };
@@ -264,7 +264,7 @@ fn parse_unwrap_template(t: &[Attr]) -> u8 {
 }
 
 /// `fhsm_apply_ed_curve_name`: CKA_EC_PARAMS given as an Edwards curveName is remembered.
-fn apply_ed_curve_name(tok: *mut fhsm_token_t, t: &[Attr], o: u32) -> u32 {
+pub(super) fn apply_ed_curve_name(tok: *mut fhsm_token_t, t: &[Attr], o: u32) -> u32 {
     let Some(v) = find(t, CKA_EC_PARAMS).map(bytes) else {
         return OK;
     };
@@ -280,8 +280,17 @@ fn apply_ed_curve_name(tok: *mut fhsm_token_t, t: &[Attr], o: u32) -> u32 {
 
 /// `fhsm_pset_read`: CKA_PARAMETER_SET as a CKP_* selector or a name. `Ok(None)` when absent;
 /// `Err` for a selector or name it does not know. RULE-017: a name outside the mechanism's
-/// family is not known (C took any of the eighteen).
-fn pset_read(t: &[Attr], mech: c_ulong) -> Result<Option<&'static CStr>, ()> {
+/// family is not known (C took any of the eighteen). Key generation's buffer is 32 bytes.
+pub(super) fn pset_read(t: &[Attr], mech: c_ulong) -> Result<Option<&'static CStr>, ()> {
+    pset_read_in(t, mech, 32)
+}
+
+/// `fhsm_pset_read` into a buffer of `cap` bytes: a name of `cap` or more is unknown.
+pub(super) fn pset_read_in(
+    t: &[Attr],
+    mech: c_ulong,
+    cap: usize,
+) -> Result<Option<&'static CStr>, ()> {
     let Some(a) = find(t, CKA_PARAMETER_SET).filter(|a| !a.value.is_null()) else {
         return Ok(None);
     };
@@ -301,7 +310,7 @@ fn pset_read(t: &[Attr], mech: c_ulong) -> Result<Option<&'static CStr>, ()> {
             .map(Some)
             .ok_or(());
     }
-    if v.is_empty() || v.len() >= 32 {
+    if v.is_empty() || v.len() >= cap {
         return Err(());
     }
     // C copied the name and compared it as a C string: up to its first NUL.
@@ -952,6 +961,15 @@ mod tests {
         );
         assert!(pset_read(&[attr(CKA_PARAMETER_SET, b"")], CKM_ML_KEM_KEY_PAIR_GEN).is_err());
         assert_eq!(pset_read(&[], CKM_ML_KEM_KEY_PAIR_GEN), Ok(None));
+        // C_CreateObject's buffer is 64: a char[32] name, NUL-padded, is still a name there
+        let mut padded = [0u8; 32];
+        padded[..9].copy_from_slice(b"ML-DSA-44");
+        let t32 = [attr(CKA_PARAMETER_SET, &padded)];
+        assert!(pset_read(&t32, CKM_ML_DSA_KEY_PAIR_GEN).is_err());
+        assert_eq!(
+            pset_read_in(&t32, CKM_ML_DSA_KEY_PAIR_GEN, 64),
+            Ok(Some(c"ML-DSA-44"))
+        );
     }
 
     #[test]

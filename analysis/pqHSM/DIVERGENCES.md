@@ -691,11 +691,19 @@ RULE-080(a), the `.tpm` file on re-init (the fifth Q13 item), is already fixed i
 
 ### DIV-065 · An imported RSA key is checked before it is stored
 
-- **Status:** DECIDED, Fix (2026-11-06, found by Phase 4 slice 6b's golden, step 4n scenario 3; user: "Check, new DIV (Recommended)", and for n, e and d alone "0xD0 up front (Recommended)").
+- **Status:** DONE (2026-11-07, slice 6b, `p11/src/ffi/create.rs` `rebuild` over `pqhsm_crypto::import`'s `Pkey::check`; `p11_divs.c` DIV-065; step 4n's rows in `p11_keys_expect.sed`). DECIDED, Fix (2026-11-06, found by Phase 4 slice 6b's golden, step 4n scenario 3; user: "Check, new DIV (Recommended)", and for n, e and d alone "0xD0 up front (Recommended)").
 - **Legacy:** `C_CreateObject` builds an RSA public key with `EVP_PKEY_fromdata` and no check (`src/fhsm_pkcs11.c:3988-4011`; the EC and Edwards branches above it run `EVP_PKEY_public_check`), so `rsa pub empty modulus` is stored. The private branch (`:4013-4079`) relies on `EVP_PKEY_KEYPAIR` to "check the components against each other", which it does not: `rsa priv another key's d` is stored. Its comment says OpenSSL derives what the CRT five leave out, which it does not either: `rsa priv n e d` fails at `i2d_PrivateKey`, CKR_FUNCTION_FAILED (0x6).
-- **Target:** a public key passes `EVP_PKEY_public_check` and a private key `EVP_PKEY_pairwise_check`, else CKR_ATTRIBUTE_VALUE_INVALID (0x13) and nothing stored; a private key without all five CRT components is CKR_TEMPLATE_INCOMPLETE (0xD0) before OpenSSL is called. The public check still takes e = 3 (RULE-015 bounds what key generation makes, not what is imported).
+- **Target:** a public key passes `EVP_PKEY_public_check` and a private key `EVP_PKEY_pairwise_check`, else CKR_ATTRIBUTE_VALUE_INVALID (0x13) and nothing stored; a private key without all five CRT components is CKR_TEMPLATE_INCOMPLETE (0xD0) before OpenSSL is called. The public check still takes e = 3 (RULE-015 bounds what key generation makes, not what is imported). **Per provider** (slice 6b review H1, user: "Record per provider (Recommended)"): the checks are the loaded provider's. The harness runs the default one (`FHSM_INTEGRITY_ALLOW_UNSIGNED`), which takes e = 3 and any size; a signed module loads the FIPS provider, where by OpenSSL's source they are SP 800-56B's (2^16 < e < 2^256, at least 2048 bits, d < lcm(p-1, q-1)), so e = 3, a short modulus or a d computed mod φ(n) is 0x13 there. Unverified: no FIPS run until the FIPS debs are fetched.
 - **Test:** `p11_divs.c` DIV-065: an empty modulus (C: 0), another key's d (C: 0), n, e and d alone (C: 0x6), and a matching full key (0 on both).
-- **Expected harness diff:** step 4n's rows `rsa pub empty modulus` and `rsa priv another key's d` (0 → 0x13, their attributes replaced by the object count), `rsa priv n e d` and `rsa priv extractable` (0x6 → 0xD0).
+- **Expected harness diff:** step 4n's rows `rsa pub empty modulus` and `rsa priv another key's d` (0 → 0x13, their attributes replaced by the object count), `rsa priv n e d` (0x6 → 0xD0).
+
+### DIV-066 · An imported public key keeps CKA_ENCAPSULATE FALSE
+
+- **Status:** DONE (2026-11-07, slice 6b, `create.rs` `Store::finish` applies the encapsulation flags on every path; `p11_divs.c` DIV-066; step 4n's row in `p11_keys_expect.sed`). DECIDED, Fix (2026-11-07, found by the slice 6b review, M2; user: "Fix as DIV-066 (Recommended)").
+- **Legacy:** `C_CreateObject`'s rebuilt-key tail (`src/fhsm_pkcs11.c:4113-4137`: raw or SPKI public keys, RSA components) never calls `fhsm_apply_encap_flags`, though the comments at `:3802` and `:3843` say both tails do: `mlkem512 pub encapsulate false` reads back ENCAPSULATE TRUE and encapsulates. The stored-as-given tail (private keys) and key generation keep the flag.
+- **Target:** every creation path applies it: a public key with CKA_ENCAPSULATE FALSE reads FALSE (and C_EncapsulateKey refuses it).
+- **Test:** `p11_divs.c` DIV-066: an ML-KEM-512 public key created with ENCAPSULATE FALSE reads FALSE (C: TRUE).
+- **Expected harness diff:** step 4n's `mlkem512 pub encapsulate false ENCAPSULATE` (01 → 00).
 
 ### DIV-001 in Phase 4
 

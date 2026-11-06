@@ -688,6 +688,7 @@ static void s_create(void) {
        BL(0x124, rp), BL(0x125, rq), BL(0x126, rdp), BL(0x127, rdq), BL(0x128, rqi));
     MK("rsa priv no d", AT(0x0, c_priv), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), BL(0x124, rp));
     MK("rsa priv extractable", AT(0x0, c_priv), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), BL(0x123, rd),
+       BL(0x124, rp), BL(0x125, rq), BL(0x126, rdp), BL(0x127, rdq), BL(0x128, rqi),
        AT(0x162, T), AT(0x202, T), AT(0x103, Fb));
     /* PQC public keys: raw and SPKI, the parameter set agreeing or not */
     MK("mlkem512 pub raw", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kem5p), AT(0x61D, s1));

@@ -1184,3 +1184,24 @@ Recorded, not applied:
 - **L1, the audit record of DIV-052's KAT_REPORT:** the code writes it before the latch; no test reads `audit.log` for it.
 - **L4:** `composite_pair`, X25519/X448 and DES3 run in no test (the all-mechanisms build is not in the harness).
 - **Nit:** `ED_CURVES`/`ECM_CURVES` move next to `APPROVED` when 6b's `C_CreateObject` needs them; RULE-014's 14 is in `keygen.rs` and the shim.
+
+### 6b: `C_CreateObject`
+
+- **Golden:** step 4n scenario 3 (`p11_keys.c` `s_create`), written from `src/fhsm_pkcs11.c:3559-4138` before the port: every builder (EC public, bare, off the curve, on another or an unsupported curve; EC private from its scalar, zero, on a larger curve, unsupported curves, no curve; Edwards by OID and by curveName; X25519; RSA public and components; ML-KEM, ML-DSA and SLH-DSA raw and SPKI, the parameter set agreeing or not; the SO's trusted keys), each new object dumped. The keys are made in the driver by libcrypto, so their material prints as its length and step 4n links `-lcrypto`. C is deterministic run to run.
+- **Port:** `p11/src/ffi/create.rs` in C's order (token, template, RO, private login, trusted, attribute lengths, parse, the PQC parameter-set requirement), then C's three builders. Each ends in `Store::finish`: the handle written, then allowed mechanisms, nested templates, encapsulation flags (DIV-066: C skipped them on a rebuilt key), the Edwards curveName (not for a certificate), scope, metadata, usage, the object destroyed if a step fails. The libcrypto half is `crypto/src/ffi/import.rs`: `Pkey::raw_private`, `from_data` over `OSSL_PARAM_BLD`, `ec_from_scalar` (`fhsm_ec_priv_from_scalar`), `check`; `raw_public` and `is_a` are slice 5's (`sig.rs`), `ec_curve` slice 6a's. `fhsm_ec_curve_refusal` is `ec_curve(der, true)`: anything but `Invalid` is a curve. `fhsm_parse_create_attrs` stays for `fuzz/fuzz_create_attrs.c`.
+- **DIV-065:** an RSA public key passes `EVP_PKEY_public_check` (C ran it for EC and Edwards only), an RSA private key `EVP_PKEY_pairwise_check` (C trusted `EVP_PKEY_KEYPAIR` to check), and one without all five CRT components is 0xD0 before OpenSSL (C: 0x6 at `i2d_PrivateKey`). Test `p11_divs.c` DIV-065, which now links `-lcrypto` for its keys (libcrypto declared by hand there: `evp.h`'s `EVP_PKEY_decapsulate` would clash with DIV-052's interposer).
+- **RULE-017 reaches here:** `pset_read_in` (6a's `pset_read` with C's buffer size: 64 here, 32 for key generation) is shared, so a parameter-set name of another family is unknown on import too (C took any of the eighteen, then compared names or lengths). No golden row names one.
+- **Shortcuts:** a BIGNUM or builder allocation failure in `from_data` is `None`, so 0x13 (C: HOST_MEMORY or FUNCTION_FAILED), reachable only out of memory. `ED_CURVES`/`ECM_CURVES` and the other helpers create shares with keygen stay in `keygen.rs`, now `pub(super)`.
+
+### Slice 6b review (architecture critic, 2026-11-07)
+
+The unsafe code in `import.rs` was found correct (builder lifetimes, BIGNUM ownership, every early return freed, the DER wiped after `add`). Applied:
+- **H1 (decision):** DIV-065's checks are the loaded provider's; under the FIPS provider they are SP 800-56B's, so a signed module also refuses e = 3, short moduli and a d computed mod φ(n). Recorded per provider in DIVERGENCES (user: "Record per provider (Recommended)"); unverified until a FIPS run.
+- **H2:** C's create reads CKA_PARAMETER_SET into 64 bytes, key generation into 32. `pset_read` had 32 everywhere, so a NUL-padded `char[32]` name was 0xD1 on import; `pset_read_in` takes the size, unit test.
+- **M1:** the golden's `rsa priv extractable` gave only n, e and d, so no successful row set EXTRACTABLE or ALWAYS_AUTHENTICATE on a rebuilt private key; it now has the CRT five (0 on both, SENSITIVE, EXTRACTABLE and ALWAYS_AUTH read 01).
+- **M2 (decision):** C dropped CKA_ENCAPSULATE FALSE on a rebuilt public key: DIV-066 (user: "Fix as DIV-066 (Recommended)"). `Store::finish` lost its `encap` switch.
+- **L1:** the key type is compared whole (`key_type`), as C compared the CK_ULONG; it is narrowed only where C narrowed it, at the store.
+- **Nits:** `first_set` was `bbool` once `check_lengths` has run, so it went; the RSA parameter names are `import::RSA_PARAMS`, once.
+
+Recorded, not applied:
+- **L2:** the OSSL_PARAM array holding d, the primes or an EC scalar is freed without wiping (C the same). libcrypto 3.5 exports no `OSSL_PARAM_clear_free`; the BIGNUMs and the DER are wiped.

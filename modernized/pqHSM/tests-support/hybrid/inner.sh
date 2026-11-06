@@ -257,7 +257,7 @@ for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   echo "rc=$?" >> /out/p11_notinit_$tag.txt
 done
 # -rdynamic: DIV-052 interposes the libcrypto call that the pairwise check makes.
-cc -std=gnu17 -rdynamic -o /tmp/p11_divs modernized/pqHSM/tests-support/hybrid/p11_divs.c -ldl
+cc -std=gnu17 -rdynamic -o /tmp/p11_divs modernized/pqHSM/tests-support/hybrid/p11_divs.c -ldl -lcrypto
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
   d=$(mktemp -d)

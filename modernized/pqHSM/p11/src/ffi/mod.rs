@@ -3,6 +3,7 @@
 mod apilock;
 mod attrs;
 mod copy;
+mod create;
 mod create_attrs;
 mod crypt;
 mod digest;

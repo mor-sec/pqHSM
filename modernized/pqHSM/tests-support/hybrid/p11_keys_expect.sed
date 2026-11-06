@@ -33,3 +33,12 @@ s/^\(rsa e 2^17+1 \(pub\|priv\) PUBLIC_EXPONENT\t0\t0x3\t\)010001$/\1020001/
 s/^\(\(mlkem\|mldsa\|slhdsa\) name '[^']*'\)\t0x6\t-,-\t-$/\1\t0x13\t-,-\t-/
 /^\(mldsa name 'SLH-DSA-SHAKE-128f'\|slhdsa name 'ML-DSA-44'\) \(pub\|priv\) [A-Z_]*\t/d
 s/^\(mldsa name 'SLH-DSA-SHAKE-128f'\|slhdsa name 'ML-DSA-44'\)\t0\t+1,+1\t-$/\1\t0x13\t-,-\t-\n\1 objects\t0\t+0\t-/
+# DIV-065 (scenario 3): an imported RSA key is checked. An empty modulus fails the public
+# check and another key's d the pairwise check (0x13, C stored both); without the CRT five the
+# template is incomplete (0xD0; C failed encoding it, 0x6).
+/^\(rsa pub empty modulus\|rsa priv another key's d\) [A-Z_]*\t/d
+s/^\(rsa pub empty modulus\|rsa priv another key's d\)\t0\t+1\t-$/\1\t0x13\t-\t-\n\1 objects\t0\t+0\t-/
+s/^\(rsa priv n e d\)\t0x6\t/\1\t0xd0\t/
+# DIV-066 (scenario 3): a rebuilt public key keeps CKA_ENCAPSULATE FALSE (C's rebuilt-key path
+# never applied the encapsulation flags).
+s/^\(mlkem512 pub encapsulate false ENCAPSULATE\t0\t0x1\t\)01$/\100/
