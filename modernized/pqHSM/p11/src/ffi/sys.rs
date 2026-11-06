@@ -87,6 +87,7 @@ unsafe extern "C" {
     ) -> u32;
     pub fn fhsm_token_object_is_token(t: *mut fhsm_token_t, h: u32, out: *mut c_int) -> u32;
     pub fn fhsm_token_object_get_flags(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
+    pub fn fhsm_token_object_get_flags3(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
     pub fn fhsm_token_object_mech_allowed(t: *mut fhsm_token_t, h: u32, mech: u32) -> u32;
     pub fn fhsm_token_object_destroy(t: *mut fhsm_token_t, h: u32) -> u32;
     pub fn fhsm_token_object_get_label(
@@ -146,6 +147,54 @@ unsafe extern "C" {
     pub fn fhsm_hash_oneshot(alg: c_int, data: Slice, out: *mut u8, out_len: *mut usize) -> u32;
     /// src/gen/fhsm_dispatch.c: 1 in the nist-approved-only build.
     pub static fhsm_build_fips_strict: c_int;
+
+    // pqhsm-pki's composite ML-DSA-65 + Ed25519 (include/fhsm_composite.h)
+    pub fn fhsm_composite_ph_name(alg: c_int) -> *const c_char;
+    pub fn fhsm_composite_ph_len(alg: c_int) -> usize;
+    pub fn fhsm_composite_sign(
+        alg: c_int,
+        private: *const u8,
+        private_len: usize,
+        msg: *const u8,
+        msg_len: usize,
+        ctx: *const u8,
+        ctx_len: usize,
+        sig: *mut u8,
+        sig_len: *mut usize,
+    ) -> u32;
+    pub fn fhsm_composite_sign_prehashed(
+        alg: c_int,
+        private: *const u8,
+        private_len: usize,
+        ph: *const u8,
+        ph_len: usize,
+        ctx: *const u8,
+        ctx_len: usize,
+        sig: *mut u8,
+        sig_len: *mut usize,
+    ) -> u32;
+    pub fn fhsm_composite_verify(
+        alg: c_int,
+        public: *const u8,
+        public_len: usize,
+        msg: *const u8,
+        msg_len: usize,
+        ctx: *const u8,
+        ctx_len: usize,
+        sig: *const u8,
+        sig_len: usize,
+    ) -> u32;
+    pub fn fhsm_composite_verify_prehashed(
+        alg: c_int,
+        public: *const u8,
+        public_len: usize,
+        ph: *const u8,
+        ph_len: usize,
+        ctx: *const u8,
+        ctx_len: usize,
+        sig: *const u8,
+        sig_len: usize,
+    ) -> u32;
 
     // p11/shim/pkcs11_tu.c: C's statics, by accessor.
     pub fn pqhsm_c_session_ops_reset(h: c_ulong);

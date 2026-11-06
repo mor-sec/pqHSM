@@ -36,6 +36,7 @@ fn reset_after_fork() {
     unsafe { pqhsm_c_ops_forget_all() };
     super::digest::forget_all();
     super::crypt::forget_all();
+    super::sign::forget_all();
     fhsm_state_reset_after_fork();
 }
 
@@ -45,6 +46,7 @@ fn finalize_release() {
     unsafe { pqhsm_c_ops_release_all() };
     super::digest::release_all();
     super::crypt::release_all();
+    super::sign::release_all();
     super::objects::reset_finds();
     TABLE.reset_all();
     slots::close_all();

@@ -253,6 +253,19 @@ static void div_050(void) {
     want("the second's encryption ended", CALL(C_EncryptUpdate, h2, pt, 16UL, ct, &n2), 0x91);
     n2 = 64;
     want("the first's decryption ended", CALL(C_DecryptUpdate, h, pt, 16UL, ct, &n2), 0x91);
+    /* Slice 5: signing and verifying the same (HMAC takes the AES session key). */
+    struct { UL m; void *p; UL len; } hmac = { 0x251, NULL, 0 };
+    want("signinit the session key logged out", CALL(C_SignInit, h, &hmac, sk), 0x60);
+    want("verifyinit the session key logged out", CALL(C_VerifyInit, h, &hmac, sk), 0x60);
+    want("login user for the signature", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("signinit the session key", CALL(C_SignInit, h, &hmac, sk), 0);
+    want("verifyinit the session key", CALL(C_VerifyInit, h, &hmac, sk), 0);
+    want("logout under the signature", CALL(C_Logout, h), 0);
+    out = sizeof ct;
+    want("sign after the logout", CALL(C_Sign, h, pt, 16UL, ct, &out), 0x91);
+    want("verify after the logout", CALL(C_Verify, h, pt, 16UL, ct, 32UL), 0x91);
+    want("login so for the signature", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
+    want("so signinit the session key", CALL(C_SignInit, h, &hmac, sk), 0x60);
     CALL(C_Finalize, NULL);
 }
 
@@ -307,6 +320,22 @@ static void div_062(void) {
     n = 64;
     want("update cbc", CALL(C_EncryptUpdate, h, pt, 16UL, ct, &n), 0);
     want("the update is the cbc encryption", n == 16 && !memcmp(ct, want_ct, 16), 1);
+    /* Slice 5: a MAC stream. C_Sign ends an operation whose update opened one; C kept the
+     * stream, so the next SignInit's update went on with it, under the old data. */
+    struct { UL m; void *p; UL len; } hmac = { 0x251, NULL, 0 };
+    unsigned char mac[32], mac2[64];
+    UL ml = 32;
+    want("signinit hmac", CALL(C_SignInit, h, &hmac, k), 0);
+    want("sign hmac", CALL(C_Sign, h, pt, 16UL, mac, &ml), 0);
+    want("signinit hmac again", CALL(C_SignInit, h, &hmac, k), 0);
+    want("signupdate", CALL(C_SignUpdate, h, iv, 16UL), 0);
+    ml = sizeof mac2;
+    want("sign ends it, leaving the stream", CALL(C_Sign, h, pt, 16UL, mac2, &ml), 0);
+    want("signinit hmac a third time", CALL(C_SignInit, h, &hmac, k), 0);
+    want("signupdate the data", CALL(C_SignUpdate, h, pt, 16UL), 0);
+    ml = sizeof mac2;
+    want("signfinal", CALL(C_SignFinal, h, mac2, &ml), 0);
+    want("the parts are the single-part mac", ml == 32 && !memcmp(mac, mac2, 32), 1);
     CALL(C_Finalize, NULL);
 }
 
@@ -353,6 +382,18 @@ static void div_001_case(int which) {
         want("nothing written on the failure", got[0] == 0xAA && got[15] == 0xAA, 1);
         return;
     }
+    if (which == 6) {
+        /* Slice 5: a C_Sign that cannot be audited writes no signature. */
+        UL hs, k = user_key(&hs, 16), out = 64;
+        unsigned char pt[16] = { 2 }, sig[64];
+        struct { UL m; void *p; UL len; } hmac = { 0x251, NULL, 0 };
+        memset(sig, 0xAA, sizeof sig);
+        want("signinit", CALL(C_SignInit, hs, &hmac, k), 0);
+        fail_audit();
+        want("sign, audit failing", CALL(C_Sign, hs, pt, 16UL, sig, &out), 0x30);
+        want("nothing written", sig[0] == 0xAA && sig[31] == 0xAA && out == 64, 1);
+        return;
+    }
     if (which == 4) {
         /* Slice 4: a C_Encrypt that cannot be audited writes nothing. */
         UL hs, k = user_key(&hs, 16), out = 64;
@@ -391,7 +432,7 @@ static void div_001_case(int which) {
 
 static void div_001(void) {
     const char *base = getenv("FHSM_TOKENS_DIR");
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
         char d[700];
         snprintf(d, sizeof d, "%s/%d", base, i);
         mkdir(d, 0700);

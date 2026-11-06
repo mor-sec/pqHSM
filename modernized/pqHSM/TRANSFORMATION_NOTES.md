@@ -1106,3 +1106,33 @@ Recorded, not applied:
 - **L4 rest:** no test that an operation on a public key survives logout (needs an RSA key in `p11_divs.c`), or that another token's survive.
 - Nits: `cipher::cleanse` beside `sys::zeroize` (the second calls C, which the unit tests cannot link); `kind()` keeps C's integer codes; `object`'s lifetime is not tied to the `Held` guard.
 
+
+## Slice 5: sign and verify
+
+### 5a: golden first
+
+- `tests-support/hybrid/p11_sign.c` (harness step 4m), written from the C before the port: every Init check and parameter shape (GMAC, PSS, ML-DSA, HashML-DSA, EdDSA); eleven HMACs, CMAC and GMAC at each key size; ECDSA P-256/384/521, Ed25519, Ed448, RSA PKCS#1 and PSS, raw RSA, ML-DSA-44/65/87 with contexts, HashML-DSA per hash and generic, SLH-DSA SHA2-128f and SHAKE-128f; size queries, 1-byte buffers, tampered and short signatures, the same in parts; ALWAYS_AUTHENTICATE, the 16 MiB multipart ceiling, a reused handle, logout, SO, a fork and finalize. Randomised signatures print as `rnd:<len>` and are checked by verifying. 3994 rows on C, the same twice. `p11_sign_expect.sed` records the DIV rows.
+
+### 5b: the eight entry points in Rust
+
+- `p11/src/ffi/sign.rs`: `C_SignInit`, `C_Sign`, `C_SignUpdate`, `C_SignFinal` and the four `C_Verify*`, in C's check order, under the shared API lock with DIV-051's and DIV-053's gate. `hybrid.mk` moves them to the Rust-owned list; `interface.c` forwards them.
+- **The tables:** C's `g_op_sig` and `g_op_ver` become `sign::SIG` and `VER`, with the same hooks as `crypt.rs` (session open and close, finalize, fork, the context login's count and grant, DIV-050's logout).
+- **Crypto:** `pqhsm_crypto::sig` holds thin EVP wrappers: the MAC and digest streams, DigestSign/DigestVerify contexts with their init and post-init OSSL_PARAMs, the raw `EVP_PKEY_sign`/`verify` context, `pss_apply_params`, the raw ML-DSA public key import and a constant-time compare. The call sequences and each failure's code stay in `sign.rs`.
+- **ECDSA raw r||s and DER:** `src/fhsm_ecdsa_raw.c` becomes `pqhsm_core::ecdsa`, pure Rust. The plan had core call pqhsm-pki's raw-to-DER; core does not depend on pki, and the twenty lines each way were smaller than the dependency. The C file stays in the build while other C calls it.
+- **Composite (all-mechanisms profile only):** ported over pqhsm-pki's `fhsm_composite_*` exports; the strict build refuses it at both Inits, as C (Q17; step 4m's composite rows are those refusals).
+- **Kept as C:** OPERATION_ACTIVE after the key, type, allowed-mechanism and usage checks; GMAC's struct form reading any block of 48 bytes or more, and its raw IV of 12 to 512 bytes; PSS with an unknown MGF accepted at Init and FUNCTION_FAILED at the signature (0x71 at a hashed verification); an HMAC key created with CKA_ALWAYS_AUTHENTICATE signs without the context login (step 4m's `sign without context login` is 0 on both); composite updates that fail leave the operation active; a too-long ML-DSA context refused at SignInit and false at Verify; MACs not audited, asymmetric signatures and verifications audited; a short buffer keeps the operation and the retry signs again.
+- **Not observable:** CMAC's and GMAC's key length is checked before the MAC is fetched (C: after the fetch and the context, whose failures cannot happen); a NULL DigestSign context in the hashed path is FUNCTION_FAILED, as C, elsewhere HOST_MEMORY, as C.
+- **A NULL signature with a length at `C_Verify`** is 0x7 where C first reads it; C read through the pointer (a crash). The order of every other check is C's.
+- **DIV-001:** every signature is made in scratch, recorded, then copied out; a verification that succeeds but cannot be recorded is 0x30.
+- shortcut: the same fork window as the digest and cipher slots (review M1 of slice 3); first in M3's atfork work.
+- **Golden:** step 4m identical to C less the recorded rows: DIV-050 (logged-out and SO key use 0x60, operations ended at logout 0x91, and two rows that follow from them), DIV-051, DIV-062. Unit tests: the mechanism tables, M' for HashML-DSA, the PSS arguments, the MAC and digest wrappers, raw r||s to DER and back.
+- **Untested by the harness:** the all-mechanisms profile's SHA1-RSA, raw RSA X.509 and composite paths.
+
+### DIV-050, the sign and verify part
+
+- SignInit and VerifyInit answer 0x60 for a secret or private key, token or session, unless the user is logged in, right after the key lookup. `C_Logout` ends every signature and verification under way on such a key of that token. A verification with a public key goes on.
+- **Test:** `p11_divs.c` DIV-050, HMAC with the session key logged out, across a logout and as SO.
+
+### DIV-062, the sign and verify part
+
+- C's `op_init` never freed an operation's MAC stream, so after an update and a single-part `C_Sign` (which ends the operation and leaves the stream), the next Init's update went on with the old stream. Each Init now starts afresh. Found by the 5a golden (`life verify needs no context login`, 0xC0 on C); test `p11_divs.c` DIV-062's HMAC case.

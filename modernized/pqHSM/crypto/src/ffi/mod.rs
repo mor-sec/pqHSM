@@ -6,6 +6,7 @@
 
 pub mod cipher;
 pub mod prim;
+pub mod sig;
 pub(crate) mod sys;
 
 // Used by the C ABI only, and by its own tests.

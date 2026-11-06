@@ -11,7 +11,7 @@ Method: `/modernize-transform`, slice by slice, as in Phases 2 and 3: characteri
 | `src/fhsm_pkcs11.c` | 13,386 | `pqhsm-p11` (the `C_*` entry points, argument checks, return-code mapping) and `pqhsm-core` (the operations behind them) |
 | `src/fhsm_create_attrs.c` | 432 | `pqhsm-core::template` |
 | `src/fhsm_pq_params.c` | 64 | `pqhsm-core::template` |
-| `src/fhsm_ecdsa_raw.c` | 65 | `pqhsm-core` (calls `pqhsm-pki`'s raw-to-DER, ported in slice 5) |
+| `src/fhsm_ecdsa_raw.c` | 65 | `pqhsm-core` (revised at slice 5: its own twenty lines each way, not `pqhsm-pki`'s raw-to-DER, so core takes no pki dependency) |
 | `src/fhsm_state.c` | 143 | `pqhsm-core::state` |
 | `src/fhsm_session.c` | 267 | `pqhsm-core::session` |
 | `src/fhsm_apilock.c` | 178 | `pqhsm-core::apilock` |

@@ -12,11 +12,11 @@ use openssl_sys::{
     EVP_CIPHER_CTX_ctrl, EVP_CIPHER_CTX_free, EVP_CIPHER_CTX_new, EVP_CIPHER_CTX_set_flags,
     EVP_CIPHER_CTX_set_padding, EVP_CIPHER_fetch, EVP_CIPHER_free, EVP_DecryptFinal_ex,
     EVP_DecryptInit_ex, EVP_DecryptUpdate, EVP_EncryptFinal_ex, EVP_EncryptInit_ex,
-    EVP_EncryptUpdate, EVP_MD, EVP_MD_fetch, EVP_MD_free, EVP_MD_get_size, EVP_PKEY,
-    EVP_PKEY_CTX, EVP_PKEY_CTX_free, EVP_PKEY_CTX_new, EVP_PKEY_decrypt, EVP_PKEY_decrypt_init,
-    EVP_PKEY_encrypt, EVP_PKEY_encrypt_init, EVP_PKEY_free, EVP_PKEY_get_size,
-    EVP_aes_128_ccm, EVP_aes_128_gcm, EVP_aes_192_ccm, EVP_aes_192_gcm, EVP_aes_256_ccm,
-    EVP_aes_256_gcm, OSSL_PARAM, d2i_AutoPrivateKey, d2i_PUBKEY,
+    EVP_EncryptUpdate, EVP_MD, EVP_MD_fetch, EVP_MD_free, EVP_MD_get_size, EVP_PKEY, EVP_PKEY_CTX,
+    EVP_PKEY_CTX_free, EVP_PKEY_CTX_new, EVP_PKEY_decrypt, EVP_PKEY_decrypt_init, EVP_PKEY_encrypt,
+    EVP_PKEY_encrypt_init, EVP_PKEY_free, EVP_PKEY_get_size, EVP_aes_128_ccm, EVP_aes_128_gcm,
+    EVP_aes_192_ccm, EVP_aes_192_gcm, EVP_aes_256_ccm, EVP_aes_256_gcm, OSSL_PARAM,
+    d2i_AutoPrivateKey, d2i_PUBKEY,
 };
 
 use crate::rv;
@@ -53,10 +53,10 @@ const SET_TAG: c_int = 0x11;
 const OAEP_PADDING: c_int = 4;
 
 /// An OpenSSL object, freed on drop.
-struct Owned<T>(*mut T, unsafe extern "C" fn(*mut T));
+pub(crate) struct Owned<T>(pub(crate) *mut T, unsafe extern "C" fn(*mut T));
 
 impl<T> Owned<T> {
-    fn new(p: *mut T, free: unsafe extern "C" fn(*mut T)) -> Option<Self> {
+    pub(crate) fn new(p: *mut T, free: unsafe extern "C" fn(*mut T)) -> Option<Self> {
         (!p.is_null()).then_some(Self(p, free))
     }
 }
@@ -136,17 +136,37 @@ impl Cipher {
 
     /// `EVP_EncryptInit_ex2` or `EVP_DecryptInit_ex2`. The key and IV must be as long as the
     /// cipher (set now or before) wants.
-    pub fn init2(&mut self, enc: bool, c: Option<&Fetched>, key: Option<&[u8]>, iv: Option<&[u8]>) -> bool {
+    pub fn init2(
+        &mut self,
+        enc: bool,
+        c: Option<&Fetched>,
+        key: Option<&[u8]>,
+        iv: Option<&[u8]>,
+    ) -> bool {
         let c = c.map_or(null(), |c| c.0.0.cast_const());
-        let f = if enc { EVP_EncryptInit_ex2 } else { EVP_DecryptInit_ex2 };
+        let f = if enc {
+            EVP_EncryptInit_ex2
+        } else {
+            EVP_DecryptInit_ex2
+        };
         // SAFETY: a live context; key and IV readable for what the cipher reads (caller)
         unsafe { f(self.0.0, c, ptr(key), ptr(iv), null()) == 1 }
     }
 
     /// `EVP_EncryptInit_ex` or `EVP_DecryptInit_ex`, with a cipher from [`aead`].
-    pub fn init(&mut self, enc: bool, c: Option<*const EVP_CIPHER>, key: Option<&[u8]>, iv: Option<&[u8]>) -> bool {
+    pub fn init(
+        &mut self,
+        enc: bool,
+        c: Option<*const EVP_CIPHER>,
+        key: Option<&[u8]>,
+        iv: Option<&[u8]>,
+    ) -> bool {
         let c = c.unwrap_or(null());
-        let f = if enc { EVP_EncryptInit_ex } else { EVP_DecryptInit_ex };
+        let f = if enc {
+            EVP_EncryptInit_ex
+        } else {
+            EVP_DecryptInit_ex
+        };
         // SAFETY: as init2; c is null or one of OpenSSL's static tables
         unsafe { f(self.0.0, c, null_mut(), ptr(key), ptr(iv)) == 1 }
     }
@@ -188,8 +208,18 @@ impl Cipher {
     /// # Safety
     /// `inp` readable for `n` bytes unless NULL; `out` NULL or writable for what the update
     /// produces (`n` plus one block); `n` at most `i32::MAX`.
-    pub unsafe fn update(&mut self, enc: bool, out: *mut u8, inp: *const u8, n: usize) -> Option<usize> {
-        let f = if enc { EVP_EncryptUpdate } else { EVP_DecryptUpdate };
+    pub unsafe fn update(
+        &mut self,
+        enc: bool,
+        out: *mut u8,
+        inp: *const u8,
+        n: usize,
+    ) -> Option<usize> {
+        let f = if enc {
+            EVP_EncryptUpdate
+        } else {
+            EVP_DecryptUpdate
+        };
         let mut l = 0;
         // SAFETY: the caller's
         (unsafe { f(self.0.0, out, &mut l, inp, n as c_int) } == 1).then_some(l as usize)
@@ -200,7 +230,11 @@ impl Cipher {
     /// # Safety
     /// `out` writable for one block.
     pub unsafe fn finish(&mut self, enc: bool, out: *mut u8) -> Option<usize> {
-        let f = if enc { EVP_EncryptFinal_ex } else { EVP_DecryptFinal_ex };
+        let f = if enc {
+            EVP_EncryptFinal_ex
+        } else {
+            EVP_DecryptFinal_ex
+        };
         let mut l = 0;
         // SAFETY: the caller's
         (unsafe { f(self.0.0, out, &mut l) } == 1).then_some(l as usize)
@@ -233,23 +267,30 @@ pub fn md_known(name: &CStr) -> bool {
     }
 }
 
-/// An RSA key from its DER (`EVP_PKEY`).
-pub struct Pkey(Owned<EVP_PKEY>);
+/// A key from its DER (`EVP_PKEY`).
+pub struct Pkey(pub(crate) Owned<EVP_PKEY>);
 
 impl Pkey {
     /// `d2i_PUBKEY`.
     pub fn public(der: &[u8]) -> Option<Self> {
         let mut p = der.as_ptr();
         // SAFETY: der readable for its length
-        Owned::new(unsafe { d2i_PUBKEY(null_mut(), &mut p, der.len() as c_long) }, EVP_PKEY_free).map(Self)
+        Owned::new(
+            unsafe { d2i_PUBKEY(null_mut(), &mut p, der.len() as c_long) },
+            EVP_PKEY_free,
+        )
+        .map(Self)
     }
 
     /// `d2i_AutoPrivateKey`.
     pub fn private(der: &[u8]) -> Option<Self> {
         let mut p = der.as_ptr();
         // SAFETY: as above
-        Owned::new(unsafe { d2i_AutoPrivateKey(null_mut(), &mut p, der.len() as c_long) }, EVP_PKEY_free)
-            .map(Self)
+        Owned::new(
+            unsafe { d2i_AutoPrivateKey(null_mut(), &mut p, der.len() as c_long) },
+            EVP_PKEY_free,
+        )
+        .map(Self)
     }
 
     /// `EVP_PKEY_get_size`: the modulus length in bytes.
@@ -270,14 +311,22 @@ impl PkeyCtx {
     /// FUNCTION_FAILED if the init or the padding fails, MECHANISM_PARAM_INVALID if either
     /// digest is unknown (`None`) or will not fetch, FUNCTION_FAILED if setting them or the
     /// label fails. An empty label sets none.
-    pub fn oaep(k: &Pkey, enc: bool, md: Option<&CStr>, mgf: Option<&CStr>, label: &[u8]) -> Result<Self, u32> {
+    pub fn oaep(
+        k: &Pkey,
+        enc: bool,
+        md: Option<&CStr>,
+        mgf: Option<&CStr>,
+        label: &[u8],
+    ) -> Result<Self, u32> {
         let mut c = Self::new(k, enc)?;
         if !c.init() || !c.padding(OAEP_PADDING) {
             return Err(rv::FUNCTION_FAILED);
         }
         // SAFETY: C strings; each fetched digest is freed below, set_rsa_*_md keep their own
         unsafe {
-            let fetch = |n: Option<&CStr>| n.map_or(null_mut(), |n| EVP_MD_fetch(null_mut(), n.as_ptr(), null()));
+            let fetch = |n: Option<&CStr>| {
+                n.map_or(null_mut(), |n| EVP_MD_fetch(null_mut(), n.as_ptr(), null()))
+            };
             let (h, g) = (fetch(md), fetch(mgf));
             let r = if h.is_null() || g.is_null() {
                 Err(rv::MECHANISM_PARAM_INVALID)
@@ -310,7 +359,10 @@ impl PkeyCtx {
     /// `EVP_PKEY_CTX_new`; HOST_MEMORY without one.
     pub fn new(k: &Pkey, enc: bool) -> Result<Self, u32> {
         // SAFETY: a live key
-        let ctx = Owned::new(unsafe { EVP_PKEY_CTX_new(k.0.0, null_mut()) }, EVP_PKEY_CTX_free);
+        let ctx = Owned::new(
+            unsafe { EVP_PKEY_CTX_new(k.0.0, null_mut()) },
+            EVP_PKEY_CTX_free,
+        );
         ctx.map(|ctx| Self { ctx, enc }).ok_or(rv::HOST_MEMORY)
     }
 
@@ -318,7 +370,11 @@ impl PkeyCtx {
     pub fn init(&mut self) -> bool {
         // SAFETY: a live context
         unsafe {
-            (if self.enc { EVP_PKEY_encrypt_init(self.ctx.0) } else { EVP_PKEY_decrypt_init(self.ctx.0) }) > 0
+            (if self.enc {
+                EVP_PKEY_encrypt_init(self.ctx.0)
+            } else {
+                EVP_PKEY_decrypt_init(self.ctx.0)
+            }) > 0
         }
     }
 
@@ -347,7 +403,11 @@ impl PkeyCtx {
     /// # Safety
     /// `out` NULL or writable for `*len` bytes.
     pub unsafe fn run(&mut self, out: *mut u8, len: &mut usize, inp: &[u8]) -> bool {
-        let f = if self.enc { EVP_PKEY_encrypt } else { EVP_PKEY_decrypt };
+        let f = if self.enc {
+            EVP_PKEY_encrypt
+        } else {
+            EVP_PKEY_decrypt
+        };
         // SAFETY: the caller's; inp readable for its length
         unsafe { f(self.ctx.0, out, len, inp.as_ptr(), inp.len()) > 0 }
     }
@@ -376,8 +436,15 @@ mod tests {
         let mut parts = [0u8; 48];
         // SAFETY: as above
         unsafe {
-            let a = c2.update(true, parts.as_mut_ptr(), msg.as_ptr(), 5).unwrap();
-            let b = c2.try_clone().unwrap().update(true, parts.as_mut_ptr().add(a), msg[5..].as_ptr(), 27);
+            let a = c2
+                .update(true, parts.as_mut_ptr(), msg.as_ptr(), 5)
+                .unwrap();
+            let b = c2.try_clone().unwrap().update(
+                true,
+                parts.as_mut_ptr().add(a),
+                msg[5..].as_ptr(),
+                27,
+            );
             assert_eq!(a + b.unwrap(), 32);
         }
         assert_eq!(one[..32], parts[..32]);
@@ -386,7 +453,10 @@ mod tests {
         d.set_padding(false);
         let mut back = [0u8; 48];
         // SAFETY: as above
-        assert_eq!(unsafe { d.update(false, back.as_mut_ptr(), one.as_ptr(), 32) }, Some(32));
+        assert_eq!(
+            unsafe { d.update(false, back.as_mut_ptr(), one.as_ptr(), 32) },
+            Some(32)
+        );
         assert_eq!(back[..32], msg);
     }
 
@@ -416,7 +486,10 @@ mod tests {
             unsafe { d.update(false, pt.as_mut_ptr(), ct.as_ptr(), 5) }.unwrap();
             assert!(d.set_tag(16, Some(&t)));
             // SAFETY: as above
-            assert_eq!(unsafe { d.finish(false, pt.as_mut_ptr().add(5)) }.is_some(), !flip);
+            assert_eq!(
+                unsafe { d.finish(false, pt.as_mut_ptr().add(5)) }.is_some(),
+                !flip
+            );
         }
         assert!(aead(Aead::Ccm, 20).is_none() && md_known(c"SHA256") && !md_known(c"NOPE"));
     }

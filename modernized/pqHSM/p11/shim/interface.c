@@ -82,6 +82,16 @@ FWD(C_Decrypt, (UL h, void *e, UL en, void *d, void *dn), (h, e, en, d, dn))
 FWD(C_DecryptUpdate, (UL h, void *e, UL en, void *d, void *dn), (h, e, en, d, dn))
 FWD(C_DecryptFinal, (UL h, void *d, void *dn), (h, d, dn))
 
+/* Phase 4 slice 5: sign and verify (p11/src/ffi/sign.rs). */
+FWD(C_SignInit, (UL h, void *m, UL k), (h, m, k))
+FWD(C_Sign, (UL h, void *d, UL dn, void *s, void *sn), (h, d, dn, s, sn))
+FWD(C_SignUpdate, (UL h, void *d, UL dn), (h, d, dn))
+FWD(C_SignFinal, (UL h, void *s, void *sn), (h, s, sn))
+FWD(C_VerifyInit, (UL h, void *m, UL k), (h, m, k))
+FWD(C_Verify, (UL h, void *d, UL dn, void *s, UL sn), (h, d, dn, s, sn))
+FWD(C_VerifyUpdate, (UL h, void *d, UL dn), (h, d, dn))
+FWD(C_VerifyFinal, (UL h, void *s, UL sn), (h, s, sn))
+
 /* Phase 4 slice 1, DIV-051 and DIV-053: the entry points still in C refuse with
  * CKR_CRYPTOKI_NOT_INITIALIZED outside an initialised process, and in ERROR, as Rust's do. hybrid.mk renames C's to pqhsm_c_<name>; these
  * take the exported names. shortcut: the gate is read before the C takes the API lock, so a call
@@ -105,14 +115,6 @@ GATE(C_CancelFunction, (UL h), (h))
 GATE(C_SeedRandom, (UL h, P p, UL n), (h, p, n))
 GATE(C_GenerateRandom, (UL h, P p, UL n), (h, p, n))
 GATE(C_CreateObject, (UL h, P t, UL n, P o), (h, t, n, o))
-GATE(C_SignInit, (UL h, P m, UL k), (h, m, k))
-GATE(C_Sign, (UL h, P d, UL dn, P s, P sn), (h, d, dn, s, sn))
-GATE(C_SignUpdate, (UL h, P d, UL dn), (h, d, dn))
-GATE(C_SignFinal, (UL h, P s, P sn), (h, s, sn))
-GATE(C_VerifyInit, (UL h, P m, UL k), (h, m, k))
-GATE(C_Verify, (UL h, P d, UL dn, P s, UL sn), (h, d, dn, s, sn))
-GATE(C_VerifyUpdate, (UL h, P d, UL dn), (h, d, dn))
-GATE(C_VerifyFinal, (UL h, P s, UL sn), (h, s, sn))
 GATE(C_GenerateKey, (UL h, P m, P t, UL n, P k), (h, m, t, n, k))
 GATE(C_GenerateKeyPair, (UL h, P m, P pu, UL npu, P pr, UL npr, P hpu, P hpr), (h, m, pu, npu, pr, npr, hpu, hpr))
 GATE(C_WrapKey, (UL h, P m, UL wk, UL k, P o, P on), (h, m, wk, k, o, on))

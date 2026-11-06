@@ -10,6 +10,7 @@ mod lifecycle;
 mod login;
 mod objects;
 mod session;
+mod sign;
 mod slots;
 mod state;
 mod sys;

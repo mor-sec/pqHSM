@@ -15,7 +15,9 @@ use std::ptr::{copy_nonoverlapping, null, null_mut};
 use std::sync::{Mutex, MutexGuard};
 
 use pqhsm_core::session::MAX;
-use pqhsm_crypto::cipher::{Aead, AeadCipher, Cipher, Fetched, Pkey, PkeyCtx, aead, cleanse, md_known};
+use pqhsm_crypto::cipher::{
+    Aead, AeadCipher, Cipher, Fetched, Pkey, PkeyCtx, aead, cleanse, md_known,
+};
 
 use super::apilock::Held;
 use super::digest::{Mech, bytes, sized};
@@ -233,10 +235,11 @@ pub(super) fn forget_all() {
 }
 
 /// `fhsm_token_object_get`: the value, class and key type, or its rv.
-fn object<'a>(t: Tok, k: u32) -> Result<(&'a [u8], u32, u32), u32> {
+pub(super) fn object<'a>(t: Tok, k: u32) -> Result<(&'a [u8], u32, u32), u32> {
     let (mut v, mut vl, mut class, mut kt) = (null(), 0usize, 0u32, 0u32);
     // SAFETY: a token the registry holds; out pointers of our own
-    let rv = unsafe { fhsm_token_object_get(t.0.as_ptr(), k, &mut v, &mut vl, &mut class, &mut kt) };
+    let rv =
+        unsafe { fhsm_token_object_get(t.0.as_ptr(), k, &mut v, &mut vl, &mut class, &mut kt) };
     if rv != OK {
         return Err(rv);
     }
@@ -263,7 +266,14 @@ fn fail_recorded(enc: bool, h: c_ulong, op: &mut Op, rv: u32, recorded: u32) -> 
 ///
 /// # Safety
 /// `out` writable for `b.len()` bytes, which C's checks before established.
-unsafe fn emit(enc: bool, h: c_ulong, op: &mut Op, b: &[u8], out: *mut u8, out_len: *mut c_ulong) -> u32 {
+unsafe fn emit(
+    enc: bool,
+    h: c_ulong,
+    op: &mut Op,
+    b: &[u8],
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> u32 {
     op.active = false;
     if let Err(e) = record(enc, h, OK) {
         return e;
@@ -276,7 +286,7 @@ unsafe fn emit(enc: bool, h: c_ulong, op: &mut Op, b: &[u8], out: *mut u8, out_l
     OK
 }
 
-fn strict() -> bool {
+pub(super) fn strict() -> bool {
     // SAFETY: a constant the C build defines
     (unsafe { fhsm_build_fips_strict }) != 0
 }
@@ -288,7 +298,10 @@ fn nonfips_rejected(m: c_ulong) -> bool {
 
 /// `fhsm_cipher_mech_valid`.
 fn cipher_mech_valid(m: c_ulong) -> bool {
-    matches!(m, ECB | CBC | CBC_PAD | CTR | GCM | CCM | DES3_CBC | RSA_PKCS | RSA_X_509 | OAEP | KW | KWP)
+    matches!(
+        m,
+        ECB | CBC | CBC_PAD | CTR | GCM | CCM | DES3_CBC | RSA_PKCS | RSA_X_509 | OAEP | KW | KWP
+    )
 }
 
 /// `fhsm_check_key_mech_type`'s cipher rows: the key type a mechanism needs, if any.
@@ -318,7 +331,7 @@ fn oaep_md(m: c_ulong) -> Option<&'static CStr> {
 }
 
 /// `mgf_md`.
-fn mgf_md(g: c_ulong) -> Option<&'static CStr> {
+pub(super) fn mgf_md(g: c_ulong) -> Option<&'static CStr> {
     Some(match g {
         1 => c"SHA1",
         5 => c"SHA224",
@@ -337,7 +350,7 @@ fn mgf_md(g: c_ulong) -> Option<&'static CStr> {
 ///
 /// # Safety
 /// `p` readable for `N` CK_ULONGs.
-unsafe fn ulongs<const N: usize>(p: *const u8) -> [c_ulong; N] {
+pub(super) unsafe fn ulongs<const N: usize>(p: *const u8) -> [c_ulong; N] {
     // SAFETY: the caller's
     unsafe { p.cast::<[c_ulong; N]>().read_unaligned() }
 }
@@ -346,7 +359,7 @@ unsafe fn ulongs<const N: usize>(p: *const u8) -> [c_ulong; N] {
 ///
 /// # Safety
 /// `p` readable for `n` bytes when `n` is not zero.
-unsafe fn copied(p: c_ulong, n: usize) -> Vec<u8> {
+pub(super) unsafe fn copied(p: c_ulong, n: usize) -> Vec<u8> {
     // SAFETY: the caller's
     unsafe { bytes(p as *const u8, n) }.to_vec()
 }
@@ -418,7 +431,11 @@ unsafe fn params(m: &Mech, op: &mut Op) -> Result<(), u32> {
             return Err(MECHANISM_PARAM_INVALID);
         };
         // SAFETY: at + 16 <= n bytes (caller)
-        op.iv = Some(unsafe { bytes(p.add(at), 16) }.try_into().expect("16 bytes"));
+        op.iv = Some(
+            unsafe { bytes(p.add(at), 16) }
+                .try_into()
+                .expect("16 bytes"),
+        );
     }
     if matches!(m.mechanism, KW | KWP) && !(p.is_null() && n == 0) {
         // kw_iv_from_mech: none, or exactly 8 (KW) or 4 (KWP) bytes
@@ -537,7 +554,8 @@ unsafe fn init(enc: bool, h: c_ulong, m: *const Mech, key: c_ulong) -> u32 {
     }
     let mut f = 0u8;
     // SAFETY: as above
-    let always = unsafe { fhsm_token_object_get_flags(t, k, &mut f) } == OK && f & OBJF_ALWAYS_AUTH != 0;
+    let always =
+        unsafe { fhsm_token_object_get_flags(t, k, &mut f) } == OK && f & OBJF_ALWAYS_AUTH != 0;
     // DIV-062: a fresh operation, so no context an earlier one left carries on.
     let mut op = Op {
         mech: m.mechanism,
@@ -652,7 +670,9 @@ fn run(enc: bool, x: &mut Cipher, inp: &[u8], cap: usize, fail: u32) -> Result<S
     let mut o = Secret::zeroed(cap + 32)?;
     // SAFETY: o has room for the input plus two blocks; inp readable; its length <= MAX_INPUT
     unsafe {
-        let a = x.update(enc, o.0.as_mut_ptr(), inp.as_ptr(), inp.len()).ok_or(fail)?;
+        let a = x
+            .update(enc, o.0.as_mut_ptr(), inp.as_ptr(), inp.len())
+            .ok_or(fail)?;
         let b = x.finish(enc, o.0.as_mut_ptr().add(a)).ok_or(fail)?;
         o.0.truncate(a + b);
     }
@@ -668,7 +688,11 @@ fn oaep_ctx(op: &Op, k: &Pkey, enc: bool) -> Result<PkeyCtx, u32> {
 fn raw_ctx(op: &Op, k: &Pkey, enc: bool) -> Result<PkeyCtx, u32> {
     let pad = if op.mech == RSA_PKCS { 1 } else { 3 };
     let mut x = PkeyCtx::new(k, enc).map_err(|_| FUNCTION_FAILED)?;
-    if x.init() && x.padding(pad) { Ok(x) } else { Err(FUNCTION_FAILED) }
+    if x.init() && x.padding(pad) {
+        Ok(x)
+    } else {
+        Err(FUNCTION_FAILED)
+    }
 }
 
 /// `Ok(v)`, or end the operation with the error.
@@ -682,7 +706,13 @@ macro_rules! or_end {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pqhsm_C_Encrypt(h: c_ulong, data: *const u8, n: c_ulong, out: *mut u8, out_len: *mut c_ulong) -> c_ulong {
+pub unsafe extern "C" fn pqhsm_C_Encrypt(
+    h: c_ulong,
+    data: *const u8,
+    n: c_ulong,
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> c_ulong {
     let _g = Held::shared();
     if let Err(rv) = gate() {
         return rv.into();
@@ -714,7 +744,16 @@ pub unsafe extern "C" fn pqhsm_C_Encrypt(h: c_ulong, data: *const u8, n: c_ulong
 /// # Safety
 /// As C_Encrypt's: `out` NULL or writable for `*out_len` bytes, `out_len` a CK_ULONG.
 #[allow(clippy::too_many_arguments)]
-unsafe fn encrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, data: &[u8], out: *mut u8, out_len: *mut c_ulong) -> u32 {
+unsafe fn encrypt(
+    h: c_ulong,
+    op: &mut Op,
+    kv: &[u8],
+    cl: u32,
+    kt: u32,
+    data: &[u8],
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> u32 {
     let n = data.len();
     match op.mech {
         OAEP | RSA_PKCS | RSA_X_509 => {
@@ -728,7 +767,14 @@ unsafe fn encrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, data: &[
             let Some(k) = Pkey::public(kv) else {
                 return op.end(FUNCTION_FAILED);
             };
-            let mut x = or_end!(op, if oaep { oaep_ctx(op, &k, true) } else { raw_ctx(op, &k, true) });
+            let mut x = or_end!(
+                op,
+                if oaep {
+                    oaep_ctx(op, &k, true)
+                } else {
+                    raw_ctx(op, &k, true)
+                }
+            );
             if oaep {
                 let (size, hl) = (k.size(), x.oaep_md_size());
                 if size <= 0 || hl <= 0 {
@@ -803,7 +849,11 @@ unsafe fn encrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, data: &[
         CCM | GCM => {
             let gcm = op.mech == GCM;
             if kt != CKK_AES {
-                return op.end(if gcm { MECHANISM_INVALID } else { KEY_TYPE_INCONSISTENT });
+                return op.end(if gcm {
+                    MECHANISM_INVALID
+                } else {
+                    KEY_TYPE_INCONSISTENT
+                });
             }
             let tag = op.tag();
             // SAFETY: out_len a CK_ULONG (caller)
@@ -830,7 +880,15 @@ unsafe fn encrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, data: &[
 /// C's GCM and CCM encryption sequences (`:10074-10101`, `:10133-10155`) into `o`, which has
 /// room for the input, a block and the tag; the length made.
 #[allow(clippy::too_many_arguments)]
-fn aead_seal(gcm: bool, x: &mut Cipher, c: AeadCipher, op: &Op, kv: &[u8], data: &[u8], o: &mut [u8]) -> Option<usize> {
+fn aead_seal(
+    gcm: bool,
+    x: &mut Cipher,
+    c: AeadCipher,
+    op: &Op,
+    kv: &[u8],
+    data: &[u8],
+    o: &mut [u8],
+) -> Option<usize> {
     let (n, tag, iv) = (data.len(), op.tag(), &op.gcm_iv[..]);
     let p = o.as_mut_ptr();
     x.init(true, Some(c), None, None).then_some(())?;
@@ -856,7 +914,13 @@ fn aead_seal(gcm: bool, x: &mut Cipher, c: AeadCipher, op: &Op, kv: &[u8], data:
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pqhsm_C_Decrypt(h: c_ulong, enc: *const u8, n: c_ulong, out: *mut u8, out_len: *mut c_ulong) -> c_ulong {
+pub unsafe extern "C" fn pqhsm_C_Decrypt(
+    h: c_ulong,
+    enc: *const u8,
+    n: c_ulong,
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> c_ulong {
     let _g = Held::shared();
     if let Err(rv) = gate() {
         return rv.into();
@@ -907,7 +971,13 @@ fn rsa_decrypt(x: &mut PkeyCtx, max: usize, enc: &[u8]) -> Result<Secret, u32> {
 ///
 /// # Safety
 /// `out` writable for `*out_len` bytes; `out_len` a CK_ULONG.
-unsafe fn emit_or_retry(h: c_ulong, op: &mut Op, o: &Secret, out: *mut u8, out_len: *mut c_ulong) -> u32 {
+unsafe fn emit_or_retry(
+    h: c_ulong,
+    op: &mut Op,
+    o: &Secret,
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> u32 {
     // SAFETY: the caller's
     unsafe {
         if (*out_len as usize) < o.0.len() {
@@ -923,7 +993,16 @@ unsafe fn emit_or_retry(h: c_ulong, op: &mut Op, o: &Secret, out: *mut u8, out_l
 /// # Safety
 /// As C_Decrypt's: `out` NULL or writable for `*out_len` bytes, `out_len` a CK_ULONG.
 #[allow(clippy::too_many_arguments)]
-unsafe fn decrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, enc: &[u8], out: *mut u8, out_len: *mut c_ulong) -> u32 {
+unsafe fn decrypt(
+    h: c_ulong,
+    op: &mut Op,
+    kv: &[u8],
+    cl: u32,
+    kt: u32,
+    enc: &[u8],
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> u32 {
     let n = enc.len();
     match op.mech {
         OAEP | RSA_PKCS | RSA_X_509 => {
@@ -946,11 +1025,22 @@ unsafe fn decrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, enc: &[u
                     return op.end(ENCRYPTED_DATA_LEN_RANGE);
                 }
             }
-            let mut x = or_end!(op, if oaep { oaep_ctx(op, &k, false) } else { raw_ctx(op, &k, false) });
+            let mut x = or_end!(
+                op,
+                if oaep {
+                    oaep_ctx(op, &k, false)
+                } else {
+                    raw_ctx(op, &k, false)
+                }
+            );
             let mut max = 0;
             // SAFETY: a NULL output asks for the length
             if !unsafe { x.run(null_mut(), &mut max, enc) } {
-                return op.end(if oaep { FUNCTION_FAILED } else { ENCRYPTED_DATA_INVALID });
+                return op.end(if oaep {
+                    FUNCTION_FAILED
+                } else {
+                    ENCRYPTED_DATA_INVALID
+                });
             }
             if out.is_null() {
                 // SAFETY: out_len a CK_ULONG (caller); the size query keeps the operation
@@ -989,7 +1079,9 @@ unsafe fn decrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, enc: &[u
             match run(false, &mut x, enc, upper, ENCRYPTED_DATA_INVALID) {
                 // SAFETY: the caller's
                 Ok(o) => unsafe { emit_or_retry(h, op, &o, out, out_len) },
-                Err(ENCRYPTED_DATA_INVALID) => fail_recorded(false, h, op, ENCRYPTED_DATA_INVALID, ENCRYPTED_DATA_INVALID),
+                Err(ENCRYPTED_DATA_INVALID) => {
+                    fail_recorded(false, h, op, ENCRYPTED_DATA_INVALID, ENCRYPTED_DATA_INVALID)
+                }
                 Err(rv) => op.end(rv),
             }
         }
@@ -1008,7 +1100,11 @@ unsafe fn decrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, enc: &[u
         CCM | GCM => {
             let gcm = op.mech == GCM;
             if kt != CKK_AES {
-                return op.end(if gcm { MECHANISM_INVALID } else { KEY_TYPE_INCONSISTENT });
+                return op.end(if gcm {
+                    MECHANISM_INVALID
+                } else {
+                    KEY_TYPE_INCONSISTENT
+                });
             }
             let tag = op.tag();
             if n < tag {
@@ -1048,7 +1144,15 @@ unsafe fn decrypt(h: c_ulong, op: &mut Op, kv: &[u8], cl: u32, kt: u32, enc: &[u
 /// room for the ciphertext and a block: the length, FUNCTION_FAILED for a setup failure,
 /// ENCRYPTED_DATA_INVALID when the tag does not match.
 #[allow(clippy::too_many_arguments)]
-fn aead_open(gcm: bool, x: &mut Cipher, c: AeadCipher, op: &Op, kv: &[u8], enc: &[u8], o: &mut [u8]) -> Result<usize, u32> {
+fn aead_open(
+    gcm: bool,
+    x: &mut Cipher,
+    c: AeadCipher,
+    op: &Op,
+    kv: &[u8],
+    enc: &[u8],
+    o: &mut [u8],
+) -> Result<usize, u32> {
     let tag = op.tag();
     let (body, t) = enc.split_at(enc.len() - tag);
     let (ct, iv, p) = (body.len(), &op.gcm_iv[..], o.as_mut_ptr());
@@ -1064,10 +1168,12 @@ fn aead_open(gcm: bool, x: &mut Cipher, c: AeadCipher, op: &Op, kv: &[u8], enc: 
     // SAFETY: o has room for ct + a block; enc and the AAD readable; lengths bounded
     unsafe {
         if !gcm {
-            x.update(false, null_mut(), null(), ct).ok_or(FUNCTION_FAILED)?;
+            x.update(false, null_mut(), null(), ct)
+                .ok_or(FUNCTION_FAILED)?;
         }
         if !op.aad.0.is_empty() {
-            x.update(false, null_mut(), op.aad.0.as_ptr(), op.aad.0.len()).ok_or(FUNCTION_FAILED)?;
+            x.update(false, null_mut(), op.aad.0.as_ptr(), op.aad.0.len())
+                .ok_or(FUNCTION_FAILED)?;
         }
         let a = x.update(false, p, body.as_ptr(), ct);
         if !gcm {
@@ -1119,7 +1225,12 @@ fn ensure_ctx(op: &mut Op, t: Tok, enc: bool) -> Result<(), u32> {
             // SAFETY: the AAD readable for its length
             && (aad.is_empty() || unsafe { x.update(enc, null_mut(), aad.as_ptr(), aad.len()) }.is_some())
     } else {
-        let ok = x.init2(enc, Some(&c), Some(kv), if op.mech == ECB { None } else { op.iv() });
+        let ok = x.init2(
+            enc,
+            Some(&c),
+            Some(kv),
+            if op.mech == ECB { None } else { op.iv() },
+        );
         if ok {
             x.set_padding(k == 3);
         }
@@ -1137,7 +1248,14 @@ fn ensure_ctx(op: &mut Op, t: Tok, enc: bool) -> Result<(), u32> {
 /// # Safety
 /// `inp` readable for `n` bytes; `out` NULL or writable for `*out_len` bytes; `out_len` NULL
 /// or a CK_ULONG.
-unsafe fn update(enc: bool, h: c_ulong, inp: *const u8, n: c_ulong, out: *mut u8, out_len: *mut c_ulong) -> u32 {
+unsafe fn update(
+    enc: bool,
+    h: c_ulong,
+    inp: *const u8,
+    n: c_ulong,
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> u32 {
     let _g = Held::shared();
     if let Err(rv) = gate() {
         return rv;
@@ -1160,7 +1278,12 @@ unsafe fn update(enc: bool, h: c_ulong, inp: *const u8, n: c_ulong, out: *mut u8
     or_end!(op, ensure_ctx(&mut op, tok, enc));
     // SAFETY: readable for n bytes (caller), n bounded above
     let inp = unsafe { bytes(inp, n as usize) };
-    let need = inp.len() + if matches!(kind(op.mech), Some(2 | 3)) { 16 } else { 0 };
+    let need = inp.len()
+        + if matches!(kind(op.mech), Some(2 | 3)) {
+            16
+        } else {
+            0
+        };
     // SAFETY: out_len a CK_ULONG (caller)
     let room = unsafe { *out_len } as usize;
     if enc || out.is_null() {
@@ -1174,7 +1297,8 @@ unsafe fn update(enc: bool, h: c_ulong, inp: *const u8, n: c_ulong, out: *mut u8
         let exact = x.try_clone().and_then(|mut p| {
             let mut o = Secret::zeroed(need.max(1))?;
             // SAFETY: o has room for the input plus a block; inp readable
-            unsafe { p.update(false, o.0.as_mut_ptr(), inp.as_ptr(), inp.len()) }.ok_or(FUNCTION_FAILED)
+            unsafe { p.update(false, o.0.as_mut_ptr(), inp.as_ptr(), inp.len()) }
+                .ok_or(FUNCTION_FAILED)
         });
         match exact {
             Ok(e) if room < e => {
@@ -1199,13 +1323,25 @@ unsafe fn update(enc: bool, h: c_ulong, inp: *const u8, n: c_ulong, out: *mut u8
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pqhsm_C_EncryptUpdate(h: c_ulong, p: *const u8, n: c_ulong, out: *mut u8, out_len: *mut c_ulong) -> c_ulong {
+pub unsafe extern "C" fn pqhsm_C_EncryptUpdate(
+    h: c_ulong,
+    p: *const u8,
+    n: c_ulong,
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> c_ulong {
     // SAFETY: the caller's
     unsafe { update(true, h, p, n, out, out_len) }.into()
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pqhsm_C_DecryptUpdate(h: c_ulong, p: *const u8, n: c_ulong, out: *mut u8, out_len: *mut c_ulong) -> c_ulong {
+pub unsafe extern "C" fn pqhsm_C_DecryptUpdate(
+    h: c_ulong,
+    p: *const u8,
+    n: c_ulong,
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> c_ulong {
     // SAFETY: the caller's
     unsafe { update(false, h, p, n, out, out_len) }.into()
 }
@@ -1220,7 +1356,11 @@ fn final_ctx(h: c_ulong, op: &mut Op, enc: bool) -> Result<(), u32> {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pqhsm_C_EncryptFinal(h: c_ulong, out: *mut u8, out_len: *mut c_ulong) -> c_ulong {
+pub unsafe extern "C" fn pqhsm_C_EncryptFinal(
+    h: c_ulong,
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> c_ulong {
     let _g = Held::shared();
     if let Err(rv) = gate() {
         return rv.into();
@@ -1260,7 +1400,11 @@ pub unsafe extern "C" fn pqhsm_C_EncryptFinal(h: c_ulong, out: *mut u8, out_len:
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pqhsm_C_DecryptFinal(h: c_ulong, out: *mut u8, out_len: *mut c_ulong) -> c_ulong {
+pub unsafe extern "C" fn pqhsm_C_DecryptFinal(
+    h: c_ulong,
+    out: *mut u8,
+    out_len: *mut c_ulong,
+) -> c_ulong {
     let _g = Held::shared();
     if let Err(rv) = gate() {
         return rv.into();
@@ -1315,7 +1459,12 @@ pub unsafe extern "C" fn pqhsm_C_DecryptFinal(h: c_ulong, out: *mut u8, out_len:
     let r = unsafe { x.finish(false, out) };
     // SAFETY: as above
     unsafe { *out_len = r.unwrap_or(0) as c_ulong };
-    if r.is_some() { OK } else { ENCRYPTED_DATA_INVALID }.into()
+    if r.is_some() {
+        OK
+    } else {
+        ENCRYPTED_DATA_INVALID
+    }
+    .into()
 }
 
 #[cfg(test)]
@@ -1326,7 +1475,11 @@ mod tests {
     fn parse(mech: c_ulong, p: &[u8]) -> Result<Op, u32> {
         let m = Mech {
             mechanism: mech,
-            param: if p.is_empty() { null_mut() } else { p.as_ptr().cast_mut().cast::<c_void>() },
+            param: if p.is_empty() {
+                null_mut()
+            } else {
+                p.as_ptr().cast_mut().cast::<c_void>()
+            },
             param_len: p.len() as c_ulong,
         };
         let mut op = Op::IDLE;
@@ -1344,8 +1497,16 @@ mod tests {
         let aad = [1u8; 3];
         let (ivp, aadp) = (iv.as_ptr() as c_ulong, aad.as_ptr() as c_ulong);
         let op = parse(GCM, &block(&[ivp, 16, 128, aadp, 3, 0])).unwrap();
-        assert_eq!((op.gcm_iv.len(), &op.aad.0[..], op.tag_len), (16, &aad[..], 16));
-        assert_eq!(parse(GCM, &block(&[ivp, 12, 0, aadp, 3, 96])).unwrap().tag_len, 12);
+        assert_eq!(
+            (op.gcm_iv.len(), &op.aad.0[..], op.tag_len),
+            (16, &aad[..], 16)
+        );
+        assert_eq!(
+            parse(GCM, &block(&[ivp, 12, 0, aadp, 3, 96]))
+                .unwrap()
+                .tag_len,
+            12
+        );
         let bad = |v: &[c_ulong]| parse(GCM, &block(v)).err();
         assert_eq!(bad(&[ivp, 8, 0, 0, 0, 128]), Some(MECHANISM_PARAM_INVALID));
         assert_eq!(bad(&[ivp, 12, 0, 0, 3, 128]), Some(MECHANISM_PARAM_INVALID));
@@ -1371,9 +1532,15 @@ mod tests {
         assert_eq!(parse(CTR, &[3u8; 10]).err(), Some(MECHANISM_PARAM_INVALID));
         let nonce = [5u8; 13];
         let np = nonce.as_ptr() as c_ulong;
-        assert_eq!(parse(CCM, &block(&[0, np, 13, 0, 0, 4])).unwrap().tag_len, 4);
+        assert_eq!(
+            parse(CCM, &block(&[0, np, 13, 0, 0, 4])).unwrap().tag_len,
+            4
+        );
         for (len, mac) in [(6, 16), (14, 16), (12, 5), (12, 18)] {
-            assert_eq!(parse(CCM, &block(&[0, np, len, 0, 0, mac])).err(), Some(MECHANISM_PARAM_INVALID));
+            assert_eq!(
+                parse(CCM, &block(&[0, np, len, 0, 0, mac])).err(),
+                Some(MECHANISM_PARAM_INVALID)
+            );
         }
         assert_eq!(parse(CBC, &[1u8; 8]).err(), Some(MECHANISM_PARAM_INVALID));
         assert!(parse(CBC_PAD, &[1u8; 16]).is_ok());
@@ -1382,9 +1549,23 @@ mod tests {
         assert!(parse(KWP, &[1u8; 4]).unwrap().iv.is_some());
         let label = [8u8; 65];
         let lp = label.as_ptr() as c_ulong;
-        assert_eq!(parse(OAEP, &block(&[0x250, 2, 1, lp, 20])).unwrap().label.0, label[..20].to_vec());
-        assert!(parse(OAEP, &block(&[0x250, 2, 0, lp, 20])).unwrap().label.0.is_empty());
-        for p in [[0x250, 2, 1, lp, 65], [0x210, 2, 1, 0, 0], [0x250, 0x77, 1, 0, 0], [0x250, 2, 1, 0, 20]] {
+        assert_eq!(
+            parse(OAEP, &block(&[0x250, 2, 1, lp, 20])).unwrap().label.0,
+            label[..20].to_vec()
+        );
+        assert!(
+            parse(OAEP, &block(&[0x250, 2, 0, lp, 20]))
+                .unwrap()
+                .label
+                .0
+                .is_empty()
+        );
+        for p in [
+            [0x250, 2, 1, lp, 65],
+            [0x210, 2, 1, 0, 0],
+            [0x250, 0x77, 1, 0, 0],
+            [0x250, 2, 1, 0, 20],
+        ] {
             assert_eq!(parse(OAEP, &block(&p)).err(), Some(MECHANISM_PARAM_INVALID));
         }
     }
