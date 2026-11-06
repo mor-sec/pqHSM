@@ -1285,3 +1285,21 @@ Nothing high: every path's order and codes as C's, the four divergences where th
 - **Nits:** the storage constants come from `attrs.rs`; `PkeyCtx::new`'s errors pass through; its `enc` documented for a KEM; `div_069` makes its session with `user_key` without keeping the key.
 
 Recorded, not applied: `from_data`'s unwiped parameter block also holds the RSA private parts `C_CreateObject` imports (`create.rs`); it needs a builder that wipes, due with the next change there.
+
+### 8a: the mechanism calls, random and the stubs
+
+- **Golden first:** step 4o (`p11_misc.c`, committed before the port): the mechanism list (slot, NULL count, size query, short and fitting buffers), the info of every advertised mechanism and the refusal of every other type below 0x4400, random and seed (bad, closed and read-only sessions, NULL, zero), the three stubs, each after `C_Finalize` and in ERROR. C prints the same twice; the hybrid less RULE-014's, DIV-051's and DIV-053's rows (`p11_misc_expect.sed`).
+- **The table:** `scripts/gen_mechs_rs.py` imports `MECHANISMS` from the legacy `scripts/gen_p11_thunks.py` (unchanged, Q4; no bytecode left behind) and writes `core/src/mechs/table.rs` (105 rows: value, family, operations, approved, whether the source gives it a handler), sorted as C's. `--check` says whether the checked-in file is current. `core/src/mechs.rs` is `fhsm_mechanism_lookup` (the type narrowed to 32 bits, as C), `fhsm_mech_flags_for` and `fhsm_mech_keysizes_for`; a row is dispatchable when it has a handler and, in the strict build, is approved (C's generator pointed the rest at `dispatch_reject_fips`).
+- **Port** (`p11/src/ffi/misc.rs`): the seven entry points in C's order. `advertised` is C's: dispatchable, the ECM family only if X25519 and X448 load (`ecm_available`), a digest only if its hash fetches (`md_available`). The list is computed once per call where C walked the table twice; the same answer.
+- **DIV-051 and DIV-053:** now the entry points' own checks under the lock (`initialized` for the two mechanism calls, `gate` for the other five), which retires the shim's GATE/STATUS wrappers and `pqhsm_p11_gate`; `hybrid.mk` renames nothing any more.
+- **RULE-014:** the 14-byte minimum for CKM_GENERIC_SECRET_KEY_GEN in the strict build moved from the shim into `pqhsm_C_GetMechanismInfo`.
+- **Tests:** `p11_notinit.c` DIV-051 and DIV-053 (C fails, hybrid passes), `p11_divs.c` RULE-014, `core` `mechs::tests` (sorted and found, flags ORed, the strict profile).
+
+### Slice 8a review (architecture critic, 2026-11-07)
+
+Nothing high: every path's order, codes and writes as C's; the profile rule equals the generator's substitution row for row (`src/gen/fhsm_dispatch.c` against `table.rs`: only the 13 rows not approved differ, `dispatch_reject_fips` there, `approved: false` here); flags and key sizes arm for arm; no C entry point left ungated (all 62 are in `PQHSM_P11_RUST`); the gate now under the lock, which closes the race the shim's shortcut admitted. Applied (user: "keep going and select the recommended option"):
+- **M1:** step 4o ran only the strict profile, where the non-strict arm of `dispatchable`, TDES's key sizes and the ECM probe are never reached. New step 4p runs `p11_misc` on unsigned all-mechanisms builds of C and the hybrid, against the same recorded rows less RULE-014's (the finalized rows' counts made profile-free). Not applied: the same run in step 9's FIPS loop, which alone reaches the probes' provider-absent branches; it needs `/debs`, which this environment does not have (the fetch is not approved), so it would be code no run checks. Due when the FIPS provider is available.
+- **M2:** a stale `table.rs` printed STALE and failed nothing; the 4o line now says FAIL.
+- **L1:** the golden pins the 32-bit narrowing: `0x100000250` is SHA-256's info, `0x100000350` the GENERIC family's minimum 1 (RULE-014 compares the type whole).
+- **L2:** stale comments in `hybrid.mk` and `p11_misc_expect.sed`.
+- **Nits:** the generator refuses an unknown argument rather than overwrite the table; `misc.rs` cites `:1455-1653`.

@@ -92,37 +92,16 @@ FWD(C_Verify, (UL h, void *d, UL dn, void *s, UL sn), (h, d, dn, s, sn))
 FWD(C_VerifyUpdate, (UL h, void *d, UL dn), (h, d, dn))
 FWD(C_VerifyFinal, (UL h, void *s, UL sn), (h, s, sn))
 
-/* Phase 4 slice 1, DIV-051 and DIV-053: the entry points still in C refuse with
- * CKR_CRYPTOKI_NOT_INITIALIZED outside an initialised process, and in ERROR, as Rust's do. hybrid.mk renames C's to pqhsm_c_<name>; these
- * take the exported names. shortcut: the gate is read before the C takes the API lock, so a call
- * racing C_Finalize in another thread can pass it; PKCS#11 leaves that race to the application.
- * It moves under the lock as each slice takes its entry points into Rust. */
+/* Phase 4 slice 8a: the mechanism, random and stub entry points (p11/src/ffi/misc.rs), which
+ * apply DIV-051, DIV-053 and RULE-014 themselves; the C gate and its wrappers are gone. */
 typedef void *P;
-CK_RV pqhsm_p11_gate(int status);
-#define GATED(name, params, args, status) \
-    CK_RV pqhsm_c_##name params; CK_RV name params; \
-    __attribute__((visibility("default"))) CK_RV name params { \
-        CK_RV rv = pqhsm_p11_gate(status); return rv ? rv : pqhsm_c_##name args; }
-/* DIV-053: in ERROR, GATE refuses with 0x6; a status call (no key material out) still runs. */
-#define GATE(name, params, args) GATED(name, params, args, 0)
-#define STATUS(name, params, args) GATED(name, params, args, 1)
-
-STATUS(C_GetMechanismList, (UL s, P l, P n), (s, l, n))
-/* RULE-014 (strict build): CKM_GENERIC_SECRET_KEY_GEN advertises what key generation makes,
- * 14 to 64 bytes. C's table gives the GENERIC family's 1, which HMAC and KMAC keep. */
-extern const int fhsm_build_fips_strict;
-CK_RV pqhsm_c_C_GetMechanismInfo(UL s, UL t, P i); CK_RV C_GetMechanismInfo(UL s, UL t, P i);
-__attribute__((visibility("default"))) CK_RV C_GetMechanismInfo(UL s, UL t, P i) {
-    CK_RV rv = pqhsm_p11_gate(1);
-    if (!rv) rv = pqhsm_c_C_GetMechanismInfo(s, t, i);
-    if (!rv && t == 0x350UL && fhsm_build_fips_strict) ((UL *)i)[0] = 14;
-    return rv;
-}
-GATE(C_WaitForSlotEvent, (UL f, P s, P r), (f, s, r))
-GATE(C_GetFunctionStatus, (UL h), (h))
-GATE(C_CancelFunction, (UL h), (h))
-GATE(C_SeedRandom, (UL h, P p, UL n), (h, p, n))
-GATE(C_GenerateRandom, (UL h, P p, UL n), (h, p, n))
+FWD(C_GetMechanismList, (UL s, P l, P n), (s, l, n))
+FWD(C_GetMechanismInfo, (UL s, UL t, P i), (s, t, i))
+FWD(C_WaitForSlotEvent, (UL f, P s, P r), (f, s, r))
+FWD(C_GetFunctionStatus, (UL h), (h))
+FWD(C_CancelFunction, (UL h), (h))
+FWD(C_SeedRandom, (UL h, P p, UL n), (h, p, n))
+FWD(C_GenerateRandom, (UL h, P p, UL n), (h, p, n))
 FWD(C_CreateObject, (UL h, P t, UL n, P o), (h, t, n, o))
 FWD(C_GenerateKey, (UL h, P m, P t, UL n, P k), (h, m, t, n, k))
 FWD(C_GenerateKeyPair, (UL h, P m, P pu, UL npu, P pr, UL npr, P hpu, P hpr), (h, m, pu, npu, pr, npr, hpu, hpr))

@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ecdsa;
+pub mod mechs;
 pub mod p11;
 pub mod session;
 pub mod state;

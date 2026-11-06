@@ -407,6 +407,25 @@ printf 'p11 misc: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s' \
   "$(grep -c "$(printf '\t')" /out/p11_misc_c.txt)" \
   "$(pl_same /out/p11_misc_c.txt /out/p11_misc_hybrid.txt)" \
   "$(pl_same /out/p11_misc_c_expect.txt /out/p11_misc_hybrid.txt)" > /out/p11_misc.txt
+printf "; %s" "$(python3 -I modernized/pqHSM/scripts/gen_mechs_rs.py --check || echo FAIL)" >> /out/p11_misc.txt
+
+# 4p. Slice 8a review M1: step 4o again on an unsigned all-mechanisms build of C and of the
+#     hybrid (fresh copies; the Rust target is reused), so the non-strict rows, TDES's key sizes
+#     and the ECM probe are reached. The same recorded rows, less RULE-014's (strict only).
+AMC=$(mktemp -d) && AMH=$(mktemp -d) && cp -a /c/. $AMC && cp -a /work/. $AMH
+{ (cd $AMC && make clean && make PROFILE=all-mechanisms libfreehsm.so) &&
+  (cd $AMH && make clean && $M PROFILE=all-mechanisms libfreehsm.so); echo "build rc=$?"; } > /out/p11_misc_am_build.log 2>&1
+for t in c hybrid; do
+  lib=$([ $t = c ] && echo $AMC || echo $AMH)/libfreehsm.so
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_misc $lib $(mktemp -d) > /out/p11_misc_am_$t.txt 2>/dev/null
+  echo "rc=$?" >> /out/p11_misc_am_$t.txt
+done
+sed '/^s\/^info 0x350/d' modernized/pqHSM/tests-support/hybrid/p11_misc_expect.sed > /tmp/am_expect.sed
+sed -f /tmp/am_expect.sed /out/p11_misc_am_c.txt > /out/p11_misc_am_c_expect.txt
+printf '; all-mechanisms: %s, C %s, hybrid %s, %s mechanisms, less recorded DIVs %s' \
+  "$(tail -1 /out/p11_misc_am_build.log)" "$(tail -1 /out/p11_misc_am_c.txt)" "$(tail -1 /out/p11_misc_am_hybrid.txt)" \
+  "$(grep '^init list get' /out/p11_misc_am_c.txt | cut -f3)" \
+  "$(pl_same /out/p11_misc_am_c_expect.txt /out/p11_misc_am_hybrid.txt)" >> /out/p11_misc.txt
 
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl

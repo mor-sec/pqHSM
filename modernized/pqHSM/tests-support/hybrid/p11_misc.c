@@ -122,6 +122,9 @@ static void s_mechs(void) {
     row("unlisted mechanism invalid", 0, inval, NULL, 0);
     row("unlisted other", 0, other, NULL, 0);
     info("info vendor unknown", 0UL, 0x8000FFFFUL);
+    /* C narrows the type to 32 bits for the lookup, and RULE-014 compares it whole. */
+    info("info narrowed 0x100000250", 0UL, 0x100000250UL);
+    info("info narrowed 0x100000350", 0UL, 0x100000350UL);
     P11(C_Finalize, NULL);
     mech_list("finalized");
     info("finalized info", 0UL, 0x250UL);

@@ -82,8 +82,8 @@ $(OBJDIR)/src/fhsm_integrity.o: $(PQHSM_DIGEST_SHIM) $(PQHSM_LIB)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # fhsm_pkcs11.o: the C entry points Rust now has are made local, and the shim exporting Rust's
-# is linked into the same object, so every $(LIB_OBJ) link picks it up unchanged. The other C_*
-# stay C's and the Rust tables point at them. From slice 1d the C is compiled through
+# is linked into the same object, so every $(LIB_OBJ) link picks it up unchanged. From slice 8a
+# every C_* is Rust's; until slice 8c unlinks it the C is compiled through
 # pkcs11_tu.c, which appends the accessors to its statics that the Rust entry points call.
 PQHSM_P11_SHIM := $(PQHSM_DIR)/p11/shim/interface.c
 PQHSM_P11_TU   := $(PQHSM_DIR)/p11/shim/pkcs11_tu.c
@@ -99,20 +99,15 @@ PQHSM_P11_RUST := C_GetFunctionList C_GetInterfaceList C_GetInterface \
                   C_SignInit C_Sign C_SignUpdate C_SignFinal \
                   C_VerifyInit C_Verify C_VerifyUpdate C_VerifyFinal \
                   C_GenerateKey C_GenerateKeyPair C_CreateObject C_WrapKey C_UnwrapKey C_DeriveKey \
-                  C_EncapsulateKey C_DecapsulateKey
-# Slice 1, DIV-051: the rest stay C's, renamed pqhsm_c_<name>; the shim's gated wrappers take
-# their names. C declares its entry points visible, so the renamed ones are made local once the
-# shim is linked to them.
-PQHSM_P11_GATED := C_GetMechanismList C_GetMechanismInfo C_WaitForSlotEvent C_GetFunctionStatus \
-                   C_CancelFunction C_SeedRandom C_GenerateRandom
+                  C_EncapsulateKey C_DecapsulateKey \
+                  C_GetMechanismList C_GetMechanismInfo C_WaitForSlotEvent C_GetFunctionStatus \
+                  C_CancelFunction C_SeedRandom C_GenerateRandom
 $(OBJDIR)/src/fhsm_pkcs11.o: src/fhsm_pkcs11.c $(PQHSM_P11_TU) $(PQHSM_P11_SHIM) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@.c.o $(PQHSM_P11_TU)
-	objcopy $(addprefix --localize-symbol=,$(PQHSM_P11_RUST)) \
-	        $(foreach f,$(PQHSM_P11_GATED),--redefine-sym $(f)=pqhsm_c_$(f)) $@.c.o
+	objcopy $(addprefix --localize-symbol=,$(PQHSM_P11_RUST)) $@.c.o
 	$(CC) $(CFLAGS) -c -o $@.shim.o $(PQHSM_P11_SHIM)
 	$(LD) -r -o $@ $@.c.o $@.shim.o
-	objcopy $(foreach f,$(PQHSM_P11_GATED),--localize-symbol=pqhsm_c_$(f)) $@
 
 # test_tpm linked fhsm_tpm.c rebuilt with -DFHSM_TPM_TEST_HOOKS. That seam is now the Rust
 # feature, so the object is empty and test_tpm links the hooks staticlib instead. LDFLAGS is

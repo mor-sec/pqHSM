@@ -12,6 +12,7 @@ mod kem;
 mod keygen;
 mod lifecycle;
 mod login;
+mod misc;
 mod objects;
 mod session;
 mod sign;
