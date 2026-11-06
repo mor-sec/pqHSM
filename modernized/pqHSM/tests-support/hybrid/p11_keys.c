@@ -1,6 +1,6 @@
 /* p11_keys.c LIB BASE --- slice 6 of PHASE4_PLAN.md §2: call sequences through the key
  * generation and creation entry points (6a: C_GenerateKey, C_GenerateKeyPair; 6b:
- * C_CreateObject's builders, over keys libcrypto makes here; 6c: C_WrapKey, C_UnwrapKey; 6d: C_DeriveKey), one row per call:
+ * C_CreateObject's builders, over keys libcrypto makes here; 6c: C_WrapKey, C_UnwrapKey; 6d: C_DeriveKey; 7: C_EncapsulateKey, C_DecapsulateKey), one row per call:
  * "label TAB rv TAB n TAB hex", n each handle out-parameter: "-" untouched, else its distance
  * from the last handle written (the raw value where a call prints it directly). Each new object's attributes follow, one row each
  * ("label NAME rv len value"); generated key material prints as "rnd:<len>", PBKDF2's output
@@ -11,7 +11,7 @@
  * Each scenario runs in a forked child with its own tokens directory BASE/<n>.
  *
  * Written from the C (src/fhsm_pkcs11.c:2357-2422, 2551-2584, 2745-3050, 3150-3189,
- * 3505-3534, 3559-4138, 4277-4878, 4974-5444, 6160-6223, 6370-6933, 8631-8829) before the Rust, as its characterisation. */
+ * 3497-3534, 3559-4138, 4277-4878, 4974-5929, 6160-6223, 6370-6933, 8631-8829) before the Rust, as its characterisation. */
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1229,12 +1229,275 @@ static void s_derive(void) {
     P11(C_Finalize, NULL);
 }
 
+/* Slice 7: an ML-KEM key from a fixed seed, its raw halves, and the ciphertext and secret of an
+ * encapsulation with fixed entropy (OpenSSL's "ikme"), so every decapsulation prints whole. */
+typedef struct { Blob pub, priv, ct, ss; } Kem;
+static void kem(const char *alg, unsigned char s, Kem *k) {
+    unsigned char seed[64], ikme[32];
+    for (int i = 0; i < 64; ++i) seed[i] = (unsigned char)(s + i);
+    memset(ikme, s, sizeof ikme);
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(NULL, alg, NULL);
+    EVP_PKEY *p = NULL;
+    OSSL_PARAM sp[] = { OSSL_PARAM_construct_octet_string("seed", seed, 64), OSSL_PARAM_construct_end() },
+               ep[] = { OSSL_PARAM_construct_octet_string("ikme", ikme, 32), OSSL_PARAM_construct_end() };
+    if (EVP_PKEY_keygen_init(c) <= 0 || EVP_PKEY_CTX_set_params(c, sp) <= 0 || EVP_PKEY_generate(c, &p) <= 0) {
+        fprintf(stderr, "kem keygen %s failed\n", alg);
+        exit(2);
+    }
+    EVP_PKEY_CTX_free(c);
+    raw(p, 0, &k->pub);
+    raw(p, 1, &k->priv);
+    c = EVP_PKEY_CTX_new(p, NULL);
+    k->ct.n = sizeof k->ct.p, k->ss.n = sizeof k->ss.p;
+    if (EVP_PKEY_encapsulate_init(c, ep) <= 0 || EVP_PKEY_encapsulate(c, k->ct.p, &k->ct.n, k->ss.p, &k->ss.n) <= 0) {
+        fprintf(stderr, "kem encapsulate %s failed\n", alg);
+        exit(2);
+    }
+    EVP_PKEY_CTX_free(c);
+    EVP_PKEY_free(p);
+}
+
+/* One encapsulation: cap 0 asks the size (NULL buffer), else a buffer of cap bytes. The new
+ * key's attributes print with its value as "rnd:<len>"; a success's ciphertext is kept in ct. */
+static unsigned char kct[2048];
+static UL kct_n, kemmed;
+static void en(UL h, const char *name, UL pub, Attr *t, UL n, UL cap) {
+    Mech m = { 0x17, NULL, 0 };
+    UL frv, before = nobj(h, &frv), o = 0xAAAAAAAAUL, len = cap;
+    memset(kct, 0xAA, sizeof kct);
+    UL rv = P11(C_EncapsulateKey, h, &m, pub, t, n, cap ? kct : NULL, &len, &o);
+    char hb[24];
+    printf("%s\t%#lx\t%s\t%#lx\n", name, rv, hv(o, hb), len);
+    kemmed = rv || !cap ? 0 : o;
+    if (!rv && cap) kct_n = len;
+    if (rv || !cap) stored(h, name, before);
+    else dump(h, name, o, 1);
+}
+#define EN(name, pub, cap, ...) do { Attr t_[] = { __VA_ARGS__ }; en(h, name, pub, t_, sizeof t_ / sizeof t_[0], cap); } while (0)
+#define EN0(name, pub, cap) en(h, name, pub, NULL, 0UL, cap)
+
+/* One decapsulation of ct (cl bytes); the new key's attributes, its value whole unless rnd. */
+static void de(UL h, const char *name, UL priv, const unsigned char *ct, UL cl, Attr *t, UL n, int rnd) {
+    Mech m = { 0x17, NULL, 0 };
+    UL frv, before = nobj(h, &frv), o = 0xAAAAAAAAUL;
+    UL rv = P11(C_DecapsulateKey, h, &m, priv, t, n, (unsigned char *)ct, cl, &o);
+    char hb[24];
+    printf("%s\t%#lx\t%s\t-\n", name, rv, hv(o, hb));
+    kemmed = rv ? 0 : o;
+    if (rv) stored(h, name, before);
+    else dump(h, name, o, rnd);
+}
+#define DE(name, priv, k, ...) do { Attr t_[] = { __VA_ARGS__ }; \
+    de(h, name, priv, (k).ct.p, (UL)(k).ct.n, t_, sizeof t_ / sizeof t_[0], 0); } while (0)
+#define DE0(name, priv, k) de(h, name, priv, (k).ct.p, (UL)(k).ct.n, NULL, 0UL, 0)
+
+/* Two keys' values, compared: an encapsulation and the decapsulation of its ciphertext. */
+static void same(UL h, const char *name, UL a, UL b) {
+    unsigned char va[64], vb[64];
+    Attr x = { 0x11, va, sizeof va }, y = { 0x11, vb, sizeof vb };
+    UL ra = P11(C_GetAttributeValue, h, a, &x, 1UL), rb = P11(C_GetAttributeValue, h, b, &y, 1UL);
+    printf("%s\t%#lx\t%#lx\t%s\n", name, ra, rb,
+           ra || rb ? "-" : x.len == y.len && !memcmp(va, vb, x.len) ? "same" : "differ");
+}
+
+static void s_kem(void) {
+    UL h = setup(), h_ro = 0;
+    static UL c_sec = 4, c_priv = 3, c_data = 0, k_kem = 0x49, k_ec = 3, k_des3 = 0x15,
+              s1 = 1, s2 = 2, s3 = 3, len0 = 0, len5 = 5, len16 = 16, len24 = 24, len32 = 32,
+              len33 = 33, wide = 0x10000001FUL, kem_only[] = { 0x17 }, ecb_only[] = { 0x1081 },
+              m_kem = 0xF;
+    static unsigned char lab70[70], idb[3] = "id1", date[8] = "20260101", v16[16] = { 1 };
+    memset(lab70, 'L', sizeof lab70);
+    static Kem k5, k7, k10;
+    kem("ML-KEM-512", 0x10, &k5);
+    kem("ML-KEM-768", 0x20, &k7);
+    kem("ML-KEM-1024", 0x30, &k10);
+    static Kem bad5;
+    bad5 = k5;
+    bad5.ct.p[0] ^= 1;
+
+    UL p5, v5, p7, v7, p10, v10, pnoenc, vnodec, palw, valw, ecpub, sec, gp = 0, gv = 0;
+    static Attr dt_aes[] = { { 0x100, &k_aes, sizeof k_aes } };
+    KEY(p5, "mlkem512 pub", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, k5.pub), AT(0x61D, s1));
+    KEY(v5, "mlkem512 priv", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, k5.priv), AT(0x61D, s1));
+    KEY(p7, "mlkem768 pub", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, k7.pub), AT(0x61D, s2));
+    KEY(v7, "mlkem768 priv", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, k7.priv), AT(0x61D, s2));
+    KEY(p10, "mlkem1024 pub", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, k10.pub), AT(0x61D, s3));
+    KEY(v10, "mlkem1024 priv", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, k10.priv), AT(0x61D, s3));
+    KEY(pnoenc, "mlkem512 pub encapsulate false", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, k5.pub), AT(0x61D, s1), AT(0x633, Fb));
+    KEY(vnodec, "mlkem512 priv decapsulate false", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, k5.priv), AT(0x61D, s1), AT(0x634, Fb));
+    KEY(palw, "mlkem512 pub ecb only", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, k5.pub), AT(0x61D, s1),
+        AB(0x40000600, ecb_only, sizeof ecb_only));
+    KEY(valw, "mlkem512 priv kem only", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, k5.priv), AT(0x61D, s1),
+        AB(0x40000600, kem_only, sizeof kem_only));
+    KEY(ecpub, "ec p256 pub", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256),
+        AB(0x181, "\x04\x41\x04\x6b\x17\xd1\xf2\xe1\x2c\x42\x47\xf8\xbc\xe6\xe5\x63\xa4\x40\xf2\x77\x03\x7d\x81\x2d\xeb\x33\xa0\xf4\xa1\x39\x45\xd8\x98\xc2\x96\x4f\xe3\x42\xe2\xfe\x1a\x7f\x9b\x8e\xe7\xeb\x4a\x7c\x0f\x9e\x16\x2b\xce\x33\x57\x6b\x31\x5e\xce\xcb\xb6\x40\x68\x37\xbf\x51\xf5", 67));
+    KEY(sec, "aes key", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, v16));
+    {
+        Mech m = { m_kem, NULL, 0 };
+        Attr pu[] = { AT(0x61D, s1) };
+        printf("mlkem512 pair\t%#lx\n", P11(C_GenerateKeyPair, h, &m, pu, 1UL, NULL, 0UL, &gp, &gv));
+    }
+
+    /* The checks before the key's, in C's order, for both. */
+    {
+        Mech m = { 0x17, NULL, 0 }, bad = { 0x1081, NULL, 0 };
+        UL o = 0xAAAAAAAAUL, len = sizeof kct;
+        Attr tb[] = { { 0x103, &T, 4 } }, tu[] = { { 0x161, &len16, 1 } }, tt[] = { AT(0x86, T) },
+             tv[] = { BL(0x11, k5.ss) }, tk[] = { AT(0x1, T) };
+        printf("encap null mech\t%#lx\n", P11(C_EncapsulateKey, h, NULL, p5, NULL, 0UL, kct, &len, &o));
+        printf("encap null out\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, NULL, 0UL, kct, &len, NULL));
+        printf("encap null len\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, NULL, 0UL, kct, NULL, &o));
+        printf("encap null template\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, NULL, 1UL, kct, &len, &o));
+        printf("encap trusted\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, tt, 1UL, kct, &len, &o));
+        printf("encap bool len\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, tb, 1UL, kct, &len, &o));
+        printf("encap ulong len\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, tu, 1UL, kct, &len, &o));
+        printf("encap value\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, tv, 1UL, kct, &len, &o));
+        printf("encap mechanism\t%#lx\n", P11(C_EncapsulateKey, h, &bad, p5, NULL, 0UL, kct, &len, &o));
+        printf("encap bad session\t%#lx\n", P11(C_EncapsulateKey, 99UL, &m, p5, NULL, 0UL, kct, &len, &o));
+        printf("encap bad handle\t%#lx\n", P11(C_EncapsulateKey, h, &m, 0x7777UL, NULL, 0UL, kct, &len, &o));
+        printf("decap null mech\t%#lx\n", P11(C_DecapsulateKey, h, NULL, v5, NULL, 0UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("decap null out\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, NULL, 0UL, k5.ct.p, (UL)k5.ct.n, NULL));
+        printf("decap null ciphertext\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, NULL, 0UL, NULL, (UL)k5.ct.n, &o));
+        printf("decap null template\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, NULL, 1UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("decap trusted\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, tt, 1UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("decap bool len\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, tb, 1UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("decap ulong len\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, tu, 1UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("decap value\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, tv, 1UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("decap mechanism\t%#lx\n", P11(C_DecapsulateKey, h, &bad, v5, NULL, 0UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("decap bad session\t%#lx\n", P11(C_DecapsulateKey, 99UL, &m, v5, NULL, 0UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("decap bad handle\t%#lx\n", P11(C_DecapsulateKey, h, &m, 0x7777UL, NULL, 0UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("ro session\t%#lx\n", P11(C_OpenSession, 0UL, 4UL, NULL, NULL, &h_ro));
+        en(h_ro, "encap ro token", p5, tk, 1UL, sizeof kct);
+        en(h_ro, "encap ro session object", p5, NULL, 0UL, sizeof kct);
+        de(h_ro, "decap ro token", v5, k5.ct.p, (UL)k5.ct.n, tk, 1UL, 0);
+        de(h_ro, "decap ro session object", v5, k5.ct.p, (UL)k5.ct.n, NULL, 0UL, 0);
+        printf("ro session closed\t%#lx\n", P11(C_CloseSession, h_ro));
+    }
+
+    /* The key: its class and type, its policy, then the ciphertext's size. */
+    EN0("encap with private key", v5, sizeof kct);
+    EN0("encap with ec key", ecpub, sizeof kct);
+    EN0("encap with secret key", sec, sizeof kct);
+    EN0("encap encapsulate false", pnoenc, sizeof kct);
+    EN0("encap mechanism not allowed", palw, sizeof kct);
+    EN0("encap size query 512", p5, 0);
+    EN0("encap size query 768", p7, 0);
+    EN0("encap size query 1024", p10, 0);
+    EN0("encap buffer short", p5, 767);
+    EN0("encap 512", p5, sizeof kct);
+    DE0("decap with public key", p5, k5);
+    DE0("decap with secret key", sec, k5);
+    DE0("decap decapsulate false", vnodec, k5);
+    DE0("decap mechanism allowed", valw, k5);
+    printf("libcrypto secret 512\t"), hex(k5.ss.p, k5.ss.n), printf("\n");
+    printf("libcrypto secret 768\t"), hex(k7.ss.p, k7.ss.n), printf("\n");
+    printf("libcrypto secret 1024\t"), hex(k10.ss.p, k10.ss.n), printf("\n");
+    DE("decap 512", v5, k5, AT(0x162, T));
+    DE("decap 768", v7, k7, AT(0x162, T));
+    DE("decap 1024", v10, k10, AT(0x162, T));
+    DE0("decap 768 ciphertext with 512 key", v5, k7);
+    DE("decap altered ciphertext", v5, bad5, AT(0x162, T));
+    de(h, "decap ciphertext short", v5, k5.ct.p, (UL)k5.ct.n - 1, NULL, 0UL, 0);
+    de(h, "decap ciphertext long", v5, k5.ct.p, (UL)k5.ct.n + 1, NULL, 0UL, 0);
+    de(h, "decap ciphertext empty", v5, k5.ct.p, 0UL, NULL, 0UL, 0);
+
+    /* Round trips through the module, its ciphertext random. */
+    {
+        UL e;
+        Attr tx[] = { AT(0x162, T) };
+        en(h, "encap 768 round trip", p7, tx, 1UL, sizeof kct);
+        e = kemmed;
+        de(h, "decap 768 round trip", v7, kct, kct_n, tx, 1UL, 1);
+        same(h, "round trip 768 secrets", e, kemmed);
+        en(h, "encap generated", gp, tx, 1UL, sizeof kct);
+        e = kemmed;
+        de(h, "decap generated", gv, kct, kct_n, tx, 1UL, 1);
+        same(h, "round trip generated secrets", e, kemmed);
+    }
+
+    /* The new key's template: as C stores it, then what it allows. */
+    DE("decap label", v5, k5, AB(0x3, "kem-secret", 10));
+    DE("decap label 70", v5, k5, AB(0x3, lab70, sizeof lab70));
+    DE("decap sensitive", v5, k5, AT(0x103, T));
+    DE("decap sensitive false", v5, k5, AT(0x103, Fb));
+    DE("decap extractable", v5, k5, AT(0x162, T));
+    DE("decap class secret", v5, k5, AT(0x0, c_sec));
+    DE("decap class data", v5, k5, AT(0x0, c_data));
+    DE("decap class private", v5, k5, AT(0x0, c_priv));
+    DE("decap key type aes", v5, k5, AT(0x100, k_aes));
+    DE("decap key type aes 16", v5, k5, AT(0x100, k_aes), AT(0x161, len16));
+    DE("decap key type aes 24", v5, k5, AT(0x100, k_aes), AT(0x161, len24));
+    DE("decap key type aes 5", v5, k5, AT(0x100, k_aes), AT(0x161, len5));
+    DE("decap key type des3 24", v5, k5, AT(0x100, k_des3), AT(0x161, len24));
+    DE("decap key type des3", v5, k5, AT(0x100, k_des3));
+    DE("decap key type ec", v5, k5, AT(0x100, k_ec));
+    DE("decap key type wide", v5, k5, AT(0x100, wide));
+    DE("decap key type kem", v5, k5, AT(0x100, k_kem));
+    DE("decap value len 0", v5, k5, AT(0x161, len0));
+    DE("decap value len 5", v5, k5, AT(0x161, len5));
+    DE("decap value len 32", v5, k5, AT(0x161, len32));
+    DE("decap value len 33", v5, k5, AT(0x161, len33));
+    DE("decap token", v5, k5, AT(0x1, T));
+    DE("decap token false", v5, k5, AT(0x1, Fb));
+    DE("decap private false", v5, k5, AT(0x2, Fb));
+    DE("decap id", v5, k5, AB(0x102, idb, sizeof idb));
+    DE("decap start date", v5, k5, AB(0x110, date, sizeof date));
+    DE("decap start date short", v5, k5, AB(0x110, date, 5));
+    DE("decap not modifiable", v5, k5, AT(0x170, Fb));
+    DE("decap not destroyable", v5, k5, AT(0x172, Fb));
+    DE("decap not copyable", v5, k5, AT(0x171, Fb));
+    DE("decap allowed mechanisms", v5, k5, AB(0x40000600, ecb_only, sizeof ecb_only));
+    DE("decap derive template", v5, k5, AT(0x10C, T), AB(0x40000213, dt_aes, sizeof dt_aes));
+    DE("decap encrypt false", v5, k5, AT(0x100, k_aes), AT(0x161, len16), AT(0x104, Fb));
+    {
+        Mech ecb = { 0x1081, NULL, 0 };
+        UL k = kemmed;
+        printf("encryptinit with encrypt false\t%#lx\n", P11(C_EncryptInit, h, &ecb, k));
+        unsigned char pt[16] = { 0 }, ct[32];
+        UL cl = sizeof ct;
+        printf("encrypt with encrypt false\t%#lx\n", P11(C_Encrypt, h, pt, 16UL, ct, &cl));
+    }
+    DE("decap aes 16 encrypt", v5, k5, AT(0x100, k_aes), AT(0x161, len16), AT(0x104, T));
+    {
+        Mech ecb = { 0x1081, NULL, 0 };
+        UL k = kemmed, cl = 16;
+        unsigned char pt[16] = { 0 }, ct[16];
+        printf("encryptinit with the decapsulated key\t%#lx\n", P11(C_EncryptInit, h, &ecb, k));
+        printf("encrypt with the decapsulated key\t%#lx\t", P11(C_Encrypt, h, pt, 16UL, ct, &cl));
+        hex(ct, cl);
+        printf("\n");
+    }
+    EN("encap key type aes 16", p5, sizeof kct, AT(0x100, k_aes), AT(0x161, len16));
+    EN("encap key type aes 5", p5, sizeof kct, AT(0x100, k_aes), AT(0x161, len5));
+    EN("encap key type ec", p5, sizeof kct, AT(0x100, k_ec));
+    EN("encap class data", p5, sizeof kct, AT(0x0, c_data));
+    EN("encap value len 33", p5, sizeof kct, AT(0x161, len33));
+    EN("encap sensitive", p5, sizeof kct, AT(0x103, T), AT(0x162, T));
+    EN("encap id and dates", p5, sizeof kct, AB(0x102, idb, sizeof idb), AB(0x111, date, sizeof date));
+
+    /* Logged out, then the SO with the user's keys. */
+    {
+        Mech m = { 0x17, NULL, 0 };
+        UL o = 0xAAAAAAAAUL, len = sizeof kct;
+        printf("logout\t%#lx\n", P11(C_Logout, h));
+        printf("encap logged out\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, NULL, 0UL, kct, &len, &o));
+        printf("decap logged out\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, NULL, 0UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("so login\t%#lx\n", P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN)));
+        o = 0xAAAAAAAAUL, len = sizeof kct;
+        printf("so encap to user key\t%#lx\t%#lx\n", P11(C_EncapsulateKey, h, &m, p5, NULL, 0UL, kct, &len, &o), len);
+        printf("so decap with user key\t%#lx\n", P11(C_DecapsulateKey, h, &m, v5, NULL, 0UL, k5.ct.p, (UL)k5.ct.n, &o));
+        printf("so logout\t%#lx\n", P11(C_Logout, h));
+    }
+    P11(C_Finalize, NULL);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: p11_keys LIB BASE\n"); return 2; }
     setvbuf(stdout, NULL, _IONBF, 0);
     lib = dlopen(argv[1], RTLD_NOW);
     if (!lib) { fprintf(stderr, "%s\n", dlerror()); return 2; }
-    void (*S[])(void) = { s_gen, s_pair, s_life, s_create, s_wrap, s_derive };
+    void (*S[])(void) = { s_gen, s_pair, s_life, s_create, s_wrap, s_derive, s_kem };
     int rc = 0;
     for (size_t i = 0; i < sizeof S / sizeof *S; ++i) {
         snprintf(dir, sizeof dir, "%s/%zu", argv[2], i);

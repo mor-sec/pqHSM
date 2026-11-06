@@ -74,8 +74,11 @@ s/^\(hkdf from sensitive base, extractable\|ecdh extractable\) VALUE\t0\t0x20\t[
 # DIV-057, RULE-059: every base in scenario 5 came from C_CreateObject, so no derived key was
 # always sensitive or never extractable; C read both from the derived key's own flags. A data
 # object (CKM_HKDF_DATA's) has no history and reads as C.
-/^== scenario 5$/,$ { /^hkdf data\( from sensitive base\)\? [A-Z_]*\t/! s/^\(.* \(ALWAYS_SENSITIVE\|NEVER_EXTRACTABLE\)\t0\t0x1\t\)01$/\100/ }
+/^== scenario 5$/,/^== scenario 6$/ { /^hkdf data\( from sensitive base\)\? [A-Z_]*\t/! s/^\(.* \(ALWAYS_SENSITIVE\|NEVER_EXTRACTABLE\)\t0\t0x1\t\)01$/\100/ }
 # DIV-050 (scenario 5): deriving from the user's key needs the user's login (C: logged out
 # 0x101, the SO 0).
 s/^hkdf logged out\t0x101$/hkdf logged out\t0x60/
 s/^\(so hkdf from user key\|so concat from user key\|so ecdh from user key\)\t0$/\1\t0x60/
+# DIV-066 (scenario 6): so C_EncapsulateKey refuses that key (0x68), where C's key encapsulated.
+/^encap encapsulate false [A-Z_]*\t/d
+s/^encap encapsulate false\t0\t+1\t0x300$/encap encapsulate false\t0x68\t-\t0x800\nencap encapsulate false objects\t0\t+0\t-/
