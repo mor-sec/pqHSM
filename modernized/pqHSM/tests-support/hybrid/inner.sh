@@ -359,10 +359,11 @@ printf 'p11 sign: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s' \
   "$(pl_same /out/p11_sign_c_expect.txt /out/p11_sign_hybrid.txt)" > /out/p11_sign.txt
 
 # 4n. Phase 4 slice 6: p11_keys.c drives key generation (6a: C_GenerateKey,
-#     C_GenerateKeyPair) over every mechanism, length and parameter set, the flags and the
+#     C_GenerateKeyPair; 6b: C_CreateObject's builders) over every mechanism, length and
+#     parameter set, every import path, the flags and the
 #     templates each half takes, and the session and module lifetimes. C and hybrid must print
 #     the same, less the recorded rows in p11_keys_expect.sed (exact rows only).
-cc -std=gnu17 -o /tmp/p11_keys modernized/pqHSM/tests-support/hybrid/p11_keys.c -ldl
+cc -std=gnu17 -o /tmp/p11_keys modernized/pqHSM/tests-support/hybrid/p11_keys.c -ldl -lcrypto
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
   d=$(mktemp -d)

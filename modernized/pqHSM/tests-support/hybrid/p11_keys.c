@@ -1,5 +1,6 @@
 /* p11_keys.c LIB BASE --- slice 6 of PHASE4_PLAN.md §2: call sequences through the key
- * generation entry points (6a: C_GenerateKey, C_GenerateKeyPair), one row per call:
+ * generation and creation entry points (6a: C_GenerateKey, C_GenerateKeyPair; 6b:
+ * C_CreateObject's builders, over keys libcrypto makes here), one row per call:
  * "label TAB rv TAB n TAB hex", n each handle out-parameter: "-" untouched, else its distance
  * from the last handle written (the raw value where a call prints it directly). Each new object's attributes follow, one row each
  * ("label NAME rv len value"); generated key material prints as "rnd:<len>", PBKDF2's output
@@ -10,7 +11,7 @@
  * Each scenario runs in a forked child with its own tokens directory BASE/<n>.
  *
  * Written from the C (src/fhsm_pkcs11.c:2357-2422, 2551-2584, 2745-3050, 3150-3189,
- * 3505-3534, 6160-6223, 6370-6933) before the Rust, as its characterisation. */
+ * 3505-3534, 3559-4138, 6160-6223, 6370-6933) before the Rust, as its characterisation. */
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,10 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#include <openssl/bn.h>
+#include <openssl/evp.h>
+#include <openssl/x509.h>
 
 typedef unsigned long UL;
 typedef struct { UL mech; void *p; UL len; } Mech;
@@ -550,12 +555,180 @@ static void s_life(void) {
     P11(C_Finalize, NULL);
 }
 
+/* 3 (slice 6b): C_CreateObject's builders, over keys libcrypto makes here. Their material is
+ * random; every row that shows it prints its length. */
+typedef struct { unsigned char p[4096]; size_t n; } Blob;
+static EVP_PKEY *kg(const char *alg, const char *group) {
+    EVP_PKEY *k = group ? EVP_PKEY_Q_keygen(NULL, NULL, "EC", group)
+                        : !strcmp(alg, "RSA") ? EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)2048)
+                        : EVP_PKEY_Q_keygen(NULL, NULL, alg);
+    if (!k) { fprintf(stderr, "keygen %s failed\n", alg); exit(2); }
+    return k;
+}
+static void raw(EVP_PKEY *k, int priv, Blob *b) {
+    b->n = sizeof b->p;
+    int ok = priv ? EVP_PKEY_get_raw_private_key(k, b->p, &b->n)
+                  : EVP_PKEY_get_raw_public_key(k, b->p, &b->n);
+    if (ok != 1) b->n = 0;
+}
+static void spki(EVP_PKEY *k, Blob *b) {
+    unsigned char *q = b->p;
+    int n = i2d_PUBKEY(k, &q);
+    b->n = n > 0 ? (size_t)n : 0;
+}
+static void bn(EVP_PKEY *k, const char *name, int pad, Blob *b) {
+    BIGNUM *x = NULL;
+    EVP_PKEY_get_bn_param(k, name, &x);
+    int n = !x ? 0 : pad ? BN_bn2binpad(x, b->p, pad) : BN_bn2bin(x, b->p);
+    b->n = n > 0 ? (size_t)n : 0;
+    BN_clear_free(x);
+}
+static void oct(EVP_PKEY *k, const char *name, Blob *b) {
+    if (EVP_PKEY_get_octet_string_param(k, name, b->p, sizeof b->p, &b->n) != 1) b->n = 0;
+}
+/* The DER OCTET STRING CKA_EC_POINT holds (each point here is under 128 bytes). */
+static void wrap(const Blob *in, Blob *out) {
+    out->p[0] = 0x04, out->p[1] = (unsigned char)in->n;
+    memcpy(out->p + 2, in->p, in->n);
+    out->n = in->n + 2;
+}
+
+static UL mk(UL h, const char *name, Attr *t, UL n) {
+    UL frv, before = nobj(h, &frv), o = 0xAAAAAAAAUL, rv = P11(C_CreateObject, h, t, n, &o);
+    char b[24];
+    printf("%s\t%#lx\t%s\t-\n", name, rv, hv(o, b));
+    if (rv) { stored(h, name, before); return 0; }
+    dump(h, name, o, 1);
+    return o;
+}
+#define MK(name, ...) do { Attr t_[] = { __VA_ARGS__ }; mk(h, name, t_, sizeof t_ / sizeof t_[0]); } while (0)
+#define BL(t, b) { t, (b).p, (UL)(b).n }
+
+static void s_create(void) {
+    UL h = setup();
+    static UL c_priv = 3, k_rsa = 0, k_ec = 3, k_ed = 0x40, k_x = 0x41, k_kem = 0x49,
+              k_dsa = 0x4A, k_slh = 0x4B, s1 = 1, s2 = 2, s3 = 3, s4 = 4;
+    static Blob p256pt, p256w, p256bad, p256s, p384pt, p384w, k1w, edp, edw, edv, ed4p, ed4w,
+        ed4v, xv, rn, re, rd, rp, rq, rdp, rdq, rqi, rd2, kem5p, kem5v, kem7s, dsap, dsav, slhp,
+        slhv, zero;
+    EVP_PKEY *k = kg("EC", "P-256");
+    oct(k, "pub", &p256pt); wrap(&p256pt, &p256w); bn(k, "priv", 32, &p256s);
+    p256bad = p256w; p256bad.p[p256bad.n - 1] ^= 1;
+    EVP_PKEY_free(k);
+    k = kg("EC", "P-384"); oct(k, "pub", &p384pt); wrap(&p384pt, &p384w); EVP_PKEY_free(k);
+    k = kg("EC", "secp256k1"); { Blob t; oct(k, "pub", &t); wrap(&t, &k1w); } EVP_PKEY_free(k);
+    k = kg("ED25519", NULL); raw(k, 0, &edp); wrap(&edp, &edw); raw(k, 1, &edv); EVP_PKEY_free(k);
+    k = kg("ED448", NULL); raw(k, 0, &ed4p); wrap(&ed4p, &ed4w); raw(k, 1, &ed4v); EVP_PKEY_free(k);
+    k = kg("X25519", NULL); raw(k, 1, &xv); EVP_PKEY_free(k);
+    k = kg("RSA", NULL);
+    bn(k, "n", 0, &rn); bn(k, "e", 0, &re); bn(k, "d", 0, &rd); bn(k, "rsa-factor1", 0, &rp);
+    bn(k, "rsa-factor2", 0, &rq); bn(k, "rsa-exponent1", 0, &rdp);
+    bn(k, "rsa-exponent2", 0, &rdq); bn(k, "rsa-coefficient1", 0, &rqi);
+    EVP_PKEY_free(k);
+    k = kg("RSA", NULL); bn(k, "d", 0, &rd2); EVP_PKEY_free(k);
+    k = kg("ML-KEM-512", NULL); raw(k, 0, &kem5p); raw(k, 1, &kem5v); EVP_PKEY_free(k);
+    k = kg("ML-KEM-768", NULL); spki(k, &kem7s); EVP_PKEY_free(k);
+    k = kg("ML-DSA-44", NULL); raw(k, 0, &dsap); raw(k, 1, &dsav); EVP_PKEY_free(k);
+    k = kg("SLH-DSA-SHA2-128f", NULL); raw(k, 0, &slhp); raw(k, 1, &slhv); EVP_PKEY_free(k);
+    zero.n = kem5v.n; memset(zero.p, 0, zero.n);
+    UL mechs[] = { 0x1041, 0x1044 };
+    UL cls_s = 4;
+    Attr wt[] = { AT(0x0, cls_s) };
+    unsigned char five[5] = { 0 };
+
+    /* EC public keys: the point wrapped, bare, off the curve, on another curve */
+    MK("ec pub p256", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, p256w), AT(0x10A, T));
+    MK("ec pub p256 bare point", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, p256pt));
+    MK("ec pub p256 off the curve", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, p256bad));
+    MK("ec pub p384", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P384, sizeof P384), BL(0x181, p384w));
+    MK("ec pub p384 point as p256", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, p384w));
+    MK("ec pub secp256k1", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, K256, sizeof K256), BL(0x181, k1w));
+    MK("ec pub p224", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P224, sizeof P224), BL(0x181, p256w));
+    MK("ec pub garbage params", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, GARBAGE, sizeof GARBAGE), BL(0x181, p256w));
+    MK("ec pub flags", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, p256w),
+       AT(0x1, T), AT(0x170, Fb), AT(0x171, Fb), AT(0x104, Fb), AB(0x3, "ecp", 3), AB(0x102, "id", 2),
+       AB(0x40000600, mechs, sizeof mechs), AB(0x40000211, wt, sizeof wt));
+    MK("ec pub bad wrap template", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, p256w),
+       AB(0x40000211, five, sizeof five));
+    MK("ec pub after a destroyed one", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, p256w));
+    /* EC private keys: the scalar, a zero one, curves, no curve */
+    MK("ec priv p256", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x11, p256s), AT(0x108, T));
+    MK("ec priv flags", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x11, p256s),
+       AT(0x103, Fb), AT(0x162, T), AT(0x202, T), AT(0x10C, T), AB(0x40000213, wt, sizeof wt));
+    MK("ec priv zero scalar", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x11, zero));
+    MK("ec priv p256 scalar on p384", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P384, sizeof P384), BL(0x11, p256s));
+    MK("ec priv secp256k1", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, K256, sizeof K256), BL(0x11, p256s));
+    MK("ec priv brainpool", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, BP256, sizeof BP256), BL(0x11, p256s));
+    MK("ec priv sect163k1", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, SECT163, sizeof SECT163), BL(0x11, p256s));
+    MK("ec priv no params", AT(0x0, c_priv), AT(0x100, k_ec), BL(0x11, p256s));
+    MK("ec priv null params", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, NULL, 0), BL(0x11, p256s));
+    /* Edwards and Montgomery */
+    MK("ed25519 pub wrapped", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED25519, sizeof ED25519), BL(0x181, edw));
+    MK("ed25519 pub bare", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED25519, sizeof ED25519), BL(0x181, edp));
+    MK("ed25519 pub by name", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED25519_NAME, 14), BL(0x181, edw));
+    MK("ed25519 pub ed448 point", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED25519, sizeof ED25519), BL(0x181, ed4w));
+    MK("ed448 pub", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED448, sizeof ED448), BL(0x181, ed4w));
+    MK("ed25519 priv", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, ED25519, sizeof ED25519), BL(0x11, edv), AT(0x108, T));
+    MK("ed25519 priv by name", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, ED25519_NAME, 14), BL(0x11, edv));
+    MK("ed448 priv by name", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, ED448_NAME, 12), BL(0x11, ed4v));
+    MK("ed25519 priv ed448 params", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, ED448, sizeof ED448), BL(0x11, edv));
+    MK("ed25519 priv no params", AT(0x0, c_priv), AT(0x100, k_ed), BL(0x11, edv));
+    MK("ed25519 priv p256 params", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, P256, sizeof P256), BL(0x11, edv));
+    MK("x25519 priv", AT(0x0, c_priv), AT(0x100, k_x), AB(0x180, X25519, sizeof X25519), BL(0x11, xv), AT(0x10C, T));
+    MK("x25519 pub", AT(0x0, c_pub), AT(0x100, k_x), AB(0x180, X25519, sizeof X25519), BL(0x181, edw));
+    /* RSA */
+    MK("rsa pub", AT(0x0, c_pub), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), AT(0x10A, T));
+    MK("rsa pub e 3", AT(0x0, c_pub), AT(0x100, k_rsa), BL(0x120, rn), AB(0x122, "\x03", 1));
+    MK("rsa pub no exponent", AT(0x0, c_pub), AT(0x100, k_rsa), BL(0x120, rn));
+    MK("rsa pub empty modulus", AT(0x0, c_pub), AT(0x100, k_rsa), AB(0x120, rn.p, 0), BL(0x122, re));
+    MK("rsa priv full", AT(0x0, c_priv), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), BL(0x123, rd),
+       BL(0x124, rp), BL(0x125, rq), BL(0x126, rdp), BL(0x127, rdq), BL(0x128, rqi), AT(0x108, T));
+    MK("rsa priv n e d", AT(0x0, c_priv), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), BL(0x123, rd));
+    MK("rsa priv another key's d", AT(0x0, c_priv), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), BL(0x123, rd2),
+       BL(0x124, rp), BL(0x125, rq), BL(0x126, rdp), BL(0x127, rdq), BL(0x128, rqi));
+    MK("rsa priv no d", AT(0x0, c_priv), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), BL(0x124, rp));
+    MK("rsa priv extractable", AT(0x0, c_priv), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), BL(0x123, rd),
+       AT(0x162, T), AT(0x202, T), AT(0x103, Fb));
+    /* PQC public keys: raw and SPKI, the parameter set agreeing or not */
+    MK("mlkem512 pub raw", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kem5p), AT(0x61D, s1));
+    MK("mlkem512 pub raw as 768", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kem5p), AT(0x61D, s2));
+    MK("mlkem512 pub raw by name", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kem5p), AB(0x61D, "ML-KEM-512", 10));
+    MK("mlkem512 pub no set", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kem5p));
+    MK("mlkem512 pub encapsulate false", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kem5p), AT(0x61D, s1), AT(0x633, Fb));
+    MK("mlkem768 pub spki", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kem7s), AT(0x61D, s2));
+    MK("mlkem768 pub spki as 512", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kem7s), AT(0x61D, s1));
+    MK("mlkem pub truncated", AT(0x0, c_pub), AT(0x100, k_kem), AB(0x11, kem5p.p, 100), AT(0x61D, s1));
+    MK("mldsa44 pub raw", AT(0x0, c_pub), AT(0x100, k_dsa), BL(0x11, dsap), AT(0x61D, s1), AT(0x10A, T));
+    MK("mldsa44 pub raw as 65", AT(0x0, c_pub), AT(0x100, k_dsa), BL(0x11, dsap), AT(0x61D, s2));
+    MK("mldsa pub kem key", AT(0x0, c_pub), AT(0x100, k_dsa), BL(0x11, kem5p), AT(0x61D, s1));
+    MK("slhdsa sha2-128f pub", AT(0x0, c_pub), AT(0x100, k_slh), BL(0x11, slhp), AT(0x61D, s3));
+    MK("slhdsa sha2-128f pub as shake", AT(0x0, c_pub), AT(0x100, k_slh), BL(0x11, slhp), AT(0x61D, s4));
+    MK("slhdsa pub no set", AT(0x0, c_pub), AT(0x100, k_slh), BL(0x11, slhp));
+    /* PQC private keys */
+    MK("mlkem512 priv", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, kem5v), AT(0x61D, s1), AT(0x634, Fb));
+    MK("mlkem512 priv as 768", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, kem5v), AT(0x61D, s2));
+    MK("mlkem512 priv no set", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, kem5v));
+    MK("mlkem512 priv zeros", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, zero), AT(0x61D, s1));
+    MK("mlkem priv bad set", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, kem5v), AT(0x61D, s4));
+    MK("mldsa44 priv", AT(0x0, c_priv), AT(0x100, k_dsa), BL(0x11, dsav), AT(0x61D, s1), AT(0x108, T));
+    MK("mldsa44 priv as 65", AT(0x0, c_priv), AT(0x100, k_dsa), BL(0x11, dsav), AT(0x61D, s2));
+    MK("slhdsa sha2-128f priv", AT(0x0, c_priv), AT(0x100, k_slh), BL(0x11, slhv), AT(0x61D, s3));
+    MK("slhdsa priv short", AT(0x0, c_priv), AT(0x100, k_slh), AB(0x11, slhv.p, 10), AT(0x61D, s3));
+    /* the SO: trusted, and what it may create */
+    P11(C_Logout, h);
+    P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN));
+    MK("so ec pub trusted", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, p256w), AT(0x86, T));
+    MK("so rsa pub trusted", AT(0x0, c_pub), AT(0x100, k_rsa), BL(0x120, rn), BL(0x122, re), AT(0x86, T), AT(0x1, T));
+    MK("so ec priv", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x11, p256s));
+    P11(C_Finalize, NULL);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: p11_keys LIB BASE\n"); return 2; }
     setvbuf(stdout, NULL, _IONBF, 0);
     lib = dlopen(argv[1], RTLD_NOW);
     if (!lib) { fprintf(stderr, "%s\n", dlerror()); return 2; }
-    void (*S[])(void) = { s_gen, s_pair, s_life };
+    void (*S[])(void) = { s_gen, s_pair, s_life, s_create };
     int rc = 0;
     for (size_t i = 0; i < sizeof S / sizeof *S; ++i) {
         snprintf(dir, sizeof dir, "%s/%zu", argv[2], i);
