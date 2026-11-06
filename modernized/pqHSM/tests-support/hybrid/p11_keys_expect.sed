@@ -47,6 +47,8 @@ s/^\(mlkem512 pub encapsulate false ENCAPSULATE\t0\t0x1\t\)01$/\100/
 # read both from the current flags.
 s/^\(\(ec priv flags\|ec priv p256\|ec priv p256 scalar on p384\|ed25519 priv\|ed25519 priv by name\|ed448 priv by name\|mldsa44 priv\|mlkem512 priv\|rsa priv extractable\|rsa priv full\|slhdsa sha2-128f priv\|x25519 priv\) \(ALWAYS_SENSITIVE\|NEVER_EXTRACTABLE\)\t0\t0x1\t\)01$/\100/
 s/^\(uw \(allowed mechs\|des3 of 24\|generic\|kwp generic5\|label 70\|no template\|oaep\|oaep label\|template sensitive\|token\|usage\|value_len 16\) \(ALWAYS_SENSITIVE\|NEVER_EXTRACTABLE\)\t0\t0x1\t\)01$/\100/
+# RULE-059 (scenario 7, slice 8b-ii): the same for the keys created there from fixed bytes.
+s/^\(fixed \([a-z0-9]* \)\{1,2\}priv\( by name\)\? \(ALWAYS_SENSITIVE\|NEVER_EXTRACTABLE\)\t0\t0x1\t\)01$/\100/
 # DIV-058 (scenario 4): a key that is not extractable is never wrapped; a public key and a data
 # object carry no CKA_EXTRACTABLE, so they are refused too.
 s/^\(kw not extractable\|kwp data object\)\t0\t0x18\t[0-9a-f]*$/\1\t0x6a\t0x40\t-/

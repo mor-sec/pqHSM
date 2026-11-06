@@ -1,6 +1,6 @@
 /* p11_keys.c LIB BASE --- slice 6 of PHASE4_PLAN.md §2: call sequences through the key
  * generation and creation entry points (6a: C_GenerateKey, C_GenerateKeyPair; 6b:
- * C_CreateObject's builders, over keys libcrypto makes here; 6c: C_WrapKey, C_UnwrapKey; 6d: C_DeriveKey; 7: C_EncapsulateKey, C_DecapsulateKey), one row per call:
+ * C_CreateObject's builders, over keys libcrypto makes here; 6c: C_WrapKey, C_UnwrapKey; 6d: C_DeriveKey; 7: C_EncapsulateKey, C_DecapsulateKey; 8b-ii: the attributes read back through OpenSSL), one row per call:
  * "label TAB rv TAB n TAB hex", n each handle out-parameter: "-" untouched, else its distance
  * from the last handle written (the raw value where a call prints it directly). Each new object's attributes follow, one row each
  * ("label NAME rv len value"); generated key material prints as "rnd:<len>", PBKDF2's output
@@ -1492,12 +1492,190 @@ static void s_kem(void) {
     P11(C_Finalize, NULL);
 }
 
+/* 7 (slice 8b-ii): the attributes C_GetAttributeValue reads back through OpenSSL (an RSA,
+ * EC, Edwards or Montgomery key's public parts, a PQC key's raw public key and parameter set,
+ * a certificate's subject, issuer and serial), over keys and a certificate made here from
+ * fixed bytes, so every value prints whole. Each read-back attribute is also asked its size
+ * and read one byte short. */
+static const UL RB[] = { 0x120, 0x121, 0x122, 0x180, 0x181, 0x11, 0x61D, 0x101, 0x81, 0x82 };
+static void rb(UL h, const char *name, UL o) {
+    dump(h, name, o, 0);
+    for (size_t i = 0; i < sizeof RB / sizeof RB[0]; ++i) {
+        Attr a = { RB[i], NULL, 0 };
+        UL rv = P11(C_GetAttributeValue, h, o, &a, 1UL);
+        printf("%s %#lx size\t%#lx\t%#lx\t-\n", name, RB[i], rv, a.len);
+        if (rv || a.len == 0 || a.len > sizeof buf) continue;
+        UL want = a.len;
+        memset(buf, 0xAA, want);
+        a.p = buf, a.len = want - 1;
+        rv = P11(C_GetAttributeValue, h, o, &a, 1UL);
+        printf("%s %#lx short\t%#lx\t%#lx\t", name, RB[i], rv, a.len);
+        hex(buf, want);
+        printf("\n");
+        memset(buf, 0xAA, want);
+        a.p = buf, a.len = want;
+        rv = P11(C_GetAttributeValue, h, o, &a, 1UL);
+        printf("%s %#lx get\t%#lx\t%#lx\t", name, RB[i], rv, a.len);
+        hex(buf, want);
+        printf("\n");
+    }
+}
+static void mk0(UL h, const char *name, Attr *t, UL n) {
+    UL o = 0xAAAAAAAAUL, rv = P11(C_CreateObject, h, t, n, &o);
+    char b[24];
+    printf("%s\t%#lx\t%s\t-\n", name, rv, hv(o, b));
+    if (!rv) rb(h, name, o);
+}
+#define MK0(name, ...) do { Attr t_[] = { __VA_ARGS__ }; mk0(h, name, t_, sizeof t_ / sizeof t_[0]); } while (0)
+
+static void die(const char *what) { fprintf(stderr, "%s failed\n", what); exit(2); }
+static void bnb(const BIGNUM *x, Blob *b) { b->n = (size_t)BN_bn2bin(x, b->p); }
+/* The first prime from a fixed 1024-bit start (top two bits set, so n has 2048 bits). */
+static void prime_from(unsigned char s, BIGNUM *p, BN_CTX *x) {
+    unsigned char b[128];
+    for (int i = 0; i < 128; ++i) b[i] = (unsigned char)(s * 31 + i * 7);
+    b[0] |= 0xC0, b[127] |= 1;
+    if (!BN_bin2bn(b, 128, p)) die("prime");
+    while (BN_check_prime(p, x, NULL) != 1) BN_add_word(p, 2);
+}
+typedef struct { Blob n, e, d, p, q, dp, dq, qi; } Rsa;
+static void rsa_fixed(Rsa *r) {
+    BN_CTX *x = BN_CTX_new();
+    BIGNUM *p = BN_new(), *q = BN_new(), *n = BN_new(), *e = BN_new(), *d = BN_new(),
+           *p1 = BN_new(), *q1 = BN_new(), *phi = BN_new(), *dp = BN_new(), *dq = BN_new(),
+           *qi = BN_new();
+    prime_from(1, p, x), prime_from(2, q, x);
+    BN_mul(n, p, q, x), BN_set_word(e, 65537);
+    BN_sub(p1, p, BN_value_one()), BN_sub(q1, q, BN_value_one()), BN_mul(phi, p1, q1, x);
+    if (!BN_mod_inverse(d, e, phi, x) || !BN_mod_inverse(qi, q, p, x)) die("rsa");
+    BN_mod(dp, d, p1, x), BN_mod(dq, d, q1, x);
+    bnb(n, &r->n), bnb(e, &r->e), bnb(d, &r->d), bnb(p, &r->p), bnb(q, &r->q);
+    bnb(dp, &r->dp), bnb(dq, &r->dq), bnb(qi, &r->qi);
+    BN_free(p), BN_free(q), BN_free(n), BN_free(e), BN_clear_free(d), BN_free(p1), BN_free(q1);
+    BN_free(phi), BN_clear_free(dp), BN_clear_free(dq), BN_free(qi), BN_CTX_free(x);
+}
+/* CKA_EC_POINT's DER OCTET STRING, the long form past 127 bytes. */
+static void wrapl(const Blob *in, Blob *out) {
+    size_t o = 0;
+    out->p[o++] = 0x04;
+    if (in->n > 127) out->p[o++] = 0x81;
+    out->p[o++] = (unsigned char)in->n;
+    memcpy(out->p + o, in->p, in->n);
+    out->n = in->n + o;
+}
+static void ecx(int type, size_t len, unsigned char s, Blob *pub, Blob *priv) {
+    unsigned char k[64];
+    for (size_t i = 0; i < len; ++i) k[i] = (unsigned char)(s + i * 3);
+    EVP_PKEY *p = EVP_PKEY_new_raw_private_key(type, NULL, k, len);
+    if (!p) die("ecx");
+    raw(p, 0, pub), raw(p, 1, priv);
+    EVP_PKEY_free(p);
+}
+static void mldsa(const char *alg, unsigned char s, Blob *pub, Blob *priv) {
+    unsigned char seed[32];
+    for (int i = 0; i < 32; ++i) seed[i] = (unsigned char)(s + i);
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(NULL, alg, NULL);
+    EVP_PKEY *p = NULL;
+    OSSL_PARAM sp[] = { OSSL_PARAM_construct_octet_string("seed", seed, 32), OSSL_PARAM_construct_end() };
+    if (!c || EVP_PKEY_keygen_init(c) <= 0 || EVP_PKEY_CTX_set_params(c, sp) <= 0
+        || EVP_PKEY_generate(c, &p) <= 0) die(alg);
+    raw(p, 0, pub), raw(p, 1, priv);
+    EVP_PKEY_free(p), EVP_PKEY_CTX_free(c);
+}
+/* A certificate whose every byte is fixed: Ed25519 signatures are deterministic. */
+static void cert_fixed(Blob *der) {
+    unsigned char sk[32];
+    for (int i = 0; i < 32; ++i) sk[i] = (unsigned char)(0x40 + i);
+    EVP_PKEY *k = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL, sk, 32);
+    X509 *c = X509_new();
+    X509_NAME *sn = X509_NAME_new(), *in = X509_NAME_new();
+    if (!k || !c || !sn || !in) die("cert");
+    X509_set_version(c, 2);
+    ASN1_INTEGER_set_uint64(X509_get_serialNumber(c), 0x0102030405060708ULL);
+    X509_NAME_add_entry_by_txt(sn, "CN", MBSTRING_ASC, (const unsigned char *)"pqHSM golden leaf", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(sn, "O", MBSTRING_ASC, (const unsigned char *)"Test", -1, -1, 0);
+    X509_NAME_add_entry_by_txt(in, "CN", MBSTRING_ASC, (const unsigned char *)"pqHSM golden root", -1, -1, 0);
+    X509_set_subject_name(c, sn), X509_set_issuer_name(c, in);
+    ASN1_TIME_set_string_X509(X509_getm_notBefore(c), "260101000000Z");
+    ASN1_TIME_set_string_X509(X509_getm_notAfter(c), "360101000000Z");
+    X509_set_pubkey(c, k);
+    if (X509_sign(c, k, NULL) <= 0) die("cert sign");
+    unsigned char *q = der->p;
+    int n = i2d_X509(c, &q);
+    der->n = n > 0 ? (size_t)n : 0;
+    X509_NAME_free(sn), X509_NAME_free(in), X509_free(c), EVP_PKEY_free(k);
+}
+
+static void s_attrs(void) {
+    UL h = setup();
+    static UL c_priv = 3, c_cert = 1, x509 = 0, k_rsa = 0, k_ec = 3, k_ed = 0x40, k_x = 0x41,
+              k_kem = 0x49, k_dsa = 0x4A, s1 = 1, s2 = 2, s3 = 3;
+    static unsigned char X448[] = { 0x06, 0x03, 0x2B, 0x65, 0x6F };
+    static Rsa r;
+    static Ec e256, e384, e521, ek1;
+    static Blob w256, w384, w521, wk1, edp, edv, edw, ed4p, ed4v, ed4w, xp, xv, xw, x4p, x4v, x4w,
+        d44p, d44v, d65p, d65v, d87p, d87v, kems, crt;
+    static Kem k768;
+    rsa_fixed(&r);
+    ec(NID_X9_62_prime256v1, "P-256", 0x1234567UL, 32, &e256), wrapl(&e256.pt, &w256);
+    ec(NID_secp384r1, "P-384", 0x89ABCDEFUL, 48, &e384), wrapl(&e384.pt, &w384);
+    ec(NID_secp521r1, "P-521", 0x31415926UL, 66, &e521), wrapl(&e521.pt, &w521);
+    ec(NID_secp256k1, "secp256k1", 0x27182818UL, 32, &ek1), wrapl(&ek1.pt, &wk1);
+    ecx(EVP_PKEY_ED25519, 32, 1, &edp, &edv), wrapl(&edp, &edw);
+    ecx(EVP_PKEY_ED448, 57, 2, &ed4p, &ed4v), wrapl(&ed4p, &ed4w);
+    ecx(EVP_PKEY_X25519, 32, 3, &xp, &xv), wrapl(&xp, &xw);
+    ecx(EVP_PKEY_X448, 56, 4, &x4p, &x4v), wrapl(&x4p, &x4w);
+    mldsa("ML-DSA-44", 5, &d44p, &d44v), mldsa("ML-DSA-65", 6, &d65p, &d65v);
+    mldsa("ML-DSA-87", 7, &d87p, &d87v);
+    kem("ML-KEM-768", 8, &k768);
+    {
+        EVP_PKEY *p = EVP_PKEY_new_raw_public_key_ex(NULL, "ML-KEM-768", NULL, k768.pub.p, k768.pub.n);
+        if (!p) die("kem spki");
+        spki(p, &kems);
+        EVP_PKEY_free(p);
+    }
+    cert_fixed(&crt);
+
+    MK0("fixed rsa pub", AT(0x0, c_pub), AT(0x100, k_rsa), BL(0x120, r.n), BL(0x122, r.e));
+    MK0("fixed rsa priv", AT(0x0, c_priv), AT(0x100, k_rsa), BL(0x120, r.n), BL(0x122, r.e), BL(0x123, r.d),
+        BL(0x124, r.p), BL(0x125, r.q), BL(0x126, r.dp), BL(0x127, r.dq), BL(0x128, r.qi));
+    MK0("fixed ec p256 pub", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, w256));
+    MK0("fixed ec p256 priv", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x11, e256.d));
+    MK0("fixed ec p384 pub", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P384, sizeof P384), BL(0x181, w384));
+    MK0("fixed ec p521 pub", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P521, sizeof P521), BL(0x181, w521));
+    MK0("fixed ec p521 priv", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P521, sizeof P521), BL(0x11, e521.d));
+    MK0("fixed ec secp256k1 pub", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, K256, sizeof K256), BL(0x181, wk1));
+    MK0("fixed ed25519 pub", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED25519, sizeof ED25519), BL(0x181, edw));
+    MK0("fixed ed25519 pub by name", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED25519_NAME, 14), BL(0x181, edw));
+    MK0("fixed ed25519 priv", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, ED25519, sizeof ED25519), BL(0x11, edv));
+    MK0("fixed ed25519 priv by name", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, ED25519_NAME, 14), BL(0x11, edv));
+    MK0("fixed ed448 pub", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED448, sizeof ED448), BL(0x181, ed4w));
+    MK0("fixed ed448 pub by name", AT(0x0, c_pub), AT(0x100, k_ed), AB(0x180, ED448_NAME, 12), BL(0x181, ed4w));
+    MK0("fixed ed448 priv", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, ED448, sizeof ED448), BL(0x11, ed4v));
+    MK0("fixed x25519 pub", AT(0x0, c_pub), AT(0x100, k_x), AB(0x180, X25519, sizeof X25519), BL(0x181, xw));
+    MK0("fixed x25519 priv", AT(0x0, c_priv), AT(0x100, k_x), AB(0x180, X25519, sizeof X25519), BL(0x11, xv));
+    MK0("fixed x448 pub", AT(0x0, c_pub), AT(0x100, k_x), AB(0x180, X448, sizeof X448), BL(0x181, x4w));
+    MK0("fixed x448 priv", AT(0x0, c_priv), AT(0x100, k_x), AB(0x180, X448, sizeof X448), BL(0x11, x4v));
+    MK0("fixed mldsa44 pub", AT(0x0, c_pub), AT(0x100, k_dsa), BL(0x11, d44p), AT(0x61D, s1));
+    MK0("fixed mldsa44 priv", AT(0x0, c_priv), AT(0x100, k_dsa), BL(0x11, d44v), AT(0x61D, s1));
+    MK0("fixed mldsa65 pub", AT(0x0, c_pub), AT(0x100, k_dsa), BL(0x11, d65p), AT(0x61D, s2));
+    MK0("fixed mldsa87 pub", AT(0x0, c_pub), AT(0x100, k_dsa), BL(0x11, d87p), AT(0x61D, s3));
+    MK0("fixed mldsa87 priv", AT(0x0, c_priv), AT(0x100, k_dsa), BL(0x11, d87v), AT(0x61D, s3));
+    MK0("fixed mlkem768 pub raw", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, k768.pub), AT(0x61D, s2));
+    MK0("fixed mlkem768 pub spki", AT(0x0, c_pub), AT(0x100, k_kem), BL(0x11, kems), AT(0x61D, s2));
+    MK0("fixed mlkem768 priv", AT(0x0, c_priv), AT(0x100, k_kem), BL(0x11, k768.priv), AT(0x61D, s2));
+    MK0("fixed cert", AT(0x0, c_cert), AT(0x80, x509), BL(0x11, crt));
+    MK0("fixed cert subject given", AT(0x0, c_cert), AT(0x80, x509), BL(0x11, crt), AB(0x101, "given", 5));
+    MK0("fixed cert truncated", AT(0x0, c_cert), AT(0x80, x509), AB(0x11, crt.p, crt.n / 2));
+    P11(C_Finalize, NULL);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: p11_keys LIB BASE\n"); return 2; }
     setvbuf(stdout, NULL, _IONBF, 0);
     lib = dlopen(argv[1], RTLD_NOW);
     if (!lib) { fprintf(stderr, "%s\n", dlerror()); return 2; }
-    void (*S[])(void) = { s_gen, s_pair, s_life, s_create, s_wrap, s_derive, s_kem };
+    void (*S[])(void) = { s_gen, s_pair, s_life, s_create, s_wrap, s_derive, s_kem, s_attrs };
     int rc = 0;
     for (size_t i = 0; i < sizeof S / sizeof *S; ++i) {
         snprintf(dir, sizeof dir, "%s/%zu", argv[2], i);
