@@ -42,3 +42,20 @@ s/^\(rsa priv n e d\)\t0x6\t/\1\t0xd0\t/
 # DIV-066 (scenario 3): a rebuilt public key keeps CKA_ENCAPSULATE FALSE (C's rebuilt-key path
 # never applied the encapsulation flags).
 s/^\(mlkem512 pub encapsulate false ENCAPSULATE\t0\t0x1\t\)01$/\100/
+# RULE-059 (slices 6b and 6c): a key from C_CreateObject (scenario 3) or C_UnwrapKey (scenario 4)
+# was in the clear outside the token, so it was never always sensitive nor never extractable; C
+# read both from the current flags.
+s/^\(\(ec priv flags\|ec priv p256\|ec priv p256 scalar on p384\|ed25519 priv\|ed25519 priv by name\|ed448 priv by name\|mldsa44 priv\|mlkem512 priv\|rsa priv extractable\|rsa priv full\|slhdsa sha2-128f priv\|x25519 priv\) \(ALWAYS_SENSITIVE\|NEVER_EXTRACTABLE\)\t0\t0x1\t\)01$/\100/
+s/^\(uw \(allowed mechs\|des3 of 24\|generic\|kwp generic5\|label 70\|no template\|oaep\|oaep label\|template sensitive\|token\|usage\|value_len 16\) \(ALWAYS_SENSITIVE\|NEVER_EXTRACTABLE\)\t0\t0x1\t\)01$/\100/
+# DIV-058 (scenario 4): a key that is not extractable is never wrapped; a public key and a data
+# object carry no CKA_EXTRACTABLE, so they are refused too.
+s/^\(kw not extractable\|kwp data object\)\t0\t0x18\t[0-9a-f]*$/\1\t0x6a\t0x40\t-/
+s/^kwp ec pub\t0\t0x68\trnd:104$/kwp ec pub\t0x6a\t0x200\t-/
+# DIV-067 (scenario 4): an unwrapped key is a secret key of a secret key type.
+/^uw \(ec type\|class private\) [A-Z_]*\t/d
+s/^uw ec type\t0\t+1\t-$/uw ec type\t0x13\t-\t-\nuw ec type objects\t0\t+0\t-/
+s/^uw class private\t0\t+1\t-$/uw class private\t0xd1\t-\t-\nuw class private objects\t0\t+0\t-/
+# DIV-050 (scenario 4): wrap and unwrap with the user's keys need the user's login (C: logged
+# out 0x101, the SO 0).
+s/^\(wrap logged out\|unwrap logged out\)\t0x101$/\1\t0x60/
+s/^\(so wrap user key\|so unwrap with user key\)\t0$/\1\t0x60/

@@ -108,7 +108,7 @@ const CKA_USAGE: [(c_ulong, u8); 7] = [
     (0x10C, USAGE_DERIVE),
 ];
 
-const OBJF_UNWRAP_SENS: u8 = 0x80;
+pub(super) const OBJF_UNWRAP_SENS: u8 = 0x80;
 const OBJF2_WRAP_WITH_TRUSTED: u8 = 0x80;
 const OBJF3_ED_CURVE_NAME: u8 = 0x01;
 

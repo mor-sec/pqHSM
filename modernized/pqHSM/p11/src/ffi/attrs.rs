@@ -96,6 +96,21 @@ pub(super) fn history(before: u8, after: u8) -> u8 {
     }
     h
 }
+
+/// RULE-059: a key made outside the token (imported or unwrapped) was never always sensitive,
+/// nor never extractable, per PKCS#11.
+pub(super) fn imported(t: *mut fhsm_token_t, o: u32) -> u32 {
+    let mut f3 = 0u8;
+    // SAFETY: a token the registry holds; an out byte of our own
+    let rv = unsafe { fhsm_token_object_get_flags3(t, o, &mut f3) };
+    if rv != OK {
+        return rv;
+    }
+    // SAFETY: as above
+    unsafe {
+        fhsm_token_object_set_flags3(t, o, f3 | OBJF3_WAS_NOT_SENSITIVE | OBJF3_WAS_EXTRACTABLE)
+    }
+}
 pub(super) const OBJF_UNMODIFIABLE: u8 = 0x04;
 pub(super) const OBJF_LOCAL: u8 = 0x10;
 pub(super) const OBJF_ALWAYS_AUTH: u8 = 0x20;
@@ -107,7 +122,7 @@ pub(super) const OBJF2_HAS_ALLOWED_MECH: u8 = 0x08;
 pub(super) const OBJF2_HAS_WRAP_TMPL: u8 = 0x10;
 pub(super) const OBJF2_HAS_UNWRAP_TMPL: u8 = 0x20;
 pub(super) const OBJF2_HAS_DERIVE_TMPL: u8 = 0x40;
-const OBJF2_WRAP_WITH_TRUSTED: u8 = 0x80;
+pub(super) const OBJF2_WRAP_WITH_TRUSTED: u8 = 0x80;
 pub(super) const USAGE_ENCRYPT: u8 = 0x01;
 pub(super) const USAGE_DECRYPT: u8 = 0x02;
 pub(super) const USAGE_SIGN: u8 = 0x04;

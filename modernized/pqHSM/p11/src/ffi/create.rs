@@ -15,7 +15,7 @@ use pqhsm_crypto::keygen::{Curve, ec_curve, ecm_available};
 use super::apilock::Held;
 use super::attrs::{
     CKA_EXTRACTABLE, CKA_PRIVATE, CKA_SENSITIVE, CKA_TRUSTED, CKK_ML_DSA, CKK_ML_KEM,
-    CKO_PUBLIC_KEY, OBJF_ALWAYS_AUTH, OBJF_EXTRACTABLE, OBJF_SENSITIVE, OBJF_TRUSTED,
+    CKO_PUBLIC_KEY, OBJF_ALWAYS_AUTH, OBJF_EXTRACTABLE, OBJF_SENSITIVE, OBJF_TRUSTED, imported,
 };
 use super::copy::{
     BOOL_ATTRS, ULONG_ATTRS, apply_allowed_mechs, apply_encap_flags, apply_nested_all,
@@ -229,7 +229,8 @@ impl Store<'_> {
 
     /// The handle written, then the template's restrictions and metadata, the object
     /// destroyed if one fails. A certificate takes no curve name (`ed`). DIV-066: a rebuilt key
-    /// takes the encapsulation flags too (C dropped CKA_ENCAPSULATE FALSE on one).
+    /// takes the encapsulation flags too (C dropped CKA_ENCAPSULATE FALSE on one). RULE-059: an
+    /// imported key starts with both history bits.
     fn finish(&self, o: u32, class: u32, ed: bool) -> Result<u32, u32> {
         let (tok, t) = (self.tok, self.t);
         // SAFETY: writable (caller); C wrote the handle before applying the rest
@@ -250,6 +251,9 @@ impl Store<'_> {
         }
         apply_token_scope(tok, self.h, t, o);
         step(apply_obj_meta(tok, t, o))?;
+        if class == CKO_SECRET_KEY || class == CKO_PRIVATE_KEY {
+            step(imported(tok, o))?;
+        }
         // SAFETY: a token the registry holds (C ignores the result)
         unsafe { fhsm_token_object_set_usage(tok, o, compute_usage(class, t)) };
         Ok(OK)

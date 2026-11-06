@@ -1205,3 +1205,29 @@ The unsafe code in `import.rs` was found correct (builder lifetimes, BIGNUM owne
 
 Recorded, not applied:
 - **L2:** the OSSL_PARAM array holding d, the primes or an EC scalar is freed without wiping (C the same). libcrypto 3.5 exports no `OSSL_PARAM_clear_free`; the BIGNUMs and the DER are wiped.
+
+### 6c: `C_WrapKey` and `C_UnwrapKey`
+
+- **Golden first:** step 4n's scenario 4 (`p11_keys.c` `s_wrap`, commit before the port): wrap by AES-KW, KWP and RSA-OAEP over keys made from fixed bytes, so each AES blob prints whole; every refusal in C's order, the wrapping key's and the unwrapping key's templates, WRAP_WITH_TRUSTED under an SO-made trusted key, the SO and the logged-out session; then the unwrap template, each blob and length, and each new key's attributes. It found DIV-067. RSA PKCS#1 v1.5 and X.509 wrap are refused by the strict build the harness runs (0x70), so their bodies are covered only by reading.
+- **Port** (`p11/src/ffi/wrap.rs`): both entry points in C's order, the RSA transports (`:8631-8829`) inline. AES-KW runs on `crypt.rs`'s `keyed` and `run`; OAEP on `PkeyCtx::oaep`. Its own: `fhsm_check_wrap_tmpl` with `fhsm_read_obj_attr` (`obj_attr`), `fhsm_check_nested_tmpl` for the unwrap, `kw_iv_from_mech`, and `fhsm_oaep_params_from_mech`, which takes a label of any length (Init's copy caps it at 64, the wrap's never did; unit test).
+- **DIV-050:** both keys of a wrap and the unwrapping key are refused (0x60) before C's first key check, so a logged-out wrap is 0x60 where C said 0x101, and the SO's is 0x60 where C wrapped. In the unwrap the check runs where the token is first there, before C's three key checks, which C ran without one.
+- **DIV-058:** a target without EXTRACTABLE is 0x6A where C checked only SENSITIVE and not EXTRACTABLE. That also refuses a public key and a data object, which carry no EXTRACTABLE; C wrapped both.
+- **DIV-067:** CKA_CLASS other than CKO_SECRET_KEY is 0xD1, a key type outside the five secret types 0x13; both checked on the whole CK_ULONG, after the unwrap, where C read the type.
+- **DIV-001:** a wrap's blob is made in scratch and recorded (EV_WRAP 44) before it reaches the caller; an unwrapped key whose record (EV_UNWRAP 45) fails is destroyed and the call is 0x30. A size query has no record, as C. Tests: `p11_divs.c` DIV-001 cases 10 and 11.
+- **RULE-059 completed:** a key from `C_CreateObject` (secret or private) or `C_UnwrapKey` starts with both history bits (`attrs.rs` `imported`), so it reads ALWAYS_SENSITIVE and NEVER_EXTRACTABLE FALSE, per PKCS#11. Slice 6b missed the create half; it lands here. Recorded rows: step 4n scenarios 3 and 4, step 4i's `aes-s` and `gen`.
+- **Shortcut:** an RSA unwrap whose blob length exceeds `isize::MAX` is 0x110 without being read (a caller lying about its buffer; C handed it to OpenSSL).
+
+### Slice 6c review (architecture critic, 2026-11-07)
+
+Nothing high: every path traced against C, the five divergences where their entries put them, the unsafe code sound. Applied:
+- **M1:** no test refused the key being wrapped (every DIV-050 case wrapped under a user key, refused first). `p11_divs.c` DIV-050 now has the SO wrap the user's key under an RSA public key with OAEP: 0x60. Without the target check, the hybrid would answer 0x6A (DIV-058). C answers 0x60 here only because its SO had destroyed the key earlier in the test.
+- **L3:** the OAEP digests are fetched (`md_known`), as C's `fhsm_oaep_params_from_mech` and `crypt.rs` do, so an unfetchable one is 0x71 before the size query.
+- **L4:** a label past C's `(int)` cast is 0x6 before it is read, a recorded shortcut.
+- **Nits:** `aes_name(..).ok_or(..)` in place of `expect` (no panic site across the FFI); `audited` for the unwrap's record; `imported` before `set_usage`, as in `create.rs`; `OBJF_UNWRAP_SENS` from `keygen.rs`; DIV-067's entry states the whole-CK_ULONG comparison, with a test (2^32 + CKK_AES: 0x13; C stored it as AES).
+
+Recorded, not applied:
+- **M2:** DIV-001 case 11 checks the 0x30 but not that the key is gone. The failed write latches ERROR, which refuses every later find in that process, and the destroy's result is ignored as C ignored it.
+- **L5:** `kw_iv`, `oaep_params`, `raw_ctx` and `rsa_run` repeat `crypt.rs`'s Init-side code with different codes and no label cap. Merging them means giving the Init parse optional switches; left until slice 7 needs a third caller.
+- **L6:** RSA PKCS#1 v1.5 and X.509 wrap and unwrap are refused by the strict build the harness runs, so their bounds (11 bytes, the 1024 cap, the zero strip, the blob length) are checked by reading only. A unit test needs a token. Due with the all-mechanisms harness.
+- **Nit 10:** the OAEP label is a plain `Vec`, as C did not wipe it either.
+- **Gaps:** no rows for OAEP parameter refusals other than none at all, or for a KW blob of exactly 4104 bytes.

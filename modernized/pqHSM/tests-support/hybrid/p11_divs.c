@@ -266,6 +266,21 @@ static void div_050(void) {
     want("verify after the logout", CALL(C_Verify, h, pt, 16UL, ct, 32UL), 0x91);
     want("login so for the signature", CALL(C_Login, h, 0UL, SO, (UL)strlen(SO)), 0);
     want("so signinit the session key", CALL(C_SignInit, h, &hmac, sk), 0x60);
+    /* Slice 6c: nor wrap the user's key, nor unwrap under it. */
+    struct { UL m; void *p; UL len; } kwm = { 0x2109, NULL, 0 };
+    unsigned char zeros[24] = { 0 };
+    UL wl = sizeof ct, uo = 0;
+    want("so wraps the user's key", CALL(C_WrapKey, h, &kwm, sk, k, ct, &wl), 0x60);
+    want("so unwraps under the user's key",
+         CALL(C_UnwrapKey, h, &kwm, sk, zeros, 24UL, NULL, 0UL, &uo), 0x60);
+    /* The key wrapped counts too, under a public key anyone may use. */
+    UL bits = 2048, rpub = 0, rprv = 0, oaep_p[5] = { 0x250, 2, 1, 0, 0 };
+    unsigned char big[512];
+    struct { UL type; void *p; UL len; } rp[] = { { 0x121, &bits, sizeof bits } };
+    struct { UL m; void *p; UL len; } rsa = { 0x0, NULL, 0 }, oaep = { 0x9, oaep_p, sizeof oaep_p };
+    want("so generates an rsa pair", CALL(C_GenerateKeyPair, h, &rsa, rp, 1UL, NULL, 0UL, &rpub, &rprv), 0);
+    wl = sizeof big;
+    want("so wraps the user's key under a public key", CALL(C_WrapKey, h, &oaep, rpub, k, big, &wl), 0x60);
     CALL(C_Finalize, NULL);
 }
 
@@ -433,6 +448,28 @@ static void div_001_case(int which) {
         want("no handles written", pk == 0xAAAAAAAAUL && vk == 0xAAAAAAAAUL, 1);
         return;
     }
+    if (which == 10 || which == 11) {
+        /* Slice 6c: a wrap that cannot be audited writes no blob; an unwrap's key is not kept. */
+        UL hs, kek = user_key(&hs, 16), x = 0, o = 0xAAAAAAAAUL, out = 64, cls = 4, kt = 0x1f;
+        unsigned char yes = 1, key[16] = { 3 }, blob[64];
+        struct { UL type; void *p; UL len; } t[] = {
+            { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x011, key, 16 },
+            { 0x162, &yes, 1 },
+        };
+        struct { UL m; void *p; UL len; } kw = { 0x2109, NULL, 0 };
+        want("create the key to wrap", CALL(C_CreateObject, hs, t, 4UL, &x), 0);
+        memset(blob, 0xAA, sizeof blob);
+        if (which == 10) {
+            fail_audit();
+            want("wrap, audit failing", CALL(C_WrapKey, hs, &kw, kek, x, blob, &out), 0x30);
+            want("nothing written", blob[0] == 0xAA && blob[23] == 0xAA && out == 64, 1);
+            return;
+        }
+        want("wrap", CALL(C_WrapKey, hs, &kw, kek, x, blob, &out), 0);
+        fail_audit();
+        want("unwrap, audit failing", CALL(C_UnwrapKey, hs, &kw, kek, blob, out, NULL, 0UL, &o), 0x30);
+        return;
+    }
     if (which == 6) {
         /* Slice 5: a C_Sign that cannot be audited writes no signature. */
         UL hs, k = user_key(&hs, 16), out = 64;
@@ -483,7 +520,7 @@ static void div_001_case(int which) {
 
 static void div_001(void) {
     const char *base = getenv("FHSM_TOKENS_DIR");
-    for (int i = 0; i < 10; ++i) {
+    for (int i = 0; i < 12; ++i) {
         char d[700];
         snprintf(d, sizeof d, "%s/%d", base, i);
         mkdir(d, 0700);
@@ -649,6 +686,23 @@ static void rule_059(void) {
     want("copy the locked key as it is", CALL(C_CopyObject, h, k, NULL, 0UL, &c), 0);
     want("plain copy ALWAYS_SENSITIVE", hist(h, c, 0x165), 0);
     want("plain copy NEVER_EXTRACTABLE", hist(h, c, 0x164), 0);
+    /* Slices 6b and 6c: an imported or unwrapped key was in the clear outside the token, so it
+     * starts with both history bits (C: TRUE, TRUE for a key created or unwrapped locked). */
+    UL s = 0, x = 0, u = 0, wl = 64;
+    unsigned char blob[64];
+    struct { UL type; void *p; UL len; } sec[] = {
+        { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x011, key, sizeof key },
+        { 0x103, &yes, 1 }, { 0x162, &no, 1 },
+    }, keep[] = { { 0x162, &no, 1 } };
+    struct { UL m; void *p; UL len; } kw = { 0x2109, NULL, 0 };
+    want("create a locked key", CALL(C_CreateObject, h, sec, 5UL, &s), 0);
+    want("imported ALWAYS_SENSITIVE", hist(h, s, 0x165), 0);
+    want("imported NEVER_EXTRACTABLE", hist(h, s, 0x164), 0);
+    want("create a key to wrap", CALL(C_CreateObject, h, t, 5UL, &x), 0);
+    want("wrap it", CALL(C_WrapKey, h, &kw, s, x, blob, &wl), 0);
+    want("unwrap it locked", CALL(C_UnwrapKey, h, &kw, s, blob, wl, keep, 1UL, &u), 0);
+    want("unwrapped ALWAYS_SENSITIVE", hist(h, u, 0x165), 0);
+    want("unwrapped NEVER_EXTRACTABLE", hist(h, u, 0x164), 0);
     CALL(C_Finalize, NULL);
 }
 
@@ -843,6 +897,48 @@ static void div_066(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* A user session key of 16 bytes to wrap, SENSITIVE and EXTRACTABLE as given. */
+static UL wrap_target(UL h, unsigned char sens, unsigned char ext) {
+    UL k = 0, cls = 4, kt = 0x1f;
+    unsigned char key[16] = { 7 };
+    Attr t[] = { { 0x0, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x11, key, 16 },
+                 { 0x103, &sens, 1 }, { 0x162, &ext, 1 } };
+    want("create the key to wrap", CALL(C_CreateObject, h, t, 5UL, &k), 0);
+    return k;
+}
+
+/* DIV-058: a key that is not extractable is never wrapped. C refused only one that was also
+ * sensitive, so the derive and KEM default (neither) left the token. */
+static void div_058(void) {
+    UL h, kek = user_key(&h, 16), out = 64;
+    Mech kw = { 0x2109, NULL, 0 };
+    unsigned char blob[64];
+    want("wrap a key neither sensitive nor extractable",
+         CALL(C_WrapKey, h, &kw, kek, wrap_target(h, 0, 0), blob, &out), 0x6a);
+    out = 64;
+    want("wrap an extractable key", CALL(C_WrapKey, h, &kw, kek, wrap_target(h, 0, 1), blob, &out), 0);
+    CALL(C_Finalize, NULL);
+}
+
+/* DIV-067: C_UnwrapKey stores only a secret key of a secret key type. C stored a CKK_EC secret
+ * key, and a secret key for a template asking CKO_PRIVATE_KEY. */
+static void div_067(void) {
+    UL h, kek = user_key(&h, 16), out = 64, o = 0, ec = 3, priv = 3, aes = 0x1f;
+    Mech kw = { 0x2109, NULL, 0 };
+    unsigned char blob[64];
+    want("wrap", CALL(C_WrapKey, h, &kw, kek, wrap_target(h, 0, 1), blob, &out), 0);
+    Attr te[] = { { 0x100, &ec, sizeof ec } }, tc[] = { { 0x0, &priv, sizeof priv } },
+         ta[] = { { 0x100, &aes, sizeof aes } };
+    want("unwrap as CKK_EC", CALL(C_UnwrapKey, h, &kw, kek, blob, out, te, 1UL, &o), 0x13);
+    want("unwrap as CKO_PRIVATE_KEY", CALL(C_UnwrapKey, h, &kw, kek, blob, out, tc, 1UL, &o), 0xd1);
+    /* The whole CK_ULONG: C narrowed it to 32 bits and stored this one as AES. */
+    UL wide = 0x10000001FUL;
+    Attr tw[] = { { 0x100, &wide, sizeof wide } };
+    want("unwrap as 2^32 + CKK_AES", CALL(C_UnwrapKey, h, &kw, kek, blob, out, tw, 1UL, &o), 0x13);
+    want("unwrap as AES", CALL(C_UnwrapKey, h, &kw, kek, blob, out, ta, 1UL, &o), 0);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
@@ -853,6 +949,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "DIV-063", div_063 }, { "DIV-052", div_052 }, { "DIV-064", div_064 },
     { "RULE-006", rule_006 }, { "RULE-014", rule_014 }, { "RULE-015", rule_015 },
     { "RULE-017", rule_017 }, { "DIV-065", div_065 }, { "DIV-066", div_066 },
+    { "DIV-058", div_058 }, { "DIV-067", div_067 },
 };
 
 int main(int argc, char **argv) {

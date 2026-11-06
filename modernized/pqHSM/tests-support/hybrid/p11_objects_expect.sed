@@ -46,3 +46,6 @@ copy encrypt false attr 0x40000600\t0\t0x8\t8110000000000000
 # RULE-059: the key in the set-attribute rows was made sensitive and unextractable earlier, so it
 # was never always sensitive and was once extractable; C read both from the current flags.
 /^after set \(NEVER_EXTRACTABLE\|ALWAYS_SENSITIVE\) [01]\t/s/\t01$/\t00/
+# RULE-059 (slice 6b): a key from C_CreateObject was in the clear outside the token, so it was
+# never always sensitive nor never extractable.
+/^\(aes-s\|gen\) \(NEVER_EXTRACTABLE\|ALWAYS_SENSITIVE\) \(1\|get\)\t0\t0x1\t01$/s/01$/00/

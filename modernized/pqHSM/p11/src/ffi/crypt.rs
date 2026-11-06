@@ -79,7 +79,7 @@ pub(super) struct Secret(pub(super) Vec<u8>);
 impl Secret {
     pub(super) const NONE: Secret = Secret(Vec::new());
     /// `n` zero bytes, or HOST_MEMORY: an input can be 2 GiB, and C wrote in place.
-    fn zeroed(n: usize) -> Result<Self, u32> {
+    pub(super) fn zeroed(n: usize) -> Result<Self, u32> {
         let mut v = Vec::new();
         v.try_reserve_exact(n).map_err(|_| HOST_MEMORY)?;
         v.resize(n, 0);
@@ -323,7 +323,7 @@ fn key_type_for(m: c_ulong) -> Option<u32> {
 }
 
 /// `oaep_md`.
-fn oaep_md(m: c_ulong) -> Option<&'static CStr> {
+pub(super) fn oaep_md(m: c_ulong) -> Option<&'static CStr> {
     Some(match m {
         0x220 => c"SHA1",
         0x255 => c"SHA224",
@@ -595,7 +595,7 @@ pub unsafe extern "C" fn pqhsm_C_DecryptInit(h: c_ulong, m: *const Mech, key: c_
 }
 
 /// The OpenSSL name of AES in `mode` for a key of `n` bytes; `None` for another length.
-fn aes_name(mode: &str, n: usize) -> Option<&'static CStr> {
+pub(super) fn aes_name(mode: &str, n: usize) -> Option<&'static CStr> {
     Some(match (mode, n) {
         ("ECB", 16) => c"AES-128-ECB",
         ("ECB", 24) => c"AES-192-ECB",
@@ -621,7 +621,13 @@ fn aes_name(mode: &str, n: usize) -> Option<&'static CStr> {
 
 /// A fetched cipher keyed and ready, in the single-part paths' order: MECHANISM_INVALID if the
 /// fetch fails, HOST_MEMORY without a context, FUNCTION_FAILED if the init fails.
-fn keyed(enc: bool, name: &CStr, key: &[u8], iv: Option<&[u8]>, wrap: bool) -> Result<Cipher, u32> {
+pub(super) fn keyed(
+    enc: bool,
+    name: &CStr,
+    key: &[u8],
+    iv: Option<&[u8]>,
+    wrap: bool,
+) -> Result<Cipher, u32> {
     let c = Fetched::new(name).ok_or(MECHANISM_INVALID)?;
     let mut x = Cipher::new()?;
     if wrap {
@@ -674,7 +680,13 @@ fn block_ctx(enc: bool, op: &Op, kv: &[u8], kt: u32) -> Result<Cipher, u32> {
 
 /// Update and Final of a whole input into scratch with room for `cap` bytes and two blocks;
 /// the bytes made, HOST_MEMORY, or `fail` when the cipher fails.
-fn run(enc: bool, x: &mut Cipher, inp: &[u8], cap: usize, fail: u32) -> Result<Secret, u32> {
+pub(super) fn run(
+    enc: bool,
+    x: &mut Cipher,
+    inp: &[u8],
+    cap: usize,
+    fail: u32,
+) -> Result<Secret, u32> {
     let mut o = Secret::zeroed(cap + 32)?;
     // SAFETY: o has room for the input plus two blocks; inp readable; its length <= MAX_INPUT
     unsafe {
