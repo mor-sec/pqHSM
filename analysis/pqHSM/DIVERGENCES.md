@@ -705,6 +705,14 @@ RULE-080(a), the `.tpm` file on re-init (the fifth Q13 item), is already fixed i
 - **Test:** `p11_divs.c` DIV-066: an ML-KEM-512 public key created with ENCAPSULATE FALSE reads FALSE (C: TRUE).
 - **Expected harness diff:** step 4n's `mlkem512 pub encapsulate false ENCAPSULATE` (01 → 00).
 
+### DIV-067 · `C_UnwrapKey` stores only a secret key of a secret key type
+
+- **Status:** DECIDED, Fix (2026-11-07, found by Phase 4 slice 6c's golden; user: "Fix as DIV-067 (Recommended)").
+- **Legacy:** `C_UnwrapKey` stores every unwrapped key as CKO_SECRET_KEY with the template's CKA_KEY_TYPE unchecked, and never reads CKA_CLASS (`src/fhsm_pkcs11.c:5345-5421`; only AES and DES3 lengths are checked, `:5401-5408`): step 4n's `uw ec type` stores a 16-byte secret key typed CKK_EC, and `uw class private` asks for CKO_PRIVATE_KEY and gets a secret key, both CKR_OK. The same gap as DIV-064's.
+- **Target:** CKA_KEY_TYPE, when given, is one of the module's secret key types (CKK_GENERIC_SECRET, CKK_DES3, CKK_AES, CKK_SHA256_HMAC, CKK_HKDF), else CKR_ATTRIBUTE_VALUE_INVALID (0x13), as DIV-064; CKA_CLASS, when given, is CKO_SECRET_KEY, else CKR_TEMPLATE_INCONSISTENT (0xD1). Both where C reads the key type, after the unwrap, so nothing is stored.
+- **Test:** `p11_divs.c` DIV-067: unwrap with CKK_EC (C: 0) and with CKO_PRIVATE_KEY (C: 0).
+- **Expected harness diff:** step 4n's `uw ec type` (0 → 0x13) and `uw class private` (0 → 0xD1), their attribute rows replaced by an unchanged object count. No legacy test unwraps with either.
+
 ### DIV-001 in Phase 4
 
 **Slice 1's sites DONE (2026-11-05, after the slice 1 review, H1):** `p11/src/ffi/sys.rs` `audit` returns its result and `audited` maps a failure at a succeeding call to 0x30, the failing call's own rv otherwise. `C_Login` and the context-specific login undo their effect (log out, no grant); `C_InitPIN` and `C_InitToken` were already recorded by the token before its write (Phase 2), so this second record failing is 0x30 on a durable change; `C_Logout` and the last-session logout report 0x30 but stand (undoing a logout would reload keys); `fhsm_state_set` returns 0x30; `C_Finalize` and the ERROR latch's own record keep discarding it (nothing to suppress). Test: `p11_divs.c` DIV-001 (InitPIN, Logout, Login, re-init, each with the next write failing under RLIMIT_FSIZE), harness step 4h. **Recorded diff (2026-11-05, user: "Record it (Recommended)"):** with a stream audit target (`FHSM_AUDIT_LOG=/dev/null`) the first `fdatasync` fails, so `C_Initialize` returns 0x30; C returned OK into a module already in ERROR (its next call is 0x6). `tests/audit_switch.sh` "a stream target still starts the module" is patched in the harness copy to expect the refusal, and the original is this diff's test; step 4g records `initialize to /dev/null` 0x30.

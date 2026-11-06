@@ -1,6 +1,6 @@
 /* p11_keys.c LIB BASE --- slice 6 of PHASE4_PLAN.md §2: call sequences through the key
  * generation and creation entry points (6a: C_GenerateKey, C_GenerateKeyPair; 6b:
- * C_CreateObject's builders, over keys libcrypto makes here), one row per call:
+ * C_CreateObject's builders, over keys libcrypto makes here; 6c: C_WrapKey, C_UnwrapKey), one row per call:
  * "label TAB rv TAB n TAB hex", n each handle out-parameter: "-" untouched, else its distance
  * from the last handle written (the raw value where a call prints it directly). Each new object's attributes follow, one row each
  * ("label NAME rv len value"); generated key material prints as "rnd:<len>", PBKDF2's output
@@ -11,7 +11,7 @@
  * Each scenario runs in a forked child with its own tokens directory BASE/<n>.
  *
  * Written from the C (src/fhsm_pkcs11.c:2357-2422, 2551-2584, 2745-3050, 3150-3189,
- * 3505-3534, 3559-4138, 6160-6223, 6370-6933) before the Rust, as its characterisation. */
+ * 3505-3534, 3559-4138, 4974-5444, 6160-6223, 6370-6933, 8631-8829) before the Rust, as its characterisation. */
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -724,12 +724,242 @@ static void s_create(void) {
     P11(C_Finalize, NULL);
 }
 
+/* 4 (slice 6c): C_WrapKey and C_UnwrapKey, over keys created here from fixed bytes, so every
+ * AES-wrapped blob prints whole; an RSA or wrapped-private-key blob prints as its length. */
+typedef struct { UL hash, mgf, src; void *data; UL len; } Oaep;
+static unsigned char blob[8192];
+static UL blob_n;
+
+/* A key the scenario uses: its create row, no dump. */
+static UL key(UL h, const char *name, Attr *t, UL n) {
+    UL o = 0xAAAAAAAAUL, rv = P11(C_CreateObject, h, t, n, &o);
+    char b[24];
+    printf("%s\t%#lx\t%s\t-\n", name, rv, hv(o, b));
+    return rv ? 0 : o;
+}
+#define KEY(var, name, ...) do { Attr t_[] = { __VA_ARGS__ }; var = key(h, name, t_, sizeof t_ / sizeof t_[0]); } while (0)
+
+/* One wrap: cap 0 asks the size (NULL buffer), else a buffer of cap bytes. A success with a
+ * buffer is kept in blob for the unwraps; rnd prints its length only. */
+static void wr(UL h, const char *name, UL mech, void *p, UL pl, UL wk, UL k, UL cap, int rnd) {
+    Mech m = { mech, p, pl };
+    UL len = cap ? cap : 0xAAAAUL;
+    memset(buf, 0xAA, sizeof buf);
+    UL rv = P11(C_WrapKey, h, &m, wk, k, cap ? buf : NULL, &len);
+    printf("%s\t%#lx\t%#lx\t", name, rv, len);
+    if (!rv && cap && len <= sizeof blob) {
+        memcpy(blob, buf, len);
+        blob_n = len;
+        if (rnd) printf("rnd:%lu", len); else hex(buf, len);
+    } else printf("-");
+    printf("\n");
+}
+
+/* One unwrap of b (bn bytes): the call, then the new key's attributes or the object count. */
+static void uw(UL h, const char *name, UL mech, void *p, UL pl, UL uk, const unsigned char *b,
+               UL bn, Attr *t, UL n) {
+    Mech m = { mech, p, pl };
+    UL frv, before = nobj(h, &frv), o = 0xAAAAAAAAUL;
+    UL rv = P11(C_UnwrapKey, h, &m, uk, b, bn, t, n, &o);
+    char hb[24];
+    printf("%s\t%#lx\t%s\t-\n", name, rv, hv(o, hb));
+    if (rv) stored(h, name, before);
+    else dump(h, name, o, 0);
+}
+#define UW(name, mech, p, pl, uk, b, bn, ...) do { Attr t_[] = { __VA_ARGS__ }; uw(h, name, mech, p, pl, uk, b, bn, t_, sizeof t_ / sizeof t_[0]); } while (0)
+
+static void s_wrap(void) {
+    UL h = setup(), h_ro = 0;
+    static UL c_sec = 4, c_priv = 3, c_data = 0, k_des3 = 0x15, k_ec = 3, len16 = 16, len32 = 32;
+    static unsigned char v16[16], v24[24], v32[32], w16[16], w24[24], w32[32], v5[5] = "abcde";
+    for (int i = 0; i < 32; ++i) {
+        if (i < 16) v16[i] = (unsigned char)i, w16[i] = (unsigned char)(0xF0 + i);
+        if (i < 24) v24[i] = (unsigned char)(0x20 + i), w24[i] = (unsigned char)(0xC0 + i);
+        v32[i] = (unsigned char)(0x40 + i), w32[i] = (unsigned char)(0x80 + i);
+    }
+    UL kek16, kek24, kek32, nowrap, kwp_only, tmpl, gen, rsa_pub = 0, rsa_priv = 0, ec_pub = 0,
+       ec_priv = 0, t16, t24, t32, t5, noext, locked, wwt, data, wtmpl, wtmpl_label;
+    static UL kwp_mech[] = { 0x210B };
+    static unsigned char sens_t = 1;
+    static Attr unwrap_t[] = { { 0x103, &sens_t, 1 } };
+    static Attr wrap_t[] = { { 0x100, &k_aes, sizeof k_aes } };
+    static Attr wrap_lt[] = { { 0x3, "tgt", 3 } };
+    KEY(kek16, "kek16", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w16));
+    KEY(kek24, "kek24", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w24));
+    KEY(kek32, "kek32", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w32));
+    KEY(nowrap, "kek no wrap", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w16), AT(0x106, Fb), AT(0x107, Fb));
+    KEY(kwp_only, "kek kwp only", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w16),
+        AB(0x40000600, kwp_mech, sizeof kwp_mech));
+    KEY(tmpl, "kek unwrap template", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w16),
+        AB(0x40000212, unwrap_t, sizeof unwrap_t));
+    KEY(gen, "generic kek", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, w16));
+    KEY(wtmpl, "kek wrap template aes", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w16),
+        AB(0x40000211, wrap_t, sizeof wrap_t));
+    KEY(wtmpl_label, "kek wrap template label", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w16),
+        AB(0x40000211, wrap_lt, sizeof wrap_lt));
+    KEY(t16, "target aes16", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, v16), AT(0x103, Fb), AT(0x162, T));
+    KEY(t24, "target generic24", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, v24), AT(0x103, Fb), AT(0x162, T));
+    KEY(t32, "target aes32 sensitive", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, v32), AT(0x103, T), AT(0x162, T));
+    KEY(t5, "target generic5", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, v5), AT(0x103, Fb), AT(0x162, T));
+    KEY(noext, "target not extractable", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, v16), AT(0x103, Fb), AT(0x162, Fb));
+    KEY(locked, "target sensitive not extractable", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, v16), AT(0x103, T), AT(0x162, Fb));
+    KEY(wwt, "target wrap with trusted", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, v16), AT(0x162, T), AT(0x210, T));
+    KEY(data, "target data", AT(0x0, c_data), AB(0x11, v16, 16));
+    {
+        Mech ec = { 0x1040, NULL, 0 }, rsa = { 0x0, NULL, 0 };
+        static UL bits = 2048;
+        Attr pu[] = { AB(0x180, P256, sizeof P256) }, pr[] = { AT(0x162, T), AT(0x103, Fb) };
+        Attr rp[] = { AT(0x121, bits) };
+        printf("pair ec\t%#lx\n", P11(C_GenerateKeyPair, h, &ec, pu, 1UL, pr, 2UL, &ec_pub, &ec_priv));
+        printf("pair rsa\t%#lx\n", P11(C_GenerateKeyPair, h, &rsa, rp, 1UL, NULL, 0UL, &rsa_pub, &rsa_priv));
+    }
+    static unsigned char iv8[8] = { 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6 }, iv0[8],
+                         iv4[4] = { 0xA6, 0x59, 0x59, 0xA6 };
+    static Oaep oaep = { 0x250, 2, 1, NULL, 0 };
+    static unsigned char kw16[64], kw24[64], kwp5[64], oaep16[512], oaepl[512], bad[64];
+    UL kw16_n = 0, kw24_n = 0, kwp5_n = 0, oaep16_n = 0, oaepl_n = 0;
+    static Oaep oaep_l = { 0x250, 2, 1, "label", 5 }, oaep_l2 = { 0x250, 2, 1, "lab3l", 5 };
+
+    /* wrap: sizes, buffers, IVs */
+    wr(h, "kw aes16 size", 0x2109, NULL, 0, kek16, t16, 0, 0);
+    wr(h, "kw aes16 small", 0x2109, NULL, 0, kek16, t16, 8, 0);
+    wr(h, "kw aes16", 0x2109, NULL, 0, kek16, t16, 64, 0);
+    memcpy(kw16, blob, kw16_n = blob_n);
+    wr(h, "kw aes16 iv a6", 0x2109, iv8, 8, kek16, t16, 64, 0);
+    wr(h, "kw aes16 iv 0", 0x2109, iv0, 8, kek16, t16, 64, 0);
+    wr(h, "kw aes16 iv 4", 0x2109, iv4, 4, kek16, t16, 64, 0);
+    wr(h, "kw aes16 iv null 8", 0x2109, NULL, 8, kek16, t16, 64, 0);
+    wr(h, "kw by kek24", 0x2109, NULL, 0, kek24, t16, 64, 0);
+    wr(h, "kw by kek32", 0x2109, NULL, 0, kek32, t16, 64, 0);
+    wr(h, "kw aes32 sensitive", 0x2109, NULL, 0, kek16, t32, 64, 0);
+    wr(h, "kw generic24", 0x2109, NULL, 0, kek16, t24, 64, 0);
+    memcpy(kw24, blob, kw24_n = blob_n);
+    wr(h, "kw by wrap template aes, aes target", 0x2109, NULL, 0, wtmpl, t16, 64, 0);
+    wr(h, "kw by wrap template aes, generic target", 0x2109, NULL, 0, wtmpl, t24, 64, 0);
+    wr(h, "kw by wrap template label, unlabelled", 0x2109, NULL, 0, wtmpl_label, t16, 64, 0);
+    wr(h, "kw generic5", 0x2109, NULL, 0, kek16, t5, 64, 0);
+    wr(h, "kwp generic5 size", 0x210B, NULL, 0, kek16, t5, 0, 0);
+    wr(h, "kwp generic5", 0x210B, NULL, 0, kek16, t5, 64, 0);
+    memcpy(kwp5, blob, kwp5_n = blob_n);
+    wr(h, "kwp aes16", 0x210B, NULL, 0, kek16, t16, 64, 0);
+    wr(h, "kwp iv 4", 0x210B, iv4, 4, kek16, t16, 64, 0);
+    wr(h, "kwp iv 8", 0x210B, iv8, 8, kek16, t16, 64, 0);
+    /* wrap: which keys, which wrapping keys */
+    wr(h, "kw not extractable", 0x2109, NULL, 0, kek16, noext, 64, 0);
+    wr(h, "kw sensitive not extractable", 0x2109, NULL, 0, kek16, locked, 64, 0);
+    wr(h, "kw wrap with trusted, untrusted kek", 0x2109, NULL, 0, kek16, wwt, 64, 0);
+    wr(h, "kw by kek no wrap", 0x2109, NULL, 0, nowrap, t16, 64, 0);
+    wr(h, "kw by kek kwp only", 0x2109, NULL, 0, kwp_only, t16, 64, 0);
+    wr(h, "kwp by kek kwp only", 0x210B, NULL, 0, kwp_only, t16, 64, 0);
+    wr(h, "kw by generic kek", 0x2109, NULL, 0, gen, t16, 64, 0);
+    wr(h, "kw by rsa pub", 0x2109, NULL, 0, rsa_pub, t16, 64, 0);
+    wr(h, "kwp data object", 0x210B, NULL, 0, kek16, data, 64, 0);
+    wr(h, "kwp ec pub", 0x210B, NULL, 0, kek16, ec_pub, 512, 1);
+    wr(h, "kwp ec priv extractable", 0x210B, NULL, 0, kek16, ec_priv, 512, 1);
+    wr(h, "kwp rsa priv", 0x210B, NULL, 0, kek16, rsa_priv, 4096, 1);
+    wr(h, "kw unknown key", 0x2109, NULL, 0, kek16, 999UL, 64, 0);
+    wr(h, "kw unknown kek", 0x2109, NULL, 0, 999UL, t16, 64, 0);
+    wr(h, "aes ecb", 0x1081, NULL, 0, kek16, t16, 64, 0);
+    /* wrap: RSA */
+    wr(h, "oaep size", 0x9, &oaep, sizeof oaep, rsa_pub, t16, 0, 1);
+    wr(h, "oaep small", 0x9, &oaep, sizeof oaep, rsa_pub, t16, 16, 1);
+    wr(h, "oaep", 0x9, &oaep, sizeof oaep, rsa_pub, t16, 512, 1);
+    memcpy(oaep16, blob, oaep16_n = blob_n);
+    wr(h, "oaep label", 0x9, &oaep_l, sizeof oaep_l, rsa_pub, t16, 512, 1);
+    memcpy(oaepl, blob, oaepl_n = blob_n);
+    wr(h, "oaep no params", 0x9, NULL, 0, rsa_pub, t16, 512, 1);
+    wr(h, "oaep by aes", 0x9, &oaep, sizeof oaep, kek16, t16, 512, 1);
+    wr(h, "oaep by rsa priv", 0x9, &oaep, sizeof oaep, rsa_priv, t16, 512, 1);
+    wr(h, "rsa pkcs", 0x1, NULL, 0, rsa_pub, t16, 512, 1);
+    wr(h, "rsa x509", 0x3, NULL, 0, rsa_pub, t16, 512, 1);
+    /* wrap: arguments */
+    {
+        Mech m = { 0x2109, NULL, 0 };
+        UL len = 64;
+        printf("wrap null mech\t%#lx\n", P11(C_WrapKey, h, NULL, kek16, t16, buf, &len));
+        printf("wrap null len\t%#lx\n", P11(C_WrapKey, h, &m, kek16, t16, buf, NULL));
+        printf("wrap bad session\t%#lx\n", P11(C_WrapKey, 99UL, &m, kek16, t16, buf, &len));
+    }
+
+    /* unwrap: the template */
+    UW("uw aes16", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x0, c_sec), AT(0x100, k_aes),
+       AT(0x103, Fb), AT(0x162, T), AB(0x3, "unwrapped", 9));
+    uw(h, "uw no template", 0x2109, NULL, 0, kek16, kw16, kw16_n, NULL, 0);
+    UW("uw generic", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x100, k_gen), AT(0x103, Fb));
+    UW("uw ec type", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x100, k_ec), AT(0x103, Fb));
+    UW("uw class private", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x0, c_priv), AT(0x100, k_aes));
+    UW("uw value_len 16", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x161, len16));
+    UW("uw value_len 32", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x161, len32));
+    UW("uw des3 of 16", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x100, k_des3));
+    UW("uw des3 of 24", 0x2109, NULL, 0, kek16, kw24, kw24_n, AT(0x100, k_des3), AT(0x103, Fb));
+    UW("uw kwp generic5 as aes", 0x210B, NULL, 0, kek16, kwp5, kwp5_n, AT(0x100, k_aes));
+    UW("uw kwp generic5", 0x210B, NULL, 0, kek16, kwp5, kwp5_n, AT(0x100, k_gen), AT(0x103, Fb));
+    UW("uw token", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x1, T), AT(0x103, Fb));
+    UW("uw label 70", 0x2109, NULL, 0, kek16, kw16, kw16_n,
+       AB(0x3, "0123456789012345678901234567890123456789012345678901234567890123456789", 70));
+    UW("uw allowed mechs", 0x2109, NULL, 0, kek16, kw16, kw16_n, AB(0x40000600, kwp_mech, sizeof kwp_mech));
+    UW("uw usage", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x104, Fb), AT(0x10C, T));
+    UW("uw trusted", 0x2109, NULL, 0, kek16, kw16, kw16_n, AT(0x86, T));
+    UW("uw bool len 2", 0x2109, NULL, 0, kek16, kw16, kw16_n, AB(0x103, "\x01\x01", 2));
+    /* unwrap: the blob and the unwrapping key */
+    memcpy(bad, kw16, kw16_n);
+    bad[3] ^= 1;
+    UW("uw corrupted", 0x2109, NULL, 0, kek16, bad, kw16_n, AT(0x103, Fb));
+    UW("uw by kek24", 0x2109, NULL, 0, kek24, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw iv 0", 0x2109, iv0, 8, kek16, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw len 16", 0x2109, NULL, 0, kek16, kw16, 16, AT(0x103, Fb));
+    UW("uw len 23", 0x2109, NULL, 0, kek16, kw16, 23, AT(0x103, Fb));
+    UW("uw len 4112", 0x2109, NULL, 0, kek16, buf, 4112, AT(0x103, Fb));
+    UW("uw kwp len 8", 0x210B, NULL, 0, kek16, kwp5, 8, AT(0x103, Fb));
+    UW("uw by kek no wrap", 0x2109, NULL, 0, nowrap, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw by kek kwp only", 0x2109, NULL, 0, kwp_only, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw template sensitive", 0x2109, NULL, 0, tmpl, kw16, kw16_n, AT(0x103, T));
+    UW("uw template not sensitive", 0x2109, NULL, 0, tmpl, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw template none", 0x2109, NULL, 0, tmpl, kw16, kw16_n, AT(0x100, k_aes));
+    UW("uw by generic kek", 0x2109, NULL, 0, gen, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw unknown kek", 0x2109, NULL, 0, 999UL, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw aes ecb", 0x1081, NULL, 0, kek16, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw oaep", 0x9, &oaep, sizeof oaep, rsa_priv, oaep16, oaep16_n, AT(0x103, Fb), AT(0x100, k_aes));
+    UW("uw oaep by rsa pub", 0x9, &oaep, sizeof oaep, rsa_pub, oaep16, oaep16_n, AT(0x103, Fb));
+    UW("uw oaep corrupted", 0x9, &oaep, sizeof oaep, rsa_priv, kw16, kw16_n, AT(0x103, Fb));
+    UW("uw rsa pkcs", 0x1, NULL, 0, rsa_priv, oaep16, oaep16_n, AT(0x103, Fb));
+    UW("uw oaep label", 0x9, &oaep_l, sizeof oaep_l, rsa_priv, oaepl, oaepl_n, AT(0x103, Fb));
+    UW("uw oaep other label", 0x9, &oaep_l2, sizeof oaep_l2, rsa_priv, oaepl, oaepl_n, AT(0x103, Fb));
+    /* unwrap: arguments and sessions */
+    {
+        Mech m = { 0x2109, NULL, 0 };
+        UL o = 0xAAAAAAAAUL, len = 64;
+        Attr t[] = { AT(0x103, Fb) }, tt[] = { AT(0x1, T) };
+        printf("unwrap null mech\t%#lx\n", P11(C_UnwrapKey, h, NULL, kek16, kw16, kw16_n, t, 1UL, &o));
+        printf("unwrap null blob\t%#lx\n", P11(C_UnwrapKey, h, &m, kek16, NULL, kw16_n, t, 1UL, &o));
+        printf("unwrap null out\t%#lx\n", P11(C_UnwrapKey, h, &m, kek16, kw16, kw16_n, t, 1UL, NULL));
+        printf("unwrap bad session\t%#lx\n", P11(C_UnwrapKey, 99UL, &m, kek16, kw16, kw16_n, t, 1UL, &o));
+        printf("ro session\t%#lx\n", P11(C_OpenSession, 0UL, 4UL, NULL, NULL, &h_ro));
+        printf("unwrap ro token\t%#lx\n", P11(C_UnwrapKey, h_ro, &m, kek16, kw16, kw16_n, tt, 1UL, &o));
+        printf("unwrap ro session object\t%#lx\n", P11(C_UnwrapKey, h_ro, &m, kek16, kw16, kw16_n, t, 1UL, &o));
+        printf("logout\t%#lx\n", P11(C_Logout, h));
+        printf("wrap logged out\t%#lx\n", P11(C_WrapKey, h, &m, kek16, t16, buf, &len));
+        printf("unwrap logged out\t%#lx\n", P11(C_UnwrapKey, h, &m, kek16, kw16, kw16_n, t, 1UL, &o));
+        /* The SO and the user's session keys; then a key only the SO may mark trusted. */
+        UL tk = 0xAAAAAAAAUL, olen = 64;
+        printf("ro session closed\t%#lx\n", P11(C_CloseSession, h_ro));
+        printf("so login\t%#lx\n", P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN)));
+        printf("so wrap user key\t%#lx\n", P11(C_WrapKey, h, &m, kek16, t16, buf, &olen));
+        printf("so unwrap with user key\t%#lx\n", P11(C_UnwrapKey, h, &m, kek16, kw16, kw16_n, t, 1UL, &o));
+        Attr tr[] = { AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w24), AT(0x86, T) };
+        printf("so trusted kek\t%#lx\n", P11(C_CreateObject, h, tr, 4UL, &tk));
+        printf("so logout\t%#lx\n", P11(C_Logout, h));
+        printf("user login\t%#lx\n", P11(C_Login, h, 1UL, USER_PIN, (UL)strlen(USER_PIN)));
+        wr(h, "kw wrap with trusted, trusted kek", 0x2109, NULL, 0, tk, wwt, 64, 0);
+    }
+    P11(C_Finalize, NULL);
+}
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: p11_keys LIB BASE\n"); return 2; }
     setvbuf(stdout, NULL, _IONBF, 0);
     lib = dlopen(argv[1], RTLD_NOW);
     if (!lib) { fprintf(stderr, "%s\n", dlerror()); return 2; }
-    void (*S[])(void) = { s_gen, s_pair, s_life, s_create };
+    void (*S[])(void) = { s_gen, s_pair, s_life, s_create, s_wrap };
     int rc = 0;
     for (size_t i = 0; i < sizeof S / sizeof *S; ++i) {
         snprintf(dir, sizeof dir, "%s/%zu", argv[2], i);
