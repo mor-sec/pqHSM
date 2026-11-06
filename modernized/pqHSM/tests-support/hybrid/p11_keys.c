@@ -1,6 +1,6 @@
 /* p11_keys.c LIB BASE --- slice 6 of PHASE4_PLAN.md §2: call sequences through the key
  * generation and creation entry points (6a: C_GenerateKey, C_GenerateKeyPair; 6b:
- * C_CreateObject's builders, over keys libcrypto makes here; 6c: C_WrapKey, C_UnwrapKey), one row per call:
+ * C_CreateObject's builders, over keys libcrypto makes here; 6c: C_WrapKey, C_UnwrapKey; 6d: C_DeriveKey), one row per call:
  * "label TAB rv TAB n TAB hex", n each handle out-parameter: "-" untouched, else its distance
  * from the last handle written (the raw value where a call prints it directly). Each new object's attributes follow, one row each
  * ("label NAME rv len value"); generated key material prints as "rnd:<len>", PBKDF2's output
@@ -11,7 +11,7 @@
  * Each scenario runs in a forked child with its own tokens directory BASE/<n>.
  *
  * Written from the C (src/fhsm_pkcs11.c:2357-2422, 2551-2584, 2745-3050, 3150-3189,
- * 3505-3534, 3559-4138, 4974-5444, 6160-6223, 6370-6933, 8631-8829) before the Rust, as its characterisation. */
+ * 3505-3534, 3559-4138, 4277-4878, 4974-5444, 6160-6223, 6370-6933, 8631-8829) before the Rust, as its characterisation. */
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,7 +21,9 @@
 #include <unistd.h>
 
 #include <openssl/bn.h>
+#include <openssl/ec.h>
 #include <openssl/evp.h>
+#include <openssl/params.h>
 #include <openssl/x509.h>
 
 typedef unsigned long UL;
@@ -954,12 +956,285 @@ static void s_wrap(void) {
     }
     P11(C_Finalize, NULL);
 }
+/* 5 (slice 6d): C_DeriveKey, over keys made from fixed bytes and EC points computed here from
+ * fixed scalars, so every derived value prints whole. A derived key that must stay secret on
+ * one side is also wrapped under a fixed key, so its value shows as the blob. */
+typedef struct { unsigned char ex, ep; UL prf, st; void *salt; UL sl; UL sk; void *info; UL il; } Hkdf;
+typedef struct { UL kdf, sl; void *sd; UL pl; void *pd; } Ecdh;
+typedef struct { void *p; UL len; } Str;
+static UL derived;
+
+/* One derive: the call, then the new object's attributes or the object count. */
+static void dv(UL h, const char *name, UL mech, void *p, UL pl, UL base, Attr *t, UL n, int rnd) {
+    Mech m = { mech, p, pl };
+    UL frv, before = nobj(h, &frv), o = 0xAAAAAAAAUL;
+    UL rv = P11(C_DeriveKey, h, &m, base, t, n, &o);
+    char hb[24];
+    printf("%s\t%#lx\t%s\t-\n", name, rv, hv(o, hb));
+    derived = rv ? 0 : o;
+    if (rv) stored(h, name, before);
+    else dump(h, name, o, rnd);
+}
+#define DV(name, mech, p, pl, base, ...) do { Attr t_[] = { __VA_ARGS__ }; \
+    dv(h, name, mech, p, pl, base, t_, sizeof t_ / sizeof t_[0], 0); } while (0)
+#define DV0(name, mech, p, pl, base) dv(h, name, mech, p, pl, base, NULL, 0UL, 0)
+
+/* d·G on the curve nid: the point (uncompressed, and compressed), the scalar padded to fb
+ * bytes, and the point as an SPKI. */
+typedef struct { Blob pt, cpt, d, spki; } Ec;
+static void ec(int nid, const char *group, unsigned long d, size_t fb, Ec *e) {
+    EC_GROUP *g = EC_GROUP_new_by_curve_name(nid);
+    EC_POINT *q = g ? EC_POINT_new(g) : NULL;
+    BIGNUM *x = BN_new();
+    if (!q || !x || !BN_set_word(x, d) || !EC_POINT_mul(g, q, x, NULL, NULL, NULL)) {
+        fprintf(stderr, "ec %s failed\n", group);
+        exit(2);
+    }
+    e->pt.n = EC_POINT_point2oct(g, q, POINT_CONVERSION_UNCOMPRESSED, e->pt.p, sizeof e->pt.p, NULL);
+    e->cpt.n = EC_POINT_point2oct(g, q, POINT_CONVERSION_COMPRESSED, e->cpt.p, sizeof e->cpt.p, NULL);
+    e->d.n = (size_t)BN_bn2binpad(x, e->d.p, (int)fb);
+    OSSL_PARAM pp[] = {
+        OSSL_PARAM_construct_utf8_string("group", (char *)group, 0),
+        OSSL_PARAM_construct_octet_string("pub", e->pt.p, e->pt.n), OSSL_PARAM_construct_end(),
+    };
+    EVP_PKEY_CTX *c = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+    EVP_PKEY *k = NULL;
+    if (!c || EVP_PKEY_fromdata_init(c) != 1 || EVP_PKEY_fromdata(c, &k, EVP_PKEY_PUBLIC_KEY, pp) != 1) {
+        fprintf(stderr, "ec %s spki failed\n", group);
+        exit(2);
+    }
+    spki(k, &e->spki);
+    EVP_PKEY_free(k);
+    EVP_PKEY_CTX_free(c);
+    BN_free(x);
+    EC_POINT_free(q);
+    EC_GROUP_free(g);
+}
+
+static void s_derive(void) {
+    UL h = setup(), h_ro = 0;
+    static UL c_sec = 4, c_priv = 3, c_pub = 2, c_data = 0, k_ec = 3, k_ed = 0x40, k_x = 0x41,
+              len16 = 16, len42 = 42, len0 = 0, len5 = 5, len8160 = 8160, len8161 = 8161,
+              wide = 0x10000001FUL, sha256 = 0x250, hkdf_only[] = { 0x402A };
+    static unsigned char v32[32], w16[16], s16[16] = "salt-of-sixteen!", info8[8] = "info-123",
+                         abcde[5] = "abcde", d40[40], big[4096], x32[32], lab70[70], idb[3] = "id1";
+    static unsigned char date[8] = "20260101";
+    for (int i = 0; i < 40; ++i) {
+        if (i < 32) v32[i] = (unsigned char)(0x40 + i), x32[i] = (unsigned char)(0x11 * (i % 15) + 1);
+        if (i < 16) w16[i] = (unsigned char)(0xF0 + i);
+        d40[i] = (unsigned char)(0xA0 + i);
+    }
+    memset(lab70, 'L', sizeof lab70);
+    static Ec a256, b256, b384, a521, b521;
+    ec(NID_X9_62_prime256v1, "P-256", 0x1234567UL, 32, &a256);
+    ec(NID_X9_62_prime256v1, "P-256", 7UL, 32, &b256);
+    ec(NID_secp384r1, "P-384", 7UL, 48, &b384);
+    ec(NID_secp521r1, "P-521", 0x7654321UL, 66, &a521);
+    ec(NID_secp521r1, "P-521", 7UL, 66, &b521);
+    static Blob b256w, b521w, offc;
+    wrap(&b256.pt, &b256w);
+    b521w.p[0] = 0x04, b521w.p[1] = 0x81, b521w.p[2] = (unsigned char)b521.pt.n;
+    memcpy(b521w.p + 3, b521.pt.p, b521.pt.n);
+    b521w.n = b521.pt.n + 3;
+    offc = b256.pt;
+    offc.p[offc.n - 1] ^= 1;
+
+    UL base, sbase, aes, noderive, hkonly, dtm, saltk, saltnd, data, second, kek, ep256, ep521,
+       epnd, ecpub, edpriv, xpriv;
+    static Attr dt_aes[] = { { 0x100, &k_aes, sizeof k_aes } };
+    KEY(base, "base", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, v32), AT(0x103, Fb), AT(0x162, T), AT(0x10C, T));
+    KEY(sbase, "base sensitive", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, v32), AT(0x103, T), AT(0x10C, T));
+    KEY(aes, "base aes", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w16), AT(0x103, Fb), AT(0x10C, T));
+    KEY(noderive, "base no derive", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, v32), AT(0x10C, Fb));
+    KEY(hkonly, "base hkdf only", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, v32), AT(0x10C, T),
+        AB(0x40000600, hkdf_only, sizeof hkdf_only));
+    KEY(dtm, "base derive template aes", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, v32), AT(0x10C, T),
+        AB(0x40000213, dt_aes, sizeof dt_aes));
+    KEY(saltk, "salt key", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, w16), AT(0x10C, T));
+    KEY(saltnd, "salt key no derive", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, w16), AT(0x10C, Fb));
+    KEY(data, "data object", AT(0x0, c_data), AT(0x11, abcde));
+    KEY(second, "second key", AT(0x0, c_sec), AT(0x100, k_gen), AT(0x11, w16), AT(0x10C, T));
+    KEY(kek, "kek", AT(0x0, c_sec), AT(0x100, k_aes), AT(0x11, w16));
+    KEY(ep256, "ec p256 priv", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x11, a256.d), AT(0x10C, T));
+    KEY(ep521, "ec p521 priv", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P521, sizeof P521), BL(0x11, a521.d), AT(0x10C, T));
+    KEY(epnd, "ec p256 priv no derive", AT(0x0, c_priv), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x11, a256.d), AT(0x10C, Fb));
+    KEY(ecpub, "ec p256 pub", AT(0x0, c_pub), AT(0x100, k_ec), AB(0x180, P256, sizeof P256), BL(0x181, b256w), AT(0x10C, T));
+    KEY(edpriv, "ed25519 priv", AT(0x0, c_priv), AT(0x100, k_ed), AB(0x180, ED25519, sizeof ED25519), AT(0x11, x32), AT(0x10C, T));
+    KEY(xpriv, "x25519 priv", AT(0x0, c_priv), AT(0x100, k_x), AB(0x180, X25519, sizeof X25519), AT(0x11, x32), AT(0x10C, T));
+
+    /* The checks before any mechanism's, in C's order. */
+    {
+        Mech m = { 0x402A, NULL, 0 };
+        UL o = 0xAAAAAAAAUL;
+        Attr tb[] = { { 0x103, &T, 4 } }, tu[] = { { 0x161, &len16, 1 } }, tt[] = { AT(0x86, T) },
+             tk[] = { AT(0x1, T) };
+        printf("derive null mech\t%#lx\n", P11(C_DeriveKey, h, NULL, base, NULL, 0UL, &o));
+        printf("derive null out\t%#lx\n", P11(C_DeriveKey, h, &m, base, NULL, 0UL, NULL));
+        printf("derive null template\t%#lx\n", P11(C_DeriveKey, h, &m, base, NULL, 1UL, &o));
+        printf("derive trusted\t%#lx\n", P11(C_DeriveKey, h, &m, base, tt, 1UL, &o));
+        printf("derive bool len\t%#lx\n", P11(C_DeriveKey, h, &m, base, tb, 1UL, &o));
+        printf("derive ulong len\t%#lx\n", P11(C_DeriveKey, h, &m, base, tu, 1UL, &o));
+        printf("derive bad session\t%#lx\n", P11(C_DeriveKey, 99UL, &m, base, NULL, 0UL, &o));
+        printf("ro session\t%#lx\n", P11(C_OpenSession, 0UL, 4UL, NULL, NULL, &h_ro));
+        printf("derive ro token\t%#lx\n", P11(C_DeriveKey, h_ro, &m, base, tk, 1UL, &o));
+        printf("ro session closed\t%#lx\n", P11(C_CloseSession, h_ro));
+    }
+
+    /* HKDF: the parameter block, the salt, the info, the length, then the store. */
+    Hkdf hk = { 1, 1, sha256, 1, NULL, 0, 0, NULL, 0 }, hp;
+#define HK(name, mech, base, ...) do { Attr t_[] = { __VA_ARGS__ }; dv(h, name, mech, &hp, sizeof hp, base, t_, sizeof t_ / sizeof t_[0], 0); } while (0)
+#define HK0(name, mech, base) dv(h, name, mech, &hp, sizeof hp, base, NULL, 0UL, 0)
+    DV0("hkdf null param", 0x402A, NULL, 0, base);
+    hp = hk; DV0("hkdf short param", 0x402A, &hp, sizeof hp - 1, base);
+    hp = hk; hp.ex = hp.ep = 0; HK0("hkdf neither", 0x402A, base);
+    hp = hk; hp.prf = 0x1234; HK0("hkdf bad prf", 0x402A, base);
+    hp = hk; hp.prf = 0x220; HK0("hkdf sha1", 0x402A, base);
+    hp = hk; hp.prf = 0x255; HK0("hkdf sha224", 0x402A, base);
+    hp = hk; hp.prf = 0x270; HK0("hkdf sha512", 0x402A, base);
+    hp = hk; hp.prf = 0x2B0; HK0("hkdf sha3-256", 0x402A, base);
+    hp = hk; HK0("hkdf base data object", 0x402A, data);
+    hp = hk; HK0("hkdf base aes", 0x402A, aes);
+    hp = hk; HK0("hkdf base no derive", 0x402A, noderive);
+    hp = hk; HK0("hkdf base bad handle", 0x402A, 0x7777UL);
+    hp = hk; HK0("hkdf base hkdf only", 0x402A, hkonly);
+    hp = hk; HK0("hkdf base derive template, none given", 0x402A, dtm);
+    hp = hk; HK("hkdf base derive template, matched", 0x402A, dtm, AT(0x100, k_aes), AT(0x161, len16));
+    hp = hk; HK0("hkdf salt null", 0x402A, base);
+    hp = hk; hp.st = 2; hp.salt = s16; hp.sl = 16; hp.info = info8; hp.il = 8;
+    HK("hkdf salt data, info, 42 bytes", 0x402A, base, AT(0x161, len42));
+    hp = hk; hp.st = 2; hp.sl = 4; HK0("hkdf salt data null", 0x402A, base);
+    hp = hk; hp.st = 2; hp.salt = s16; hp.sl = 0x80000000UL; HK0("hkdf salt data huge", 0x402A, base);
+    hp = hk; hp.st = 2; HK0("hkdf salt data empty", 0x402A, base);
+    hp = hk; hp.st = 4; hp.sk = saltk; HK0("hkdf salt key", 0x402A, base);
+    hp = hk; hp.st = 4; hp.sk = data; HK0("hkdf salt key data object", 0x402A, base);
+    hp = hk; hp.st = 4; hp.sk = saltnd; HK0("hkdf salt key no derive", 0x402A, base);
+    hp = hk; hp.st = 4; hp.sk = 0x7777UL; HK0("hkdf salt key bad handle", 0x402A, base);
+    hp = hk; hp.st = 3; HK0("hkdf salt type 3", 0x402A, base);
+    hp = hk; hp.st = 0; HK0("hkdf salt type 0", 0x402A, base);
+    hp = hk; hp.il = 4; HK0("hkdf info null", 0x402A, base);
+    hp = hk; hp.info = info8; hp.il = 0x80000000UL; HK0("hkdf info huge", 0x402A, base);
+    hp = hk; hp.ep = 0; HK("hkdf extract only, length ignored", 0x402A, base, AT(0x161, len16));
+    hp = hk; hp.ex = 0; hp.info = info8; hp.il = 8; HK("hkdf expand only", 0x402A, base, AT(0x161, len16));
+    hp = hk; HK("hkdf value_len short", 0x402A, base, { 0x161, &len16, 4 });
+    hp = hk; HK("hkdf value_len 0", 0x402A, base, AT(0x161, len0));
+    hp = hk; { Attr t[] = { AT(0x161, len8160) }; dv(h, "hkdf value_len 8160", 0x402A, &hp, sizeof hp, base, t, 1UL, 1); }
+    hp = hk; HK("hkdf value_len 8161", 0x402A, base, AT(0x161, len8161));
+    hp = hk; hp.ep = 0; HK("hkdf extract only, value_len 0", 0x402A, base, AT(0x161, len0));
+    hp = hk; HK0("hkdf data", 0x402B, base);
+    hp = hk; HK("hkdf data as secret", 0x402B, base, AT(0x0, c_sec));
+    hp = hk; HK("hkdf class data", 0x402A, base, AT(0x0, c_data));
+    hp = hk; HK("hkdf class private", 0x402A, base, AT(0x0, c_priv));
+    hp = hk; HK("hkdf class short", 0x402A, base, { 0x0, &c_data, 4 });
+    hp = hk; HK("hkdf label 70", 0x402A, base, AB(0x3, lab70, sizeof lab70));
+    hp = hk; HK("hkdf sensitive", 0x402A, base, AT(0x103, T), AT(0x162, Fb));
+    hp = hk; HK("hkdf extractable", 0x402A, base, AT(0x103, Fb), AT(0x162, T));
+    hp = hk; HK("hkdf key type aes", 0x402A, base, AT(0x100, k_aes), AT(0x161, len16));
+    hp = hk; HK("hkdf key type aes 5", 0x402A, base, AT(0x100, k_aes), AT(0x161, len5));
+    hp = hk; HK("hkdf key type ec", 0x402A, base, AT(0x100, k_ec));
+    hp = hk; HK("hkdf key type wide", 0x402A, base, AT(0x100, wide));
+    hp = hk; HK("hkdf key type short", 0x402A, base, { 0x100, &k_aes, 4 });
+    hp = hk; HK("hkdf value given", 0x402A, base, AT(0x11, w16));
+    hp = hk; HK("hkdf token", 0x402A, base, AT(0x1, T));
+    hp = hk; HK("hkdf policy", 0x402A, base, AB(0x40000600, hkdf_only, sizeof hkdf_only),
+                AB(0x40000213, dt_aes, sizeof dt_aes), AB(0x102, idb, sizeof idb), AT(0x110, date),
+                AT(0x10C, Fb), AT(0x104, T));
+    hp = hk; HK0("hkdf from sensitive base", 0x402A, sbase);
+    hp = hk; HK("hkdf from sensitive base, sensitive false", 0x402A, sbase, AT(0x103, Fb));
+    hp = hk; HK("hkdf from sensitive base, extractable", 0x402A, sbase, AT(0x162, T));
+    if (derived) wr(h, "hkdf from sensitive base, wrapped", 0x2109, NULL, 0, kek, derived, 64, 0);
+    hp = hk; HK0("hkdf data from sensitive base", 0x402B, sbase);
+    hp = hk; HK("hkdf class data from sensitive base", 0x402A, sbase, AT(0x0, c_data));
+
+    /* The concatenation family. */
+    Str sd;
+    UL kh;
+#define CC(name, mech, base, ...) do { Attr t_[] = { __VA_ARGS__ }; dv(h, name, mech, &sd, sizeof sd, base, t_, sizeof t_ / sizeof t_[0], 0); } while (0)
+#define CC0(name, mech, base) dv(h, name, mech, &sd, sizeof sd, base, NULL, 0UL, 0)
+    kh = second; DV0("concat key", 0x360, &kh, sizeof kh, base);
+    kh = second; DV0("concat key short param", 0x360, &kh, sizeof kh - 1, base);
+    DV0("concat key null param", 0x360, NULL, 0, base);
+    kh = data; DV0("concat key second data object", 0x360, &kh, sizeof kh, base);
+    kh = saltnd; DV0("concat key second no derive", 0x360, &kh, sizeof kh, base);
+    kh = 0x7777UL; DV0("concat key second bad handle", 0x360, &kh, sizeof kh, base);
+    kh = sbase; DV0("concat key second sensitive", 0x360, &kh, sizeof kh, base);
+    sd = (Str){ abcde, 5 }; CC0("concat data", 0x362, base);
+    sd = (Str){ NULL, 0 }; CC0("concat data empty", 0x362, base);
+    sd = (Str){ NULL, 5 }; CC0("concat data null", 0x362, base);
+    sd = (Str){ abcde, 0x80000000UL }; CC0("concat data huge", 0x362, base);
+    sd = (Str){ abcde, 5 }; DV0("concat data short param", 0x362, &sd, sizeof sd - 1, base);
+    sd = (Str){ big, 4064 }; CC0("concat data to 4096", 0x362, base);
+    sd = (Str){ big, 4065 }; CC0("concat data past 4096", 0x362, base);
+    sd = (Str){ abcde, 5 }; CC0("data and base", 0x363, base);
+    sd = (Str){ abcde, 5 }; CC0("xor short data", 0x364, base);
+    sd = (Str){ d40, 40 }; CC0("xor long data", 0x364, base);
+    sd = (Str){ NULL, 0 }; CC0("xor empty", 0x364, base);
+    sd = (Str){ abcde, 5 }; CC0("concat aes base", 0x362, aes);
+    sd = (Str){ abcde, 5 }; CC0("concat data object base", 0x362, data);
+    sd = (Str){ abcde, 5 }; CC0("concat base hkdf only", 0x362, hkonly);
+    sd = (Str){ abcde, 5 }; CC("concat key type aes", 0x362, base, AT(0x100, k_aes));
+    sd = (Str){ abcde, 5 }; CC("concat value_len", 0x362, base, AT(0x161, len16));
+    sd = (Str){ abcde, 5 }; CC0("concat from sensitive base", 0x362, sbase);
+    sd = (Str){ abcde, 5 }; CC("concat class data", 0x362, base, AT(0x0, c_data));
+    sd = (Str){ abcde, 5 }; CC("concat class data from sensitive base", 0x362, sbase, AT(0x0, c_data));
+
+    /* ECDH: the mechanism, the parameter block, the base, each form of the peer's point. */
+    Ecdh ep;
+#define EP(pd_, pl_) (ep = (Ecdh){ 1, 0, NULL, (UL)(pl_), (void *)(pd_) }, &ep)
+#define ED(name, mech, base, pd_, pl_, ...) do { Attr t_[] = { __VA_ARGS__ }; dv(h, name, mech, EP(pd_, pl_), sizeof ep, base, t_, sizeof t_ / sizeof t_[0], 0); } while (0)
+#define ED0(name, mech, base, pd_, pl_) dv(h, name, mech, EP(pd_, pl_), sizeof ep, base, NULL, 0UL, 0)
+    ED0("derive mech invalid", 0x1234, ep256, b256.pt.p, b256.pt.n);
+    DV0("ecdh null param", 0x1050, NULL, 0, ep256);
+    DV0("ecdh short param", 0x1050, EP(b256.pt.p, b256.pt.n), sizeof ep - 1, ep256);
+    ep = (Ecdh){ 2, 0, NULL, (UL)b256.pt.n, b256.pt.p };
+    DV0("ecdh kdf sha1", 0x1050, &ep, sizeof ep, ep256);
+    ED0("ecdh no public data", 0x1050, ep256, NULL, 65);
+    ED0("ecdh public data empty", 0x1050, ep256, b256.pt.p, 0);
+    ED0("ecdh secret base", 0x1050, base, b256.pt.p, b256.pt.n);
+    ED0("ecdh public base", 0x1050, ecpub, b256.pt.p, b256.pt.n);
+    ED0("ecdh ed25519 base", 0x1050, edpriv, b256.pt.p, b256.pt.n);
+    ED0("ecdh x25519 base", 0x1050, xpriv, x32, 32);
+    ED0("ecdh base no derive", 0x1050, epnd, b256.pt.p, b256.pt.n);
+    ED0("ecdh bare point", 0x1050, ep256, b256.pt.p, b256.pt.n);
+    ED0("ecdh compressed point", 0x1050, ep256, b256.cpt.p, b256.cpt.n);
+    ED0("ecdh octet string", 0x1050, ep256, b256w.p, b256w.n);
+    ED0("ecdh spki", 0x1050, ep256, b256.spki.p, b256.spki.n);
+    ED0("ecdh cofactor", 0x1051, ep256, b256.pt.p, b256.pt.n);
+    ED0("ecdh off curve", 0x1050, ep256, offc.p, offc.n);
+    ED0("ecdh garbage", 0x1050, ep256, GARBAGE, sizeof GARBAGE);
+    ED0("ecdh p384 point on p256", 0x1050, ep256, b384.pt.p, b384.pt.n);
+    ED0("ecdh p384 spki on p256", 0x1050, ep256, b384.spki.p, b384.spki.n);
+    ED0("ecdh p521 bare", 0x1050, ep521, b521.pt.p, b521.pt.n);
+    ED0("ecdh p521 octet string", 0x1050, ep521, b521w.p, b521w.n);
+    ED("ecdh sensitive false", 0x1050, ep256, b256.pt.p, b256.pt.n, AT(0x103, Fb));
+    ED("ecdh key type aes 32", 0x1050, ep256, b256.pt.p, b256.pt.n, AT(0x100, k_aes));
+    ED("ecdh class data", 0x1050, ep256, b256.pt.p, b256.pt.n, AT(0x0, c_data));
+    ED("ecdh extractable", 0x1050, ep256, b256.pt.p, b256.pt.n, AT(0x162, T));
+    if (derived) wr(h, "ecdh extractable, wrapped", 0x2109, NULL, 0, kek, derived, 64, 0);
+
+    /* Logged out, then the SO with the user's keys. */
+    {
+        UL o = 0xAAAAAAAAUL;
+        Mech m = { 0x402A, &hp, sizeof hp }, mc = { 0x362, &sd, sizeof sd };
+        Mech me = { 0x1050, EP(b256.pt.p, b256.pt.n), sizeof ep };
+        hp = hk;
+        sd = (Str){ abcde, 5 };
+        printf("logout\t%#lx\n", P11(C_Logout, h));
+        printf("hkdf logged out\t%#lx\n", P11(C_DeriveKey, h, &m, base, NULL, 0UL, &o));
+        printf("so login\t%#lx\n", P11(C_Login, h, 0UL, SO_PIN, (UL)strlen(SO_PIN)));
+        printf("so hkdf from user key\t%#lx\n", P11(C_DeriveKey, h, &m, base, NULL, 0UL, &o));
+        printf("so concat from user key\t%#lx\n", P11(C_DeriveKey, h, &mc, base, NULL, 0UL, &o));
+        printf("so ecdh from user key\t%#lx\n", P11(C_DeriveKey, h, &me, ep256, NULL, 0UL, &o));
+        printf("so logout\t%#lx\n", P11(C_Logout, h));
+    }
+    P11(C_Finalize, NULL);
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: p11_keys LIB BASE\n"); return 2; }
     setvbuf(stdout, NULL, _IONBF, 0);
     lib = dlopen(argv[1], RTLD_NOW);
     if (!lib) { fprintf(stderr, "%s\n", dlerror()); return 2; }
-    void (*S[])(void) = { s_gen, s_pair, s_life, s_create, s_wrap };
+    void (*S[])(void) = { s_gen, s_pair, s_life, s_create, s_wrap, s_derive };
     int rc = 0;
     for (size_t i = 0; i < sizeof S / sizeof *S; ++i) {
         snprintf(dir, sizeof dir, "%s/%zu", argv[2], i);

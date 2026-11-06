@@ -359,7 +359,7 @@ printf 'p11 sign: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s' \
   "$(pl_same /out/p11_sign_c_expect.txt /out/p11_sign_hybrid.txt)" > /out/p11_sign.txt
 
 # 4n. Phase 4 slice 6: p11_keys.c drives key generation (6a: C_GenerateKey,
-#     C_GenerateKeyPair; 6b: C_CreateObject's builders; 6c: C_WrapKey, C_UnwrapKey) over every mechanism, length and
+#     C_GenerateKeyPair; 6b: C_CreateObject's builders; 6c: C_WrapKey, C_UnwrapKey; 6d: C_DeriveKey) over every mechanism, length and
 #     parameter set, every import path, the flags and the
 #     templates each half takes, and the session and module lifetimes. C and hybrid must print
 #     the same, less the recorded rows in p11_keys_expect.sed (exact rows only).

@@ -626,6 +626,7 @@ RULE-080(a), the `.tpm` file on re-init (the fifth Q13 item), is already fixed i
 - **Status:** DECIDED, Fix (2026-11-03, Q14, user: "Derived keys must inherit SENSITIVE and ALWAYS_SENSITIVE, and CKO_DATA is allowed only for CKM_HKDF_DATA (RULE-064).").
 - **Legacy:** a derived key defaults to SENSITIVE FALSE whatever its base (`src/fhsm_pkcs11.c:4824-4834`), and any derive mechanism accepts `CKA_CLASS=CKO_DATA`, whose value anyone can read without login (`:4789-4860`). A secret derived from a sensitive key can therefore be read in clear.
 - **Target:** a key derived from a SENSITIVE base is SENSITIVE; a template asking for `CKA_SENSITIVE` FALSE from such a base is 0xD1. ALWAYS_SENSITIVE of the derived key is the base's ALWAYS_SENSITIVE and its own SENSITIVE (PKCS#11 §4.10), kept as stored history (table: RULE-059). `CKA_CLASS=CKO_DATA` is 0xD1 for every mechanism but `CKM_HKDF_DATA`. Recorded: as decided, `CKM_HKDF_DATA` from a sensitive base still yields a readable data object.
+- **Scope (2026-11-07, found by slice 6d's golden; user: "keep going and select the recommended option", the recommended option being PKCS#11 §6.20.1's rule):** for `CKM_CONCATENATE_BASE_AND_KEY` the second key counts as a base: step 4n's `concat key second sensitive` folds a sensitive key into a readable one (C: 0, SENSITIVE FALSE). The derived key is SENSITIVE if either key is, ALWAYS_SENSITIVE only if both were, and NEVER_EXTRACTABLE likewise (the base's, or both keys', and its own EXTRACTABLE FALSE, §4.10), kept as RULE-059's history bits. An HKDF salt key is not secret input (RFC 5869) and does not count.
 - **Test:** each derive mechanism from a sensitive and a non-sensitive base; CKO_DATA with `CKM_HKDF_DERIVE`.
 - **Expected harness diff (intended, two tests):**
   - `test_ecdh_peer_point`: `C_DeriveKey(CKM_ECDH1_DERIVE, base = a generated EC private key, template CKA_SENSITIVE=FALSE)` returns 0xD1 instead of CKR_OK (`tests/test_ecdh_peer_point.c:83-86`). Its value checks fail, and the test exits 1 instead of 0.
@@ -712,6 +713,14 @@ RULE-080(a), the `.tpm` file on re-init (the fifth Q13 item), is already fixed i
 - **Target:** CKA_KEY_TYPE, when given, is one of the module's secret key types (CKK_GENERIC_SECRET, CKK_DES3, CKK_AES, CKK_SHA256_HMAC, CKK_HKDF), else CKR_ATTRIBUTE_VALUE_INVALID (0x13), as DIV-064, compared as the whole CK_ULONG (C narrowed it to 32 bits, so 2^32 + CKK_AES was stored as AES); CKA_CLASS, when given, is CKO_SECRET_KEY, else CKR_TEMPLATE_INCONSISTENT (0xD1). Both where C reads the key type, after the unwrap, so nothing is stored.
 - **Test:** `p11_divs.c` DIV-067: unwrap with CKK_EC (C: 0), with CKO_PRIVATE_KEY (C: 0) and with 2^32 + CKK_AES (C: 0).
 - **Expected harness diff:** step 4n's `uw ec type` (0 → 0x13) and `uw class private` (0 → 0xD1), their attribute rows replaced by an unchanged object count. No legacy test unwraps with either.
+
+### DIV-068 · `C_DeriveKey` stores only a secret key of a secret key type, at its key size
+
+- **Status:** DECIDED, Fix (2026-11-07, found by Phase 4 slice 6d's golden; user: "keep going and select the recommended option", the recommended option being DIV-067's rule here, with RULE-020's AES size check).
+- **Legacy:** `derive_store_secret` takes the template's CKA_KEY_TYPE as given, narrowed to 32 bits, and never checks the value's length against it (`src/fhsm_pkcs11.c:4846-4857`): step 4n's `hkdf key type ec` stores a 32-byte secret key typed CKK_EC, `hkdf key type wide` (2^32 + CKK_AES) an AES key, and `hkdf key type aes 5` a 5-byte AES key, all CKR_OK. RULE-020 found the same gap at the ML-KEM truncation.
+- **Target:** CKA_KEY_TYPE, when given, is one of the module's secret key types (as DIV-067), compared as the whole CK_ULONG, else CKR_ATTRIBUTE_VALUE_INVALID (0x13); a CKK_AES value that is not 16, 24 or 32 bytes, or a CKK_DES3 value that is not 24, is CKR_KEY_SIZE_RANGE (0x62, RULE-020's code). Both before the object is stored, after C's other template checks.
+- **Test:** `p11_divs.c` DIV-068: HKDF with CKK_EC, with 2^32 + CKK_AES (0x13) and with CKK_AES of 5 bytes (0x62); C: 0 each.
+- **Expected harness diff:** step 4n's `hkdf key type ec`, `hkdf key type wide` (0 → 0x13) and `hkdf key type aes 5` (0 → 0x62), their attribute rows replaced by an unchanged object count. No legacy test derives with any of them (`test_nested_templates`, `test_derive_*` and `test_advertised_operational` ask for a generic secret, or a 16-byte AES key).
 
 ### DIV-001 in Phase 4
 
