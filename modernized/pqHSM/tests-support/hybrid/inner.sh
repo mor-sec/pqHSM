@@ -389,6 +389,25 @@ printf 'p11 keys: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s' \
   "$(pl_same /out/p11_keys_c.txt /out/p11_keys_hybrid.txt)" \
   "$(pl_same /out/p11_keys_c_expect.txt /out/p11_keys_hybrid.txt)" > /out/p11_keys.txt
 
+# 4o. Phase 4 slice 8a: p11_misc.c drives the mechanism list and info (every advertised
+#     mechanism, every other type below 0x4400), random and seed, and the three stubs, after
+#     C_Finalize and in ERROR. C and hybrid must print the same, less the recorded rows in
+#     p11_misc_expect.sed (RULE-014, DIV-051, 053; exact rows only).
+cc -std=gnu17 -o /tmp/p11_misc modernized/pqHSM/tests-support/hybrid/p11_misc.c -ldl
+for lib in /c/libfreehsm.so /work/libfreehsm.so; do
+  tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
+  d=$(mktemp -d)
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_misc $lib $d > /out/p11_misc_$tag.txt 2>/dev/null
+  echo "rc=$?" >> /out/p11_misc_$tag.txt
+done
+sed -f modernized/pqHSM/tests-support/hybrid/p11_misc_expect.sed \
+  /out/p11_misc_c.txt > /out/p11_misc_c_expect.txt
+printf 'p11 misc: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s' \
+  "$(tail -1 /out/p11_misc_c.txt)" "$(tail -1 /out/p11_misc_hybrid.txt)" \
+  "$(grep -c "$(printf '\t')" /out/p11_misc_c.txt)" \
+  "$(pl_same /out/p11_misc_c.txt /out/p11_misc_hybrid.txt)" \
+  "$(pl_same /out/p11_misc_c_expect.txt /out/p11_misc_hybrid.txt)" > /out/p11_misc.txt
+
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
@@ -579,6 +598,7 @@ rm -rf /tmp/wy /tmp/venv
   cat /out/p11_crypt.txt; echo
   cat /out/p11_sign.txt; echo
   cat /out/p11_keys.txt; echo
+  cat /out/p11_misc.txt; echo
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"
