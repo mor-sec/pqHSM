@@ -339,6 +339,18 @@ static void div_062(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* DIV-063: C_Verify with a NULL signature and a length is ARGUMENTS_BAD up front. C read
+ * through it (a crash at the right length) or answered 0xC0 at a wrong one, as here. */
+static void div_063(void) {
+    UL h, k = user_key(&h, 16);
+    unsigned char pt[16] = { 2 };
+    struct { UL m; void *p; UL len; } hmac = { 0x251, NULL, 0 };
+    want("verifyinit", CALL(C_VerifyInit, h, &hmac, k), 0);
+    want("verify a NULL signature of 10 bytes", CALL(C_Verify, h, pt, 16UL, NULL, 10UL), 0x7);
+    want("the operation ended", CALL(C_Verify, h, pt, 16UL, pt, 16UL), 0x91);
+    CALL(C_Finalize, NULL);
+}
+
 /* The next audit write fails: RLIMIT_FSIZE at the size of the log the module has open (the
  * newest audit.log* in FHSM_TOKENS_DIR). The write that fails latches ERROR. */
 static void fail_audit(void) {
@@ -380,6 +392,32 @@ static void div_001_case(int which) {
         want("decryptinit cbc-pad", CALL(C_DecryptInit, hs, &pad, k), 0);
         want("decrypt, bad padding", CALL(C_Decrypt, hs, ct, 32UL, got, &out), 0x40);
         want("nothing written on the failure", got[0] == 0xAA && got[15] == 0xAA, 1);
+        return;
+    }
+    if (which == 7 || which == 8) {
+        /* Slice 5: an audited verification, and a signature in parts, the audit failing. */
+        UL hs, out = 64, pk = 0, vk = 0, cpub = 2, cprv = 3;
+        user_key(&hs, 16);
+        unsigned char yes = 1, pt[16] = { 2 }, sig[64];
+        unsigned char p256[] = { 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 };
+        struct { UL type; void *p; UL len; } pub[] = {
+            { 0x000, &cpub, sizeof cpub }, { 0x10A, &yes, 1 }, { 0x180, p256, sizeof p256 },
+        }, prv[] = { { 0x000, &cprv, sizeof cprv }, { 0x108, &yes, 1 }, { 0x103, &yes, 1 } };
+        struct { UL m; void *p; UL len; } gen = { 0x1040, NULL, 0 }, ecdsa = { 0x1044, NULL, 0 };
+        want("generate p-256", CALL(C_GenerateKeyPair, hs, &gen, pub, 3UL, prv, 3UL, &pk, &vk), 0);
+        want("signinit", CALL(C_SignInit, hs, &ecdsa, vk), 0);
+        if (which == 7) {
+            want("sign", CALL(C_Sign, hs, pt, 16UL, sig, &out), 0);
+            want("verifyinit", CALL(C_VerifyInit, hs, &ecdsa, pk), 0);
+            fail_audit();
+            want("verify, audit failing", CALL(C_Verify, hs, pt, 16UL, sig, out), 0x30);
+            return;
+        }
+        memset(sig, 0xAA, sizeof sig);
+        want("signupdate", CALL(C_SignUpdate, hs, pt, 16UL), 0);
+        fail_audit();
+        want("signfinal, audit failing", CALL(C_SignFinal, hs, sig, &out), 0x30);
+        want("nothing written", sig[0] == 0xAA && sig[63] == 0xAA && out == 64, 1);
         return;
     }
     if (which == 6) {
@@ -432,7 +470,7 @@ static void div_001_case(int which) {
 
 static void div_001(void) {
     const char *base = getenv("FHSM_TOKENS_DIR");
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 9; ++i) {
         char d[700];
         snprintf(d, sizeof d, "%s/%d", base, i);
         mkdir(d, 0700);
@@ -608,6 +646,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "DIV-060", div_060 }, { "DIV-056", div_056 },
     { "RULE-092", rule_092 }, { "RULE-091", rule_091 }, { "RULE-061", rule_061 },
     { "RULE-059", rule_059 }, { "DIV-061", div_061 }, { "DIV-062", div_062 },
+    { "DIV-063", div_063 },
 };
 
 int main(int argc, char **argv) {

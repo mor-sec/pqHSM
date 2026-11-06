@@ -80,25 +80,28 @@ pub enum Param<'a> {
     Utf8(&'static CStr, &'static CStr),
 }
 
-/// The params, ended, over storage for the ints they point to.
-struct Params {
+/// The params, ended, over storage for the ints they point to; `'a` is the octets'.
+struct Params<'a> {
     list: Vec<OSSL_PARAM>,
-    _ints: Box<[c_int]>,
+    _ints: Vec<c_int>,
+    _octets: std::marker::PhantomData<&'a [u8]>,
 }
 
-impl Params {
-    fn new(p: &[Param]) -> Self {
-        let mut ints: Box<[c_int]> = p
+impl<'a> Params<'a> {
+    fn new(p: &[Param<'a>]) -> Self {
+        let mut ints: Vec<c_int> = p
             .iter()
             .map(|q| if let Param::Int(_, v) = q { *v } else { 0 })
             .collect();
+        // One raw pointer to the ints' heap, which moving the Vec into the struct keeps
+        let at = ints.as_mut_ptr();
         let mut list: Vec<OSSL_PARAM> = Vec::with_capacity(p.len() + 1);
         for (i, q) in p.iter().enumerate() {
-            // SAFETY: keys and buffers outlive the list: static names, the caller's octets for
-            // the call, ints in the box this struct owns (a box does not move its contents)
+            // SAFETY: keys and buffers outlive the list: static names, the octets for 'a,
+            // ints in the Vec this struct owns
             list.push(unsafe {
                 match *q {
-                    Param::Int(k, _) => OSSL_PARAM_construct_int(k.as_ptr(), &mut ints[i]),
+                    Param::Int(k, _) => OSSL_PARAM_construct_int(k.as_ptr(), at.add(i)),
                     Param::Octets(k, b) => OSSL_PARAM_construct_octet_string(
                         k.as_ptr(),
                         b.as_ptr().cast_mut().cast(),
@@ -112,7 +115,11 @@ impl Params {
         }
         // SAFETY: a constructor
         list.push(unsafe { OSSL_PARAM_construct_end() });
-        Self { list, _ints: ints }
+        Self {
+            list,
+            _ints: ints,
+            _octets: std::marker::PhantomData,
+        }
     }
 
     /// NULL for none, as C passed for an empty list.
@@ -455,7 +462,9 @@ impl Md {
                 let mut n = 0u32;
                 let ok = EVP_DigestFinal_ex(self.0.0, full.as_mut_ptr(), &mut n) == 1
                     && n as usize <= out.len();
-                out[..n as usize].copy_from_slice(&full[..n as usize]);
+                if ok {
+                    out[..n as usize].copy_from_slice(&full[..n as usize]);
+                }
                 super::cipher::cleanse(&mut full);
                 ok.then_some(n as usize)
             } else {

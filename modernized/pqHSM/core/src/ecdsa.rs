@@ -17,10 +17,6 @@ fn tlv(b: &[u8]) -> Option<(u8, &[u8], &[u8])> {
             let (&n, b) = b.split_first()?;
             (n as usize, b)
         }
-        0x82 => (
-            u16::from_be_bytes([*b.first()?, *b.get(1)?]) as usize,
-            b.get(2..)?,
-        ),
         _ => return None,
     };
     (b.len() >= len).then(|| (tag, &b[..len], &b[len..]))

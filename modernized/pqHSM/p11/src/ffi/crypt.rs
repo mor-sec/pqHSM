@@ -74,10 +74,10 @@ const UL: usize = size_of::<c_ulong>();
 
 /// Bytes zeroised when dropped: the AAD and the label, as C cleansed them, and every scratch
 /// output.
-struct Secret(Vec<u8>);
+pub(super) struct Secret(pub(super) Vec<u8>);
 
 impl Secret {
-    const NONE: Secret = Secret(Vec::new());
+    pub(super) const NONE: Secret = Secret(Vec::new());
     /// `n` zero bytes, or HOST_MEMORY: an input can be 2 GiB, and C wrote in place.
     fn zeroed(n: usize) -> Result<Self, u32> {
         let mut v = Vec::new();
@@ -181,7 +181,14 @@ fn slot(enc: bool, h: c_ulong) -> Option<MutexGuard<'static, Op>> {
 }
 
 fn active_slot(enc: bool, h: c_ulong) -> Option<MutexGuard<'static, Op>> {
-    slot(enc, h).filter(|o| o.active)
+    let mut o = slot(enc, h).filter(|o| o.active)?;
+    // DIV-050's backstop to the logout's sweep, which a concurrent Init can slip past on the
+    // DIV-001 login rollback (review L3 of slice 5): a user's key out of sight ends it.
+    if o.private && o.tok.is_some_and(|t| access_denied(t, CKO_PRIVATE_KEY)) {
+        *o = Op::IDLE;
+        return None;
+    }
+    Some(o)
 }
 
 /// This session's operations, freed (`fhsm_session_ops_reset`'s cipher part).
@@ -212,7 +219,8 @@ pub(super) fn grant(h: c_ulong) {
 pub(super) fn end_private(t: Tok) {
     for s in ENC[1..].iter().chain(&DEC[1..]) {
         let mut o = lock(s);
-        if o.active && o.private && o.tok == Some(t) {
+        // Ended ones too: their contexts may still hold the key (review M3 of slice 5)
+        if o.private && o.tok == Some(t) {
             *o = Op::IDLE;
         }
     }

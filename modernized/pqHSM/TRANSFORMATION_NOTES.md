@@ -1122,7 +1122,7 @@ Recorded, not applied:
 - **Composite (all-mechanisms profile only):** ported over pqhsm-pki's `fhsm_composite_*` exports; the strict build refuses it at both Inits, as C (Q17; step 4m's composite rows are those refusals).
 - **Kept as C:** OPERATION_ACTIVE after the key, type, allowed-mechanism and usage checks; GMAC's struct form reading any block of 48 bytes or more, and its raw IV of 12 to 512 bytes; PSS with an unknown MGF accepted at Init and FUNCTION_FAILED at the signature (0x71 at a hashed verification); an HMAC key created with CKA_ALWAYS_AUTHENTICATE signs without the context login (step 4m's `sign without context login` is 0 on both); composite updates that fail leave the operation active; a too-long ML-DSA context refused at SignInit and false at Verify; MACs not audited, asymmetric signatures and verifications audited; a short buffer keeps the operation and the retry signs again.
 - **Not observable:** CMAC's and GMAC's key length is checked before the MAC is fetched (C: after the fetch and the context, whose failures cannot happen); a NULL DigestSign context in the hashed path is FUNCTION_FAILED, as C, elsewhere HOST_MEMORY, as C.
-- **A NULL signature with a length at `C_Verify`** is 0x7 where C first reads it; C read through the pointer (a crash). The order of every other check is C's.
+- **DIV-063 (review M1):** a NULL signature with a length at `C_Verify` is 0x7 up front; C crashed at the right length and answered 0xC0 at a wrong one.
 - **DIV-001:** every signature is made in scratch, recorded, then copied out; a verification that succeeds but cannot be recorded is 0x30.
 - shortcut: the same fork window as the digest and cipher slots (review M1 of slice 3); first in M3's atfork work.
 - **Golden:** step 4m identical to C less the recorded rows: DIV-050 (logged-out and SO key use 0x60, operations ended at logout 0x91, and two rows that follow from them), DIV-051, DIV-062. Unit tests: the mechanism tables, M' for HashML-DSA, the PSS arguments, the MAC and digest wrappers, raw r||s to DER and back.
@@ -1136,3 +1136,19 @@ Recorded, not applied:
 ### DIV-062, the sign and verify part
 
 - C's `op_init` never freed an operation's MAC stream, so after an update and a single-part `C_Sign` (which ends the operation and leaves the stream), the next Init's update went on with the old stream. Each Init now starts afresh. Found by the 5a golden (`life verify needs no context login`, 0xC0 on C); test `p11_divs.c` DIV-062's HMAC case.
+
+### Slice 5 review (architecture critic, 2026-11-06)
+
+No HIGH findings. Applied:
+- **M1:** DIV-063 above (user: "0x7 up front, new DIV (Recommended)"); the per-path refusals are gone, and the composite gets the caller's pointer, so pki refuses a NULL one at length 0, as C.
+- **M2:** the buffered message is a cleansed `crypt::Secret`, grown by hand so no reallocation leaves an uncleansed copy (C cleansed `mp_buf`).
+- **M3:** the logout frees ended operations on the user's keys too: their MAC stream or cipher context held the key. In `crypt.rs` as well.
+- **L1:** `Md::finish` copies only after a digest that fits (it sliced before checking).
+- **L2:** `Params` keeps its ints in a Vec behind one raw pointer and carries the octets' lifetime.
+- **L3:** every use of an operation on a user's key, logged out or as SO, ends it (0x91), a backstop to the logout's sweep that a concurrent Init could slip past on the DIV-001 login rollback. In `crypt.rs` as well.
+- **L4 (in part):** `p11_divs.c` DIV-001 cases 7 and 8 (an audited verification, a signature in parts).
+- **N2:** the ECDSA DER parser's unreachable two-byte length is gone.
+Recorded, not applied:
+- **L4 rest:** no asymmetric private-key operation is taken across a logout in `p11_divs.c` (step 4m's `life signfinal ed after logout` is one).
+- **N1:** the slot code is the second copy of `crypt.rs`'s; one generic table before slice 6 makes a third.
+- **N3:** a failing HMAC leaves `*pulSignatureLen` as passed, where C set it; that failure cannot happen.

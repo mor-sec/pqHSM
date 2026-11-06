@@ -24,7 +24,7 @@ use pqhsm_crypto::sig::{
 };
 
 use super::apilock::Held;
-use super::crypt::{copied, mgf_md, object, strict, ulongs};
+use super::crypt::{Secret, copied, mgf_md, object, strict, ulongs};
 use super::digest::{Mech, bytes};
 use super::objects::{CKO_PRIVATE_KEY, CKO_SECRET_KEY, access_denied, gate};
 use super::session::{TABLE, Tok, fhsm_session_role};
@@ -254,7 +254,7 @@ struct Op {
     prehashed: bool,
     /// The buffered message (`mp_buf`), HashML-DSA's or the composite's PH(M) stream
     /// (`md_ctx`), and the MAC stream (`mac_ctx`).
-    mp: Vec<u8>,
+    mp: Secret,
     md: Option<Md>,
     mac: Option<Mac>,
 }
@@ -277,7 +277,7 @@ impl Op {
         hedge: 0,
         hm_row: 0,
         prehashed: false,
-        mp: Vec::new(),
+        mp: Secret::NONE,
         md: None,
         mac: None,
     };
@@ -333,7 +333,7 @@ impl Op {
     /// `hmldsa_fail`.
     fn hm_fail(&mut self, rv: u32) -> u32 {
         self.md = None;
-        self.mp = Vec::new();
+        self.mp = Secret::NONE;
         self.end(rv)
     }
 }
@@ -356,7 +356,14 @@ fn slot(sign: bool, h: c_ulong) -> Option<MutexGuard<'static, Op>> {
 }
 
 fn active_slot(sign: bool, h: c_ulong) -> Option<MutexGuard<'static, Op>> {
-    slot(sign, h).filter(|o| o.active)
+    let mut o = slot(sign, h).filter(|o| o.active)?;
+    // DIV-050's backstop to the logout's sweep, which a concurrent Init can slip past on the
+    // DIV-001 login rollback (review L3 of slice 5): a user's key out of sight ends it.
+    if o.private && o.tok.is_some_and(|t| access_denied(t, CKO_PRIVATE_KEY)) {
+        *o = Op::IDLE;
+        return None;
+    }
+    Some(o)
 }
 
 /// This session's operations, freed (`fhsm_session_ops_reset`'s signature part).
@@ -387,7 +394,8 @@ pub(super) fn grant(h: c_ulong) {
 pub(super) fn end_private(t: Tok) {
     for s in SIG[1..].iter().chain(&VER[1..]) {
         let mut o = lock(s);
-        if o.active && o.private && o.tok == Some(t) {
+        // Ended ones too: their contexts may still hold the key (review M3 of slice 5)
+        if o.private && o.tok == Some(t) {
             *o = Op::IDLE;
         }
     }
@@ -857,7 +865,7 @@ fn hm_ph_finish(op: &mut Op) -> Result<(), u32> {
     if md.finish(&mut ph[..n]) != Some(n) {
         return Err(FUNCTION_FAILED);
     }
-    op.mp = ph[..n].to_vec();
+    op.mp = Secret(ph[..n].to_vec());
     op.prehashed = true;
     Ok(())
 }
@@ -906,15 +914,24 @@ fn append(op: &mut Op, part: &[u8]) -> u32 {
     if part.is_empty() {
         return OK;
     }
-    if part.len() > MP_MAX || op.mp.len() + part.len() > MP_MAX {
-        op.mp = Vec::new();
+    let need = op.mp.0.len() + part.len();
+    if part.len() > MP_MAX || need > MP_MAX {
+        op.mp = Secret::NONE;
         return op.end(DATA_LEN_RANGE);
     }
-    if op.mp.try_reserve(part.len()).is_err() {
-        op.mp = Vec::new();
-        return op.end(HOST_MEMORY);
+    // Grown by hand, so the old buffer is cleansed as it is dropped (C cleansed mp_buf)
+    if op.mp.0.capacity() < need {
+        let mut v = Vec::new();
+        if v.try_reserve_exact(need.max((2 * op.mp.0.capacity()).min(MP_MAX)))
+            .is_err()
+        {
+            op.mp = Secret::NONE;
+            return op.end(HOST_MEMORY);
+        }
+        v.extend_from_slice(&op.mp.0);
+        op.mp = Secret(v);
     }
-    op.mp.extend_from_slice(part);
+    op.mp.0.extend_from_slice(part);
     OK
 }
 
@@ -1004,16 +1021,13 @@ struct Sig {
 }
 
 impl Sig {
-    /// The bytes. C read through a NULL pointer with a length here; this refuses it.
+    /// The bytes (`C_Verify` refused NULL with a length up front, DIV-063).
     ///
     /// # Safety
-    /// `p` NULL or readable for `n` bytes.
-    unsafe fn get<'a>(&self) -> Result<&'a [u8], u32> {
-        if self.p.is_null() && self.n != 0 {
-            return Err(ARGUMENTS_BAD);
-        }
+    /// `p` NULL with `n` 0, or readable for `n` bytes.
+    unsafe fn get<'a>(&self) -> &'a [u8] {
         // SAFETY: the caller's
-        Ok(unsafe { bytes(self.p, self.n) })
+        unsafe { bytes(self.p, self.n) }
     }
 }
 
@@ -1056,10 +1070,7 @@ unsafe fn verify_asymmetric(h: c_ulong, t: Tok, op: &mut Op, data: &[u8], sig: &
             Err(DATA_LEN_RANGE) => return recorded(false, h, op, SIGNATURE_INVALID, &[]),
             Err(rv) => return recorded(false, h, op, rv, &[]),
         };
-        let s = match sig_bytes() {
-            Ok(s) => s,
-            Err(rv) => return op.end(rv),
-        };
+        let s = sig_bytes();
         let enc = [Param::Int(c"message-encoding", 0)];
         let init = DigestCtx::new()
             .ok()
@@ -1082,10 +1093,7 @@ unsafe fn verify_asymmetric(h: c_ulong, t: Tok, op: &mut Op, data: &[u8], sig: &
             if with_ctx && !c.set_params(&[Param::Octets(c"context-string", op.ctx())]) {
                 return op.end(FUNCTION_FAILED);
             }
-            let s = match sig_bytes() {
-                Ok(s) => s,
-                Err(rv) => return op.end(rv),
-            };
+            let s = sig_bytes();
             let v = c.verify(s, data);
             if v < 0 {
                 return op.end(FUNCTION_FAILED);
@@ -1101,17 +1109,13 @@ unsafe fn verify_asymmetric(h: c_ulong, t: Tok, op: &mut Op, data: &[u8], sig: &
         if nlen == 0 || sig.n != 2 * nlen {
             return op.end(SIGNATURE_INVALID);
         }
-        der = match sig_bytes().map(|s| raw_to_der(s, nlen)) {
-            Ok(Some(d)) => d,
-            Ok(None) => return op.end(SIGNATURE_INVALID),
-            Err(rv) => return op.end(rv),
+        der = match raw_to_der(sig_bytes(), nlen) {
+            Some(d) => d,
+            None => return op.end(SIGNATURE_INVALID),
         };
         &der[..]
     } else {
-        match sig_bytes() {
-            Ok(s) => s,
-            Err(rv) => return op.end(rv),
-        }
+        sig_bytes()
     };
     let (salt, mgf) = op.pss_args();
     // `None`: the checks before the verification failed, which is a signature that does not
@@ -1333,6 +1337,10 @@ pub unsafe extern "C" fn pqhsm_C_Verify(
     if data.is_null() && n != 0 {
         return op.end(ARGUMENTS_BAD).into();
     }
+    // DIV-063: C read through it (a crash), or OpenSSL refused its length first (0xC0)
+    if sig.is_null() && sig_len != 0 {
+        return op.end(ARGUMENTS_BAD).into();
+    }
     let Some(tok) = TABLE.token(h) else {
         return SESSION_HANDLE_INVALID.into();
     };
@@ -1360,12 +1368,8 @@ unsafe fn verify_one(h: c_ulong, op: &mut Op, t: Tok, data: &[u8], sig: &Sig) ->
         if cl != CKO_PUBLIC_KEY || kt != CKK_COMPOSITE {
             return KEY_TYPE_INCONSISTENT;
         }
-        // SAFETY: the caller's
-        let s = match unsafe { sig.get() } {
-            Ok(s) => s,
-            Err(rv) => return rv,
-        };
-        // SAFETY: each buffer readable for its length
+        // SAFETY: each buffer readable for its length; the signature as the caller passed it,
+        // so pki refuses a NULL one (0x7), as C
         let rv = unsafe {
             fhsm_composite_verify(
                 COMPOSITE_ALG,
@@ -1375,8 +1379,8 @@ unsafe fn verify_one(h: c_ulong, op: &mut Op, t: Tok, data: &[u8], sig: &Sig) ->
                 data.len(),
                 null(),
                 0,
-                s.as_ptr(),
-                s.len(),
+                sig.p,
+                sig.n,
             )
         };
         return recorded(false, h, op, rv, &[(c"alg", c"composite")]);
@@ -1407,11 +1411,9 @@ unsafe fn verify_one(h: c_ulong, op: &mut Op, t: Tok, data: &[u8], sig: &Sig) ->
         Err(rv) => rv,
         Ok(m) if sig.n != m => SIGNATURE_INVALID,
         // SAFETY: the caller's
-        Ok(m) => match unsafe { sig.get() } {
-            Ok(s) if ct_eq(&mac[..m], s) => OK,
-            Ok(_) => SIGNATURE_INVALID,
-            Err(rv) => rv,
-        },
+        // SAFETY: the caller's, of the length just checked
+        Ok(m) if ct_eq(&mac[..m], unsafe { sig.get() }) => OK,
+        Ok(_) => SIGNATURE_INVALID,
     };
     cleanse(&mut mac);
     rv
@@ -1584,9 +1586,9 @@ unsafe fn sign_final(h: c_ulong, op: &mut Op, out: *mut u8, out_len: *mut c_ulon
             let have = *out_len as usize;
             let kva = [(c"mode", c"multipart")];
             let mut s = vec![0u8; family_bound(op.mech)];
-            return match sign_asymmetric(t, op, &op.mp, &mut s) {
+            return match sign_asymmetric(t, op, &op.mp.0, &mut s) {
                 Err(rv) => {
-                    op.mp = Vec::new();
+                    op.mp = Secret::NONE;
                     recorded(true, h, op, rv, &kva)
                 }
                 // The buffered message stays for the retry.
@@ -1595,7 +1597,7 @@ unsafe fn sign_final(h: c_ulong, op: &mut Op, out: *mut u8, out_len: *mut c_ulon
                     BUFFER_TOO_SMALL
                 }
                 Ok(sl) => {
-                    op.mp = Vec::new();
+                    op.mp = Secret::NONE;
                     emit(h, op, &s[..sl], out, out_len, &kva)
                 }
             };
@@ -1694,7 +1696,7 @@ unsafe fn verify_final(h: c_ulong, op: &mut Op, sig: &Sig) -> u32 {
     }
     if buffered(op.mech) {
         let Some(t) = TABLE.token(h) else {
-            op.mp = Vec::new();
+            op.mp = Secret::NONE;
             return op.end(SESSION_HANDLE_INVALID);
         };
         if op.hm_row != 0
@@ -1702,9 +1704,9 @@ unsafe fn verify_final(h: c_ulong, op: &mut Op, sig: &Sig) -> u32 {
         {
             return op.hm_fail(rv);
         }
-        let mp = std::mem::take(&mut op.mp);
+        let mp = std::mem::replace(&mut op.mp, Secret::NONE);
         // SAFETY: as this function's
-        let rv = unsafe { verify_asymmetric(h, t, op, &mp, sig) };
+        let rv = unsafe { verify_asymmetric(h, t, op, &mp.0, sig) };
         return op.end(rv);
     }
     let fmac = op.stream_len();
