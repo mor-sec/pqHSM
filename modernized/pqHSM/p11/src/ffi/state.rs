@@ -86,6 +86,6 @@ pub unsafe extern "C" fn fhsm_state_latch_error(reason: *const c_char) {
 }
 
 /// A state as C's `"%d"`, NUL-terminated.
-fn cnum(s: c_int) -> CString {
+pub(super) fn cnum(s: c_int) -> CString {
     CString::new(s.to_string()).expect("digits have no NUL")
 }

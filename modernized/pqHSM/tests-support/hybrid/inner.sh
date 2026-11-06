@@ -256,7 +256,8 @@ for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$d /tmp/p11_notinit $lib > /out/p11_notinit_$tag.txt 2>/dev/null
   echo "rc=$?" >> /out/p11_notinit_$tag.txt
 done
-cc -std=gnu17 -o /tmp/p11_divs modernized/pqHSM/tests-support/hybrid/p11_divs.c -ldl
+# -rdynamic: DIV-052 interposes the libcrypto call that the pairwise check makes.
+cc -std=gnu17 -rdynamic -o /tmp/p11_divs modernized/pqHSM/tests-support/hybrid/p11_divs.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
   d=$(mktemp -d)

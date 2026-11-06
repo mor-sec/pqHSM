@@ -1152,3 +1152,35 @@ Recorded, not applied:
 - **L4 rest:** no asymmetric private-key operation is taken across a logout in `p11_divs.c` (step 4m's `life signfinal ed after logout` is one).
 - **N1:** the slot code is the second copy of `crypt.rs`'s; one generic table before slice 6 makes a third.
 - **N3:** a failing HMAC leaves `*pulSignatureLen` as passed, where C set it; that failure cannot happen.
+
+## Slice 6: key generation, creation, wrap and derive
+
+### 6a: C_GenerateKey and C_GenerateKeyPair
+
+- **Golden first:** `tests-support/hybrid/p11_keys.c` (harness step 4n), written from the C before the port: every argument and template check in order, each secret mechanism and length (AES, generic, HKDF, DES3, PBKDF2 with each PRF and parameter shape), each pair mechanism (RSA bits and exponents, EC curves by OID and the refusals, Ed and X curves by OID and name, ML-KEM, ML-DSA and SLH-DSA by selector and name), the flags and nested templates, sessions, roles, fork and finalize; each key's 41 attributes. A handle prints as its distance from the last handle written and a refusal as the change in the object count, so a key that a DIV now refuses renumbers no later row, while a key added and destroyed on the way still shows as a gap.
+- **The port:** `p11/src/ffi/keygen.rs`, in C's check order, under the shared API lock with DIV-051's and DIV-053's gate; `hybrid.mk` moves both to the Rust-owned list, `interface.c` forwards them. The template helpers only these two use (`fhsm_compute_usage`, `fhsm_apply_token_scope`, `fhsm_parse_unwrap_template`, `fhsm_apply_ed_curve_name`, the length checks, the parameter sets) are here; the ones copy already had (`check_trusted`, `check_ro_token`, the allowed mechanisms, the nested templates, the encapsulation flags, the dates) are `copy.rs`'s, now `pub(super)`.
+- **Crypto:** `pqhsm_crypto::keygen`: EVP keygen by name, EC by curve, RSA by bits and exponent, the DER encodings (cleansed before they are freed), and C's curve matcher (`match_curve_ex`, `fhsm_ec_curve_refusal`: P-256/384/521, any other prime curve of 256-521 bits OpenSSL serves except SM2, the named refusals 0x140).
+- **Kept as C:** the handle written before the nested templates and scope are applied (a failure there destroys the key but leaves the handle); the SO can generate keys; an unknown template KEY_TYPE for AES or generic keygen ignored; DES3 in the all-mechanisms build only; a private key's DERIVE by default (not PQC, #125).
+- **DIVs:** DIV-052 (a pairwise failure latches ERROR), DIV-064 (PBKDF2 key type and length), RULE-006 (iterations past 32 bits 0x71), RULE-014 (strict: generic under 14 bytes 0x62, and `C_GetMechanismInfo` advertises 14-64 through the shim's wrapper, user: "Advertise 14-64 (Recommended)"), RULE-015 (RSA e odd, 2^16 < e < 2^256, and used), RULE-017 (a parameter-set name of another family 0x13, before any key is made). DIV-001: the pairwise check's record before the pair is stored.
+- **Tests:** `p11_divs.c` DIV-052, DIV-064, RULE-006, RULE-014, RULE-015, RULE-017 and DIV-001 case 9, each failing on C. DIV-052's fault: the test binary is linked `-rdynamic` and defines `EVP_PKEY_decapsulate`, which the module's libcrypto calls bind to first; nothing in the module changes for it. Unit tests: the parameter sets, the exponent bounds, the usage defaults, the curve matcher, both DER halves.
+- **Golden:** step 4n identical to C less the recorded rows (DIV-050's SO handles and token key, DIV-051, and each DIV above). Harness p4s6c: 106/106, the 25 DIV tests each failing on C, TSan 0; audit corpus 62 same and 6 DIFF, the five before plus `test_generic_secret_len` (RULE-014: C makes 13 more keys).
+- **Untested by the harness:** the all-mechanisms profile's DES3, X25519/X448 and composite pairs.
+
+### Slice 6a review (architecture critic, 2026-11-06)
+
+No High findings. Applied:
+- **M1:** in the strict build, CKA_EC_PARAMS holding a known curve's OID with bytes after it was 0x140; C's `fhsm_ec_curve_refusal` takes only a whole OID as a curve, so it is 0x13. `ec_curve` now takes `strict` and follows C's match-then-refuse; unit test both builds.
+- **M2:** a key OpenSSL does not make prints C's `[freehsm-c] C_GenerateKeyPair: key generation failed.` with the mechanism and OpenSSL's reasons (field issue #5), which also empties the thread's error queue (`keygen::report_keygen_failure`).
+- **M3:** the golden printed a stored handle as `h`, which could not tell refuse-before-store from store-then-destroy. Each handle is now its distance from the last handle written: a key a DIV refuses renumbers nothing, a transient object shows as a gap (step 4n's `unwrap templates` and `dates` start at +4 after the destroyed `allowed mechanisms` keys, on both). DIV-050's token key after the logout reload is recorded (+4 on C, +0 on the hybrid).
+- **L1 (hardening):** the DIV-052 interposer aborts if it cannot find libcrypto's own function, instead of recursing into itself.
+- **L2:** the private DER is made after the public and goes straight into the zeroizing `Pair`.
+- **L5:** the class, key-type, flag and usage constants come from `attrs.rs` instead of being redefined.
+- **L6:** RULE-014's test detects the build (DES3 keygen is 0x70 only in the strict one) and expects 1-64 in the other.
+- **Nits:** the curve matcher's C names in these notes; `state::cnum` shared; the RSA unit test asks for e = 2^17+1, which a FIPS provider also makes.
+- **L3 (decision):** RULE-014's floor stays on `CKM_GENERIC_SECRET_KEY_GEN` (user: "Record as limited (Recommended)"); see DIVERGENCES.
+
+Recorded, not applied:
+- **M3, DIV-001 case 9's object count:** the failed audit write latches ERROR, which refuses a find, and the pair would be session objects a restart drops; the unwritten handles are what the test can see.
+- **L1, the audit record of DIV-052's KAT_REPORT:** the code writes it before the latch; no test reads `audit.log` for it.
+- **L4:** `composite_pair`, X25519/X448 and DES3 run in no test (the all-mechanisms build is not in the harness).
+- **Nit:** `ED_CURVES`/`ECM_CURVES` move next to `APPROVED` when 6b's `C_CreateObject` needs them; RULE-014's 14 is in `keygen.rs` and the shim.

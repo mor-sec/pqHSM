@@ -11,6 +11,7 @@ pub mod mem;
 #[cfg(feature = "ffi")]
 pub use ffi::KatRecord;
 pub use ffi::cipher;
+pub use ffi::keygen;
 pub use ffi::prim;
 pub use ffi::sig;
 /// The module locks that a fork child takes afresh; the self-test crate uses it too.

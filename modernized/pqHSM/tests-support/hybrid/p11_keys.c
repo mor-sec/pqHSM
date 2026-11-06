@@ -1,9 +1,10 @@
 /* p11_keys.c LIB BASE --- slice 6 of PHASE4_PLAN.md §2: call sequences through the key
  * generation entry points (6a: C_GenerateKey, C_GenerateKeyPair), one row per call:
- * "label TAB rv TAB n TAB hex", n the handle(s) written (pre-filled 0xAAAAAAAA). Each new
- * object's attributes follow, one row each ("label NAME rv len value"); generated key material
- * prints as "rnd:<len>", PBKDF2's output whole. After a refusal, "objects" counts what the
- * session sees, so a half-made object shows. C and hybrid must print the same apart from
+ * "label TAB rv TAB n TAB hex", n each handle out-parameter: "-" untouched, else its distance
+ * from the last handle written (the raw value where a call prints it directly). Each new object's attributes follow, one row each
+ * ("label NAME rv len value"); generated key material prints as "rnd:<len>", PBKDF2's output
+ * whole. After a refusal, "objects" is the change in what the session sees, so a half-made
+ * object shows as +1. C and hybrid must print the same apart from
  * recorded DIVs (harness step 4n).
  *
  * Each scenario runs in a forked child with its own tokens directory BASE/<n>.
@@ -143,30 +144,55 @@ static void dump(UL h, const char *name, UL o, int rnd) {
     }
 }
 
-/* How many objects the session sees. */
-static void count(UL h, const char *name) {
+/* How many objects the session sees; the find's rv in *rv. */
+static UL nobj(UL h, UL *rv) {
     UL found[512], n = 0;
-    UL rv = P11(C_FindObjectsInit, h, NULL, 0UL);
-    if (!rv) rv = P11(C_FindObjects, h, found, 512UL, &n);
+    *rv = P11(C_FindObjectsInit, h, NULL, 0UL);
+    if (!*rv) *rv = P11(C_FindObjects, h, found, 512UL, &n);
     P11(C_FindObjectsFinal, h);
+    return n;
+}
+static void count(UL h, const char *name) {
+    UL rv, n = nobj(h, &rv);
     printf("%s objects\t%#lx\t%#lx\t-\n", name, rv, n);
 }
 
-/* C_GenerateKey; the new key's attributes, or after a refusal the object count. */
+/* After a refusal, what it stored: the change in the count. Absolute counts and handles would
+ * renumber every later row behind a key that a DIV now refuses. */
+static void stored(UL h, const char *name, UL before) {
+    UL rv, n = nobj(h, &rv);
+    printf("%s objects\t%#lx\t%+ld\t-\n", name, rv, (long)(n - before));
+}
+
+/* A handle out-parameter: "-" if untouched, else its distance from the last handle written
+ * here ("+1" the next). Handles only go up, so a key added and destroyed on the way shows as
+ * a gap, yet a key a DIV now refuses renumbers nothing after it. */
+static UL last_h;
+static const char *hv(UL o, char *buf) {
+    if (o == 0xAAAAAAAAUL) return "-";
+    snprintf(buf, 24, "%+ld", (long)(o - last_h));
+    last_h = o;
+    return buf;
+}
+
+/* C_GenerateKey; the new key's attributes, or after a refusal the objects it stored. */
 static UL gen(UL h, const char *name, Mech *m, Attr *t, UL n, int rnd) {
-    UL o = 0xAAAAAAAAUL, rv = P11(C_GenerateKey, h, m, t, n, &o);
-    printf("%s\t%#lx\t%#lx\t-\n", name, rv, o);
-    if (rv) { count(h, name); return 0; }
+    UL frv, before = nobj(h, &frv), o = 0xAAAAAAAAUL, rv = P11(C_GenerateKey, h, m, t, n, &o);
+    char b[24];
+    printf("%s\t%#lx\t%s\t-\n", name, rv, hv(o, b));
+    if (rv) { stored(h, name, before); return 0; }
     dump(h, name, o, rnd);
     return o;
 }
 
-/* C_GenerateKeyPair; both halves' attributes, or after a refusal the object count. */
+/* C_GenerateKeyPair; both halves' attributes, or after a refusal the objects it stored. */
 static int pair(UL h, const char *name, Mech *m, Attr *pu, UL npu, Attr *pr, UL npr) {
-    UL po = 0xAAAAAAAAUL, vo = 0xAAAAAAAAUL;
+    UL frv, before = nobj(h, &frv), po = 0xAAAAAAAAUL, vo = 0xAAAAAAAAUL;
     UL rv = P11(C_GenerateKeyPair, h, m, pu, npu, pr, npr, &po, &vo);
-    printf("%s\t%#lx\t%#lx,%#lx\t-\n", name, rv, po, vo);
-    if (rv) { count(h, name); return 0; }
+    char b1[24], b2[24];
+    const char *p1 = hv(po, b1);
+    printf("%s\t%#lx\t%s,%s\t-\n", name, rv, p1, hv(vo, b2));
+    if (rv) { stored(h, name, before); return 0; }
     char l[200];
     snprintf(l, sizeof l, "%s pub", name);
     dump(h, l, po, 1);

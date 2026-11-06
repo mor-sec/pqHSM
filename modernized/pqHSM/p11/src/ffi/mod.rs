@@ -6,6 +6,7 @@ mod copy;
 mod create_attrs;
 mod crypt;
 mod digest;
+mod keygen;
 mod lifecycle;
 mod login;
 mod objects;

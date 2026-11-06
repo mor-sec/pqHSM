@@ -27,8 +27,8 @@ pub(super) const ATTRIBUTE_READ_ONLY: u32 = 0x10;
 const CKO_DATA: u32 = 0;
 const CKO_CERTIFICATE: u32 = 1;
 pub(super) const CKO_PUBLIC_KEY: u32 = 2;
-const CKK_ML_KEM: u32 = 0x49;
-const CKK_ML_DSA: u32 = 0x4A;
+pub(super) const CKK_ML_KEM: u32 = 0x49;
+pub(super) const CKK_ML_DSA: u32 = 0x4A;
 
 pub(super) const CKA_TOKEN: c_ulong = 0x1;
 pub(super) const CKA_PRIVATE: c_ulong = 0x2;
@@ -97,8 +97,8 @@ pub(super) fn history(before: u8, after: u8) -> u8 {
     h
 }
 pub(super) const OBJF_UNMODIFIABLE: u8 = 0x04;
-const OBJF_LOCAL: u8 = 0x10;
-const OBJF_ALWAYS_AUTH: u8 = 0x20;
+pub(super) const OBJF_LOCAL: u8 = 0x10;
+pub(super) const OBJF_ALWAYS_AUTH: u8 = 0x20;
 const OBJF_TRUSTED: u8 = 0x40;
 pub(super) const OBJF2_NO_ENCAPSULATE: u8 = 0x01;
 pub(super) const OBJF2_NO_DECAPSULATE: u8 = 0x02;
@@ -108,13 +108,13 @@ pub(super) const OBJF2_HAS_WRAP_TMPL: u8 = 0x10;
 pub(super) const OBJF2_HAS_UNWRAP_TMPL: u8 = 0x20;
 pub(super) const OBJF2_HAS_DERIVE_TMPL: u8 = 0x40;
 const OBJF2_WRAP_WITH_TRUSTED: u8 = 0x80;
-const USAGE_ENCRYPT: u8 = 0x01;
-const USAGE_DECRYPT: u8 = 0x02;
-const USAGE_SIGN: u8 = 0x04;
-const USAGE_VERIFY: u8 = 0x08;
-const USAGE_WRAP: u8 = 0x10;
-const USAGE_UNWRAP: u8 = 0x20;
-const USAGE_DERIVE: u8 = 0x40;
+pub(super) const USAGE_ENCRYPT: u8 = 0x01;
+pub(super) const USAGE_DECRYPT: u8 = 0x02;
+pub(super) const USAGE_SIGN: u8 = 0x04;
+pub(super) const USAGE_VERIFY: u8 = 0x08;
+pub(super) const USAGE_WRAP: u8 = 0x10;
+pub(super) const USAGE_UNWRAP: u8 = 0x20;
+pub(super) const USAGE_DERIVE: u8 = 0x40;
 pub(super) const USAGE_VALID: u8 = 0x80;
 pub(super) const META_START_DATE: c_int = 0;
 pub(super) const META_END_DATE: c_int = 1;

@@ -420,6 +420,19 @@ static void div_001_case(int which) {
         want("nothing written", sig[0] == 0xAA && sig[63] == 0xAA && out == 64, 1);
         return;
     }
+    if (which == 9) {
+        /* Slice 6a: a pair whose pairwise check cannot be audited is not stored. */
+        UL hs, pk = 0xAAAAAAAAUL, vk = 0xAAAAAAAAUL;
+        user_key(&hs, 16);
+        struct { UL m; void *p; UL len; } gen = { 0x1040, NULL, 0 };
+        fail_audit();
+        want("generate p-256, audit failing",
+             CALL(C_GenerateKeyPair, hs, &gen, NULL, 0UL, NULL, 0UL, &pk, &vk), 0x30);
+        /* The failed write latched ERROR, which refuses a find, and the pair would be session
+         * objects a restart drops: the handles are what can be seen. */
+        want("no handles written", pk == 0xAAAAAAAAUL && vk == 0xAAAAAAAAUL, 1);
+        return;
+    }
     if (which == 6) {
         /* Slice 5: a C_Sign that cannot be audited writes no signature. */
         UL hs, k = user_key(&hs, 16), out = 64;
@@ -470,7 +483,7 @@ static void div_001_case(int which) {
 
 static void div_001(void) {
     const char *base = getenv("FHSM_TOKENS_DIR");
-    for (int i = 0; i < 9; ++i) {
+    for (int i = 0; i < 10; ++i) {
         char d[700];
         snprintf(d, sizeof d, "%s/%d", base, i);
         mkdir(d, 0700);
@@ -639,6 +652,130 @@ static void rule_059(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* Slice 6a. A mechanism, and a CK_ULONG or bytes template row. */
+typedef struct { UL m; void *p; UL len; } Mech;
+typedef struct { UL type; void *p; UL len; } Attr;
+
+/* The fault on DIV-052's pairwise check. The module binds its libcrypto calls to this
+ * executable's definitions first (-rdynamic), and only ML-KEM's pairwise check decapsulates
+ * during key generation. */
+static int fail_decap;
+int EVP_PKEY_decapsulate(void *ctx, unsigned char *s, size_t *sl, const unsigned char *c,
+                         size_t cl) {
+    static int (*real)(void *, unsigned char *, size_t *, const unsigned char *, size_t);
+    if (fail_decap) return 0;
+    if (!real) {
+        void *crypto = dlopen("libcrypto.so.3", RTLD_NOW | RTLD_NOLOAD);
+        /* dlsym(NULL, ...) would find this function again */
+        if (!crypto) { fprintf(stderr, "libcrypto.so.3 not loaded\n"); abort(); }
+        real = (int (*)(void *, unsigned char *, size_t *, const unsigned char *, size_t))
+            dlsym(crypto, "EVP_PKEY_decapsulate");
+        if (!real) abort();
+    }
+    return real(ctx, s, sl, c, cl);
+}
+
+/* DIV-052: a failed pairwise check latches ERROR. C asked for ERROR through a transition its
+ * table refuses, and the module stayed usable. */
+static void div_052(void) {
+    UL h, po, vo, o;
+    user_key(&h, 16);
+    Mech kem = { 0xF, NULL, 0 }, aes = { 0x1080, NULL, 0 };
+    UL len = 16;
+    Attr t[] = { { 0x161, &len, sizeof len } };
+    fail_decap = 1;
+    want("a pair whose check fails", CALL(C_GenerateKeyPair, h, &kem, NULL, 0UL, NULL, 0UL, &po, &vo), 0x6);
+    fail_decap = 0;
+    want("the next pair", CALL(C_GenerateKeyPair, h, &kem, NULL, 0UL, NULL, 0UL, &po, &vo), 0x6);
+    want("an AES key", CALL(C_GenerateKey, h, &aes, t, 1UL, &o), 0x6);
+    CALL(C_Finalize, NULL);
+}
+
+/* CK_PKCS5_PBKD2_PARAMS2, HMAC-SHA256 over a fixed password and salt. */
+static unsigned char pb_salt[16] = "NaCl-and-pepper!", pb_pw[8] = "password";
+struct pbkd2 { UL src; void *salt; UL salt_len; UL iter; UL prf; void *prf_data; UL prf_len;
+               void *pw; UL pw_len; };
+static UL pbkdf2(UL h, UL iter, UL kt, UL len) {
+    struct pbkd2 p = { 1, pb_salt, 16, iter, 4, NULL, 0, pb_pw, 8 };
+    Mech m = { 0x3B0, &p, sizeof p };
+    Attr t[] = { { 0x161, &len, sizeof len }, { 0x100, &kt, sizeof kt } };
+    UL o = 0;
+    return CALL(C_GenerateKey, h, &m, t, 2UL, &o);
+}
+
+/* DIV-064: a PBKDF2 key is a generic secret or an AES key of 16, 24 or 32 bytes. C stored
+ * any type at any length up to 256. */
+static void div_064(void) {
+    UL h;
+    user_key(&h, 16);
+    want("an AES key of 5 bytes", pbkdf2(h, 1000, 0x1f, 5), 0x62);
+    want("an EC key of 32 bytes", pbkdf2(h, 1000, 0x3, 32), 0x13);
+    want("an AES key of 32 bytes", pbkdf2(h, 1000, 0x1f, 32), 0);
+    want("a generic secret of 5 bytes", pbkdf2(h, 1000, 0x10, 5), 0);
+    CALL(C_Finalize, NULL);
+}
+
+/* RULE-006: a PBKDF2 iteration count past 32 bits is 0x71. C narrowed it first, so
+ * 2^32 + 1000 ran 1000 iterations. */
+static void rule_006(void) {
+    UL h;
+    user_key(&h, 16);
+    want("2^32 + 1000 iterations", pbkdf2(h, (1UL << 32) + 1000, 0x10, 16), 0x71);
+    want("1000 iterations", pbkdf2(h, 1000, 0x10, 16), 0);
+    CALL(C_Finalize, NULL);
+}
+
+/* RULE-014: in the strict build a generic secret under 112 bits is 0x62, and
+ * C_GetMechanismInfo advertises 14 to 64 bytes; the all-mechanisms build keeps 1 to 64. */
+static void rule_014(void) {
+    UL h, o, len = 24;
+    user_key(&h, 16);
+    Mech m = { 0x350, NULL, 0 }, des3 = { 0x131, NULL, 0 };
+    Attr t[] = { { 0x161, &len, sizeof len } };
+    /* DES3 key generation is the strict build's MECHANISM_INVALID, in C and in Rust */
+    int strict = CALL(C_GenerateKey, h, &des3, t, 1UL, &o) == 0x70;
+    len = 13;
+    want("13 bytes", CALL(C_GenerateKey, h, &m, t, 1UL, &o), strict ? 0x62 : 0);
+    len = 14;
+    want("14 bytes", CALL(C_GenerateKey, h, &m, t, 1UL, &o), 0);
+    UL info[3] = { 0 };
+    want("mechanism info", CALL(C_GetMechanismInfo, 0UL, 0x350UL, info), 0);
+    want("advertised minimum", info[0], strict ? 14 : 1);
+    want("advertised maximum", info[1], 64);
+    CALL(C_Finalize, NULL);
+}
+
+/* RULE-015: an RSA public exponent must be odd and 2^16 < e < 2^256 (FIPS 186-5), and the
+ * key is made with it. C took e = 3, and made every key with 65537. */
+static void rule_015(void) {
+    UL h, po = 0, vo = 0, bits = 2048;
+    user_key(&h, 16);
+    unsigned char three[1] = { 3 }, e17[3] = { 2, 0, 1 }, got[3] = { 0 };
+    Mech m = { 0x0, NULL, 0 };
+    Attr t[] = { { 0x121, &bits, sizeof bits }, { 0x122, three, 1 } };
+    want("e = 3", CALL(C_GenerateKeyPair, h, &m, t, 2UL, NULL, 0UL, &po, &vo), 0x13);
+    t[1].p = e17, t[1].len = 3;
+    want("e = 2^17 + 1", CALL(C_GenerateKeyPair, h, &m, t, 2UL, NULL, 0UL, &po, &vo), 0);
+    Attr g[] = { { 0x122, got, 3 } };
+    want("read e", CALL(C_GetAttributeValue, h, po, g, 1UL), 0);
+    want("the key's e", (UL)got[0] << 16 | (UL)got[1] << 8 | got[2], 0x20001);
+    CALL(C_Finalize, NULL);
+}
+
+/* RULE-017: a CKA_PARAMETER_SET name of another family is 0x13. C took any of the 18: ML-DSA
+ * keygen named SLH-DSA stored an SLH-DSA key as CKK_ML_DSA. */
+static void rule_017(void) {
+    UL h, po, vo;
+    user_key(&h, 16);
+    Mech dsa = { 0x1C, NULL, 0 };
+    char slh[] = "SLH-DSA-SHAKE-128f", ml[] = "ML-DSA-44";
+    Attr t[] = { { 0x61D, slh, sizeof slh - 1 } };
+    want("ML-DSA named SLH-DSA", CALL(C_GenerateKeyPair, h, &dsa, t, 1UL, NULL, 0UL, &po, &vo), 0x13);
+    t[0].p = ml, t[0].len = sizeof ml - 1;
+    want("ML-DSA named ML-DSA", CALL(C_GenerateKeyPair, h, &dsa, t, 1UL, NULL, 0UL, &po, &vo), 0);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
@@ -646,7 +783,9 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "DIV-060", div_060 }, { "DIV-056", div_056 },
     { "RULE-092", rule_092 }, { "RULE-091", rule_091 }, { "RULE-061", rule_061 },
     { "RULE-059", rule_059 }, { "DIV-061", div_061 }, { "DIV-062", div_062 },
-    { "DIV-063", div_063 },
+    { "DIV-063", div_063 }, { "DIV-052", div_052 }, { "DIV-064", div_064 },
+    { "RULE-006", rule_006 }, { "RULE-014", rule_014 }, { "RULE-015", rule_015 },
+    { "RULE-017", rule_017 },
 };
 
 int main(int argc, char **argv) {

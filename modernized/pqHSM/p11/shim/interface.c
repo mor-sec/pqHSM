@@ -108,15 +108,24 @@ CK_RV pqhsm_p11_gate(int status);
 #define STATUS(name, params, args) GATED(name, params, args, 1)
 
 STATUS(C_GetMechanismList, (UL s, P l, P n), (s, l, n))
-STATUS(C_GetMechanismInfo, (UL s, UL t, P i), (s, t, i))
+/* RULE-014 (strict build): CKM_GENERIC_SECRET_KEY_GEN advertises what key generation makes,
+ * 14 to 64 bytes. C's table gives the GENERIC family's 1, which HMAC and KMAC keep. */
+extern const int fhsm_build_fips_strict;
+CK_RV pqhsm_c_C_GetMechanismInfo(UL s, UL t, P i); CK_RV C_GetMechanismInfo(UL s, UL t, P i);
+__attribute__((visibility("default"))) CK_RV C_GetMechanismInfo(UL s, UL t, P i) {
+    CK_RV rv = pqhsm_p11_gate(1);
+    if (!rv) rv = pqhsm_c_C_GetMechanismInfo(s, t, i);
+    if (!rv && t == 0x350UL && fhsm_build_fips_strict) ((UL *)i)[0] = 14;
+    return rv;
+}
 GATE(C_WaitForSlotEvent, (UL f, P s, P r), (f, s, r))
 GATE(C_GetFunctionStatus, (UL h), (h))
 GATE(C_CancelFunction, (UL h), (h))
 GATE(C_SeedRandom, (UL h, P p, UL n), (h, p, n))
 GATE(C_GenerateRandom, (UL h, P p, UL n), (h, p, n))
 GATE(C_CreateObject, (UL h, P t, UL n, P o), (h, t, n, o))
-GATE(C_GenerateKey, (UL h, P m, P t, UL n, P k), (h, m, t, n, k))
-GATE(C_GenerateKeyPair, (UL h, P m, P pu, UL npu, P pr, UL npr, P hpu, P hpr), (h, m, pu, npu, pr, npr, hpu, hpr))
+FWD(C_GenerateKey, (UL h, P m, P t, UL n, P k), (h, m, t, n, k))
+FWD(C_GenerateKeyPair, (UL h, P m, P pu, UL npu, P pr, UL npr, P hpu, P hpr), (h, m, pu, npu, pr, npr, hpu, hpr))
 GATE(C_WrapKey, (UL h, P m, UL wk, UL k, P o, P on), (h, m, wk, k, o, on))
 GATE(C_UnwrapKey, (UL h, P m, UL uk, P w, UL wn, P t, UL n, P k), (h, m, uk, w, wn, t, n, k))
 GATE(C_DeriveKey, (UL h, P m, UL b, P t, UL n, P k), (h, m, b, t, n, k))

@@ -41,14 +41,14 @@ const POLICY_KIND_BOOL: u8 = 1;
 const POLICY_KIND_ULONG: u8 = 2;
 const POLICY_KIND_BYTES: u8 = 3;
 /// `fhsm_bool_attr_types` and `fhsm_ulong_attr_types`.
-const BOOL_ATTRS: [c_ulong; 22] = [
+pub(super) const BOOL_ATTRS: [c_ulong; 22] = [
     0x001, 0x002, 0x086, 0x103, 0x104, 0x105, 0x106, 0x107, 0x108, 0x109, 0x10A, 0x10B, 0x10C,
     0x162, 0x163, 0x164, 0x165, 0x170, 0x171, 0x172, 0x202, 0x210,
 ];
-const ULONG_ATTRS: [c_ulong; 5] = [0x000, 0x100, 0x161, 0x121, 0x080];
+pub(super) const ULONG_ATTRS: [c_ulong; 5] = [0x000, 0x100, 0x161, 0x121, 0x080];
 
 unsafe extern "C" {
-    fn fhsm_token_object_add(
+    pub(super) fn fhsm_token_object_add(
         t: *mut fhsm_token_t,
         class: u32,
         kt: u32,
@@ -60,8 +60,8 @@ unsafe extern "C" {
         flags: u8,
         out: *mut u32,
     ) -> u32;
-    fn fhsm_token_object_set_usage(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
-    fn fhsm_token_object_mark_session(t: *mut fhsm_token_t, h: u32, owner: u32) -> u32;
+    pub(super) fn fhsm_token_object_set_usage(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
+    pub(super) fn fhsm_token_object_mark_session(t: *mut fhsm_token_t, h: u32, owner: u32) -> u32;
     fn fhsm_token_object_set_allowed_mechs(
         t: *mut fhsm_token_t,
         h: u32,
@@ -78,12 +78,12 @@ unsafe extern "C" {
 }
 
 /// `find_attr`: the first row of `kind`.
-fn find(t: &[Attr], kind: c_ulong) -> Option<&Attr> {
+pub(super) fn find(t: &[Attr], kind: c_ulong) -> Option<&Attr> {
     t.iter().find(|a| a.kind == kind)
 }
 
 /// A row's bytes; a NULL value has none (`check_template` refused NULL with a length).
-fn bytes(a: &Attr) -> &[u8] {
+pub(super) fn bytes(a: &Attr) -> &[u8] {
     if a.value.is_null() || a.len == 0 {
         &[]
     } else {
@@ -93,7 +93,7 @@ fn bytes(a: &Attr) -> &[u8] {
 }
 
 /// The first row of `kind` as a well-formed CK_BBOOL, if there is one.
-fn bbool(t: &[Attr], kind: c_ulong) -> Option<bool> {
+pub(super) fn bbool(t: &[Attr], kind: c_ulong) -> Option<bool> {
     find(t, kind)
         .filter(|a| !a.value.is_null() && a.len == 1)
         .map(|a| bytes(a)[0] != 0)
@@ -212,9 +212,8 @@ fn apply_nested_tmpl(
 }
 
 /// The three nested templates, in C's order: unwrap, derive, wrap.
-// shortcut: no caller until create, generate, unwrap and derive move (slice 6); copy refuses
+// Callers: generate (slice 6a); create, unwrap and derive call C's copy until they move. Copy refuses
 // nested templates (DIV-056).
-#[allow(dead_code)]
 pub(super) fn apply_nested_all(tok: *mut fhsm_token_t, t: &[Attr], h: u32) -> u32 {
     for (attr, which) in [
         (CKA_UNWRAP_TEMPLATE, TMPL_UNWRAP),

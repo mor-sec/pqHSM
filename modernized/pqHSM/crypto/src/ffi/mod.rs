@@ -5,6 +5,7 @@
 //! `include/fhsm_crypto.h`.
 
 pub mod cipher;
+pub mod keygen;
 pub mod prim;
 pub mod sig;
 pub(crate) mod sys;
