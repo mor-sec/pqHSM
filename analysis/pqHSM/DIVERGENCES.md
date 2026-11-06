@@ -681,6 +681,14 @@ RULE-080(a), the `.tpm` file on re-init (the fifth Q13 item), is already fixed i
 - **Test:** HMAC VerifyInit, `C_Verify(pt, 16, NULL, 10)` is 0x7 (C: 0xC0), and the operation has ended (0x91).
 - **Expected harness diff:** none; no golden or legacy test passes a NULL signature.
 
+### DIV-064 · PBKDF2 key generation checks the key type and its length
+
+- **Status:** DECIDED, Fix (2026-11-06, found by Phase 4 slice 6a's golden; user: "Fix as a new DIV (Recommended)"). Lands with `C_GenerateKey` (slice 6a's port).
+- **Legacy:** `C_GenerateKey(CKM_PKCS5_PBKD2)` takes `CKA_KEY_TYPE` from the template unchecked and bounds the length only by 1-256 (`src/fhsm_pkcs11.c:2900-2914`): step 4n's `pbkdf2 aes type of 5` stores a 5-byte CKK_AES key, and any other type (CKK_EC over 32 derived bytes) is stored as asked.
+- **Target:** CKK_GENERIC_SECRET (the default) and CKK_AES only; another key type is CKR_ATTRIBUTE_VALUE_INVALID (0x13); an AES length other than 16, 24 or 32 is CKR_KEY_SIZE_RANGE (0x62), as for `CKM_AES_KEY_GEN`.
+- **Test:** `p11_divs.c` DIV-064: PBKDF2 with CKK_AES of 5 bytes (C: 0) and CKK_EC (C: 0).
+- **Expected harness diff:** step 4n's `pbkdf2 aes type of 5` row (0 → 0x62, its attributes replaced by the object count). No legacy test asks PBKDF2 for a key type.
+
 ### DIV-001 in Phase 4
 
 **Slice 1's sites DONE (2026-11-05, after the slice 1 review, H1):** `p11/src/ffi/sys.rs` `audit` returns its result and `audited` maps a failure at a succeeding call to 0x30, the failing call's own rv otherwise. `C_Login` and the context-specific login undo their effect (log out, no grant); `C_InitPIN` and `C_InitToken` were already recorded by the token before its write (Phase 2), so this second record failing is 0x30 on a durable change; `C_Logout` and the last-session logout report 0x30 but stand (undoing a logout would reload keys); `fhsm_state_set` returns 0x30; `C_Finalize` and the ERROR latch's own record keep discarding it (nothing to suppress). Test: `p11_divs.c` DIV-001 (InitPIN, Logout, Login, re-init, each with the next write failing under RLIMIT_FSIZE), harness step 4h. **Recorded diff (2026-11-05, user: "Record it (Recommended)"):** with a stream audit target (`FHSM_AUDIT_LOG=/dev/null`) the first `fdatasync` fails, so `C_Initialize` returns 0x30; C returned OK into a module already in ERROR (its next call is 0x6). `tests/audit_switch.sh` "a stream target still starts the module" is patched in the harness copy to expect the refusal, and the original is this diff's test; step 4g records `initialize to /dev/null` 0x30.
