@@ -63,7 +63,13 @@ const CKK_RSA: u32 = 0;
 const CKK_DES3: u32 = 0x15;
 const CKK_AES: u32 = 0x1F;
 /// DIV-067: the module's secret key types (generic, DES3, AES, SHA256-HMAC, HKDF).
-const SECRET_TYPES: [c_ulong; 5] = [0x10, 0x15, 0x1F, 0x2B, 0x42];
+pub(super) const SECRET_TYPES: [c_ulong; 5] = [0x10, 0x15, 0x1F, 0x2B, 0x42];
+
+/// RULE-020: an AES key is 16, 24 or 32 bytes, a DES3 key 24 (unwrap's code is DIV-067's,
+/// derive's DIV-068's).
+pub(super) fn size_ok(kt: u32, len: usize) -> bool {
+    !((kt == CKK_AES && !matches!(len, 16 | 24 | 32)) || (kt == CKK_DES3 && len != 24))
+}
 /// `fhsm_tmpl_which_t`.
 const TMPL_WRAP: c_int = 0;
 const TMPL_UNWRAP: c_int = 1;
@@ -77,12 +83,12 @@ const EV_UNWRAP: c_int = 45;
 const PKCS1_PADDING: c_int = 1;
 const NO_PADDING: c_int = 3;
 
-fn ok(rv: u32) -> Result<(), u32> {
+pub(super) fn ok(rv: u32) -> Result<(), u32> {
     if rv == OK { Ok(()) } else { Err(rv) }
 }
 
 /// `fhsm_check_usage`: refused only when the key's usage is recorded and lacks `bit`.
-fn usage(t: *mut fhsm_token_t, k: u32, bit: u8) -> Result<(), u32> {
+pub(super) fn usage(t: *mut fhsm_token_t, k: u32, bit: u8) -> Result<(), u32> {
     let mut u = 0u8;
     // SAFETY: a token the registry holds; an out byte of our own
     if unsafe { fhsm_token_object_get_usage(t, k, &mut u) } == OK
@@ -173,10 +179,16 @@ fn check_wrap_tmpl(tok: Tok, wk: u32, k: u32) -> Result<(), u32> {
     Ok(())
 }
 
-/// `fhsm_check_nested_tmpl` for the unwrap: the caller's template holds every entry of the
-/// unwrapping key's, byte for byte.
-fn check_unwrap_tmpl(t: *mut fhsm_token_t, uk: u32, tmpl: &[Attr]) -> Result<(), u32> {
-    for e in policy(t, uk, TMPL_UNWRAP, OBJF2_HAS_UNWRAP_TMPL) {
+/// `fhsm_check_nested_tmpl`: the caller's template holds every entry of key k's unwrap or derive
+/// template (`which`, flagged by `bit`), byte for byte.
+pub(super) fn check_nested(
+    t: *mut fhsm_token_t,
+    k: u32,
+    which: c_int,
+    bit: u8,
+    tmpl: &[Attr],
+) -> Result<(), u32> {
+    for e in policy(t, k, which, bit) {
         let same = find(tmpl, e.kind_.into())
             .is_some_and(|a| a.len == c_ulong::from(e.len) && Some(bytes(a)) == value(&e));
         if !same {
@@ -485,7 +497,7 @@ unsafe fn unwrap(
         }
         // SAFETY: a token the registry holds
         ok(unsafe { fhsm_token_object_mech_allowed(tp, uk, m.mechanism as u32) })?;
-        check_unwrap_tmpl(tp, uk, t)?;
+        check_nested(tp, uk, TMPL_UNWRAP, OBJF2_HAS_UNWRAP_TMPL, t)?;
         usage(tp, uk, USAGE_UNWRAP)?;
     }
     let tok = TABLE.token(h).ok_or(SESSION_HANDLE_INVALID)?;
@@ -600,7 +612,7 @@ unsafe fn unwrap(
         flags |= OBJF_EXTRACTABLE;
     }
     let len = pt.0.len();
-    if (kt == CKK_AES && !matches!(len, 16 | 24 | 32)) || (kt == CKK_DES3 && len != 24) {
+    if !size_ok(kt, len) {
         return Err(KEY_TYPE_INCONSISTENT);
     }
     if ulong(t, CKA_VALUE_LEN)

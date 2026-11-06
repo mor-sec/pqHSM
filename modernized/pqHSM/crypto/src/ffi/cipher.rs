@@ -4,7 +4,7 @@
 //! and the code each failure returns stay where C put them. Results are OpenSSL's: `true` for
 //! success, the output length for an update or a final.
 
-use std::ffi::{CStr, c_int, c_long, c_void};
+use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
 use std::ptr::{null, null_mut};
 
 use openssl_sys::{
@@ -13,16 +13,23 @@ use openssl_sys::{
     EVP_CIPHER_CTX_set_padding, EVP_CIPHER_fetch, EVP_CIPHER_free, EVP_DecryptFinal_ex,
     EVP_DecryptInit_ex, EVP_DecryptUpdate, EVP_EncryptFinal_ex, EVP_EncryptInit_ex,
     EVP_EncryptUpdate, EVP_MD, EVP_MD_fetch, EVP_MD_free, EVP_MD_get_size, EVP_PKEY, EVP_PKEY_CTX,
-    EVP_PKEY_CTX_free, EVP_PKEY_CTX_new, EVP_PKEY_decrypt, EVP_PKEY_decrypt_init, EVP_PKEY_encrypt,
-    EVP_PKEY_encrypt_init, EVP_PKEY_free, EVP_PKEY_get_size, EVP_aes_128_ccm, EVP_aes_128_gcm,
-    EVP_aes_192_ccm, EVP_aes_192_gcm, EVP_aes_256_ccm, EVP_aes_256_gcm, OSSL_PARAM,
-    d2i_AutoPrivateKey, d2i_PUBKEY,
+    EVP_PKEY_CTX_free, EVP_PKEY_CTX_new, EVP_PKEY_decrypt, EVP_PKEY_decrypt_init, EVP_PKEY_derive,
+    EVP_PKEY_derive_init, EVP_PKEY_derive_set_peer, EVP_PKEY_encrypt, EVP_PKEY_encrypt_init,
+    EVP_PKEY_free, EVP_PKEY_get_size, EVP_aes_128_ccm, EVP_aes_128_gcm, EVP_aes_192_ccm,
+    EVP_aes_192_gcm, EVP_aes_256_ccm, EVP_aes_256_gcm, OSSL_PARAM, d2i_AutoPrivateKey, d2i_PUBKEY,
 };
 
 use crate::rv;
 
 unsafe extern "C" {
     // OpenSSL 3; not bound by openssl-sys, or bound as 1.1 macros
+    fn EVP_PKEY_get_utf8_string_param(
+        k: *const EVP_PKEY,
+        name: *const c_char,
+        buf: *mut c_char,
+        max: usize,
+        out: *mut usize,
+    ) -> c_int;
     fn OPENSSL_cleanse(p: *mut c_void, n: usize);
     fn EVP_EncryptInit_ex2(
         ctx: *mut EVP_CIPHER_CTX,
@@ -297,6 +304,44 @@ impl Pkey {
     pub fn size(&self) -> c_int {
         // SAFETY: a live key
         unsafe { EVP_PKEY_get_size(self.0.0) }
+    }
+
+    /// The EC group's name, read into C's 32 bytes (`:4694-4696`); empty if there is none, as
+    /// C left its buffer.
+    pub fn group(&self) -> CString {
+        let (mut b, mut n) = ([0u8; 32], 0usize);
+        // SAFETY: a live key; b writable for its length
+        unsafe {
+            EVP_PKEY_get_utf8_string_param(
+                self.0.0,
+                c"group".as_ptr(),
+                b.as_mut_ptr().cast(),
+                b.len(),
+                &mut n,
+            )
+        };
+        CStr::from_bytes_until_nul(&b)
+            .map(CStr::to_owned)
+            .unwrap_or_default()
+    }
+
+    /// The agreement with `peer` into `out` (`:4738-4764`): the shared secret's length, or
+    /// `None` if the context, the init, the peer or the derive fails, or the secret is empty or
+    /// longer than `out` (C: FUNCTION_FAILED each).
+    pub fn derive(&self, peer: &Pkey, out: &mut [u8]) -> Option<usize> {
+        // SAFETY: live keys; the context is freed here; out writable for its length
+        unsafe {
+            let c = Owned::new(EVP_PKEY_CTX_new(self.0.0, null_mut()), EVP_PKEY_CTX_free)?;
+            if EVP_PKEY_derive_init(c.0) != 1 || EVP_PKEY_derive_set_peer(c.0, peer.0.0) != 1 {
+                return None;
+            }
+            let mut n = 0usize;
+            EVP_PKEY_derive(c.0, null_mut(), &mut n);
+            if n == 0 || n > out.len() {
+                return None;
+            }
+            (EVP_PKEY_derive(c.0, out.as_mut_ptr(), &mut n) == 1).then_some(n)
+        }
     }
 }
 

@@ -431,3 +431,85 @@ pub fn pbkdf2(
         ))
     }
 }
+
+/// HKDF's modes (`EVP_KDF_HKDF_MODE_*`).
+pub const HKDF_EXTRACT_AND_EXPAND: c_int = 0;
+pub const HKDF_EXTRACT_ONLY: c_int = 1;
+pub const HKDF_EXPAND_ONLY: c_int = 2;
+
+/// `C_DeriveKey`'s HKDF (`src/fhsm_pkcs11.c:4458-4488`): MECHANISM_INVALID if HKDF will not
+/// fetch, HOST_MEMORY without a context, FUNCTION_FAILED if the derive fails. An empty salt or
+/// info is not passed, as C.
+pub fn hkdf(
+    mode: c_int,
+    digest: &CStr,
+    key: &[u8],
+    salt: &[u8],
+    info: &[u8],
+    out: &mut [u8],
+) -> Result<(), u32> {
+    let mut mode = mode;
+    let oct = |k: &CStr, b: &[u8]| {
+        // SAFETY: a constructor; b outlives the derive below, which only reads it
+        unsafe {
+            OSSL_PARAM_construct_octet_string(k.as_ptr(), b.as_ptr().cast_mut().cast(), b.len())
+        }
+    };
+    // SAFETY: as pbkdf2's: the params point at locals and slices that outlive the derive; out
+    // has out.len() writable bytes
+    unsafe {
+        let kdf = Owned::new(
+            EVP_KDF_fetch(null_mut(), c"HKDF".as_ptr(), null()),
+            EVP_KDF_free,
+            rv::MECHANISM_INVALID,
+        )?;
+        let ctx = Owned::new(EVP_KDF_CTX_new(kdf.0), EVP_KDF_CTX_free, rv::HOST_MEMORY)?;
+        let mut params = vec![
+            OSSL_PARAM_construct_int(c"mode".as_ptr(), &mut mode),
+            OSSL_PARAM_construct_utf8_string(c"digest".as_ptr(), digest.as_ptr().cast_mut(), 0),
+            oct(c"key", key),
+        ];
+        if !salt.is_empty() {
+            params.push(oct(c"salt", salt));
+        }
+        if !info.is_empty() {
+            params.push(oct(c"info", info));
+        }
+        params.push(OSSL_PARAM_construct_end());
+        ok(EVP_KDF_derive(
+            ctx.0,
+            out.as_mut_ptr(),
+            out.len(),
+            params.as_ptr(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hkdf_rfc5869_case_1() {
+        let (ikm, salt, info) = (
+            [0x0Bu8; 22],
+            [0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+            [0xF0u8, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9],
+        );
+        let mut okm = [0u8; 42];
+        hkdf(
+            HKDF_EXTRACT_AND_EXPAND,
+            c"SHA256",
+            &ikm,
+            &salt,
+            &info,
+            &mut okm,
+        )
+        .unwrap();
+        let hex: String = okm.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+        );
+    }
+}

@@ -222,10 +222,10 @@ static void div_050(void) {
     unsigned char no = 0;
     struct { UL type; void *p; UL len; } st[] = {
         { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &no, 1 },
-        { 0x011, key, sizeof key },
+        { 0x011, key, sizeof key }, { 0x10C, &yes, 1 },
     };
     UL sk = 0;
-    want("create a session key", CALL(C_CreateObject, h, st, 4UL, &sk), 0);
+    want("create a session key", CALL(C_CreateObject, h, st, 5UL, &sk), 0);
     want("logout before the session key's digest", CALL(C_Logout, h), 0);
     want("digestinit logged out", CALL(C_DigestInit, h, &sha256), 0);
     want("digest the session key logged out", CALL(C_DigestKey, h, sk), 0x60);
@@ -281,24 +281,29 @@ static void div_050(void) {
     want("so generates an rsa pair", CALL(C_GenerateKeyPair, h, &rsa, rp, 1UL, NULL, 0UL, &rpub, &rprv), 0);
     wl = sizeof big;
     want("so wraps the user's key under a public key", CALL(C_WrapKey, h, &oaep, rpub, k, big, &wl), 0x60);
+    /* Slice 6d: nor derive from it. */
+    struct { unsigned char ex, ep; UL prf, st; void *salt; UL sl; UL sk; void *info; UL il; } hp =
+        { 1, 1, 0x250, 1, NULL, 0, 0, NULL, 0 };
+    struct { UL m; void *p; UL len; } hkdf = { 0x402A, &hp, sizeof hp };
+    want("so derives from the user's key", CALL(C_DeriveKey, h, &hkdf, sk, NULL, 0UL, &uo), 0x60);
     CALL(C_Finalize, NULL);
 }
 
-/* A user session and an AES session key of `n` bytes (key[i] = i). */
+/* A user session and an AES session key of `n` bytes (key[i] = i) that may derive. */
 static UL user_key(UL *h, UL n) {
     UL k = 0, cls = 4, kt = 0x1f;
-    unsigned char no = 0, key[32];
+    unsigned char no = 0, yes = 1, key[32];
     for (int i = 0; i < 32; ++i) key[i] = (unsigned char)i;
     struct { UL type; void *p; UL len; } t[] = {
         { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &no, 1 },
-        { 0x011, key, n },
+        { 0x011, key, n }, { 0x10C, &yes, 1 },
     };
     *h = fresh(0);
     want("login so", CALL(C_Login, *h, 0UL, SO, (UL)strlen(SO)), 0);
     want("initpin", CALL(C_InitPIN, *h, USER, (UL)strlen(USER)), 0);
     want("logout so", CALL(C_Logout, *h), 0);
     want("login user", CALL(C_Login, *h, 1UL, USER, (UL)strlen(USER)), 0);
-    want("create the key", CALL(C_CreateObject, *h, t, 4UL, &k), 0);
+    want("create the key", CALL(C_CreateObject, *h, t, 5UL, &k), 0);
     return k;
 }
 
@@ -448,6 +453,16 @@ static void div_001_case(int which) {
         want("no handles written", pk == 0xAAAAAAAAUL && vk == 0xAAAAAAAAUL, 1);
         return;
     }
+    if (which == 12) {
+        /* Slice 6d: a derived key whose record cannot be made is not kept. */
+        UL hs, k = user_key(&hs, 32), o = 0;
+        struct { unsigned char ex, ep; UL prf, st; void *salt; UL sl; UL sk; void *info; UL il; } hp =
+            { 1, 1, 0x250, 1, NULL, 0, 0, NULL, 0 };
+        struct { UL m; void *p; UL len; } hkdf = { 0x402A, &hp, sizeof hp };
+        fail_audit();
+        want("derive, audit failing", CALL(C_DeriveKey, hs, &hkdf, k, NULL, 0UL, &o), 0x30);
+        return;
+    }
     if (which == 10 || which == 11) {
         /* Slice 6c: a wrap that cannot be audited writes no blob; an unwrap's key is not kept. */
         UL hs, kek = user_key(&hs, 16), x = 0, o = 0xAAAAAAAAUL, out = 64, cls = 4, kt = 0x1f;
@@ -520,7 +535,7 @@ static void div_001_case(int which) {
 
 static void div_001(void) {
     const char *base = getenv("FHSM_TOKENS_DIR");
-    for (int i = 0; i < 12; ++i) {
+    for (int i = 0; i < 13; ++i) {
         char d[700];
         snprintf(d, sizeof d, "%s/%d", base, i);
         mkdir(d, 0700);
@@ -939,6 +954,72 @@ static void div_067(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* Slice 6d: CK_HKDF_PARAMS, extract and expand under SHA-256 with no salt. */
+typedef struct { unsigned char ex, ep; UL prf, st; void *salt; UL sl; UL sk; void *info; UL il; } Hkdf;
+static Hkdf hk = { 1, 1, 0x250, 1, NULL, 0, 0, NULL, 0 };
+
+/* DIV-057: a key derived from a sensitive key is sensitive, with that key's history; a data
+ * object only from CKM_HKDF_DATA. C defaulted every derived key to SENSITIVE FALSE. */
+static void div_057(void) {
+    UL h, plain = user_key(&h, 32), sk = 0, o = 0, len = 32, data = 0;
+    unsigned char yes = 1, no = 0;
+    Mech gen = { 0x350, NULL, 0 }, hkdf = { 0x402A, &hk, sizeof hk };
+    Attr g[] = { { 0x161, &len, sizeof len }, { 0x103, &yes, 1 }, { 0x10C, &yes, 1 } };
+    want("generate a sensitive base", CALL(C_GenerateKey, h, &gen, g, 3UL, &sk), 0);
+    want("hkdf from it", CALL(C_DeriveKey, h, &hkdf, sk, NULL, 0UL, &o), 0);
+    want("is sensitive", hist(h, o, 0x103), 1);
+    want("and always was", hist(h, o, 0x165), 1);
+    want("and never extractable", hist(h, o, 0x164), 1);
+    Attr te[] = { { 0x162, &yes, 1 } };
+    want("hkdf from it, extractable", CALL(C_DeriveKey, h, &hkdf, sk, te, 1UL, &o), 0);
+    want("is not never extractable", hist(h, o, 0x164), 0);
+    Attr tf[] = { { 0x103, &no, 1 } }, td[] = { { 0x0, &data, sizeof data } };
+    want("hkdf from it, sensitive false", CALL(C_DeriveKey, h, &hkdf, sk, tf, 1UL, &o), 0xd1);
+    want("hkdf as a data object", CALL(C_DeriveKey, h, &hkdf, plain, td, 1UL, &o), 0xd1);
+    /* §6.20.1: the second key of a concatenation is an input too. user_key's AES key is not
+     * a combiner's base, so the base is a generic secret made here. */
+    UL cls = 4, gk = 0x10, base = 0, k2 = sk;
+    unsigned char v[16] = { 1 };
+    Attr b[] = { { 0x0, &cls, sizeof cls }, { 0x100, &gk, sizeof gk }, { 0x11, v, 16 },
+                 { 0x103, &no, 1 }, { 0x10C, &yes, 1 } };
+    Mech cat = { 0x360, &k2, sizeof k2 };
+    want("a plain generic base", CALL(C_CreateObject, h, b, 5UL, &base), 0);
+    want("concatenate the sensitive key", CALL(C_DeriveKey, h, &cat, base, NULL, 0UL, &o), 0);
+    want("is sensitive", hist(h, o, 0x103), 1);
+    want("but was not always (its base was imported)", hist(h, o, 0x165), 0);
+    want("nor never extractable", hist(h, o, 0x164), 0);
+    /* Two keys generated sensitive: the derived key always was, and never was extractable. */
+    UL sk2 = 0;
+    want("generate a second sensitive key", CALL(C_GenerateKey, h, &gen, g, 3UL, &sk2), 0);
+    k2 = sk2;
+    want("concatenate two sensitive keys", CALL(C_DeriveKey, h, &cat, sk, NULL, 0UL, &o), 0);
+    want("always sensitive", hist(h, o, 0x165), 1);
+    want("never extractable", hist(h, o, 0x164), 1);
+    /* §6.20: a combiner's output holds its base, so a non-extractable base stays in. */
+    struct { void *p; UL len; } none = { NULL, 0 };
+    Mech bd = { 0x362, &none, sizeof none };
+    want("copy a non-extractable key out extractable", CALL(C_DeriveKey, h, &bd, sk, te, 1UL, &o), 0xd1);
+    CALL(C_Finalize, NULL);
+}
+
+/* DIV-068: a derived key is of a secret key type, compared whole, and an AES key is 16, 24
+ * or 32 bytes. C stored each of these. */
+static void div_068(void) {
+    UL h, base = user_key(&h, 32), o = 0, ec = 3, wide = 0x10000001FUL, aes = 0x1f, five = 5,
+          sixteen = 16, des3 = 0x15;
+    Mech hkdf = { 0x402A, &hk, sizeof hk };
+    Attr te[] = { { 0x100, &ec, sizeof ec } }, tw[] = { { 0x100, &wide, sizeof wide } },
+         t5[] = { { 0x100, &aes, sizeof aes }, { 0x161, &five, sizeof five } },
+         t16[] = { { 0x100, &aes, sizeof aes }, { 0x161, &sixteen, sizeof sixteen } },
+         td[] = { { 0x100, &des3, sizeof des3 }, { 0x161, &sixteen, sizeof sixteen } };
+    want("derive as CKK_EC", CALL(C_DeriveKey, h, &hkdf, base, te, 1UL, &o), 0x13);
+    want("derive as 2^32 + CKK_AES", CALL(C_DeriveKey, h, &hkdf, base, tw, 1UL, &o), 0x13);
+    want("derive a 5-byte AES key", CALL(C_DeriveKey, h, &hkdf, base, t5, 2UL, &o), 0x62);
+    want("derive a 16-byte DES3 key", CALL(C_DeriveKey, h, &hkdf, base, td, 2UL, &o), 0x62);
+    want("derive a 16-byte AES key", CALL(C_DeriveKey, h, &hkdf, base, t16, 2UL, &o), 0);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
@@ -949,7 +1030,8 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "DIV-063", div_063 }, { "DIV-052", div_052 }, { "DIV-064", div_064 },
     { "RULE-006", rule_006 }, { "RULE-014", rule_014 }, { "RULE-015", rule_015 },
     { "RULE-017", rule_017 }, { "DIV-065", div_065 }, { "DIV-066", div_066 },
-    { "DIV-058", div_058 }, { "DIV-067", div_067 },
+    { "DIV-058", div_058 }, { "DIV-067", div_067 }, { "DIV-057", div_057 },
+    { "DIV-068", div_068 },
 };
 
 int main(int argc, char **argv) {

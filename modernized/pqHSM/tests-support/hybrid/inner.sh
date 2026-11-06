@@ -11,6 +11,17 @@ grep -q 'ulMinPinLen != 8' tests/test_input_validation.c || echo "DIV-059 patch 
 # returned OK into a module already in ERROR). Still announced as a stream.
 sed -i 's/^ok \$rc "a stream target still starts the module"$/[ $rc -ne 0 ]; ok $? "a stream target: C_Initialize reports the failed audit (DIV-001)"/' tests/audit_switch.sh
 grep -q 'DIV-001' tests/audit_switch.sh || echo "DIV-001 patch did not apply" >&2
+# DIV-057: a key derived from a sensitive base is sensitive, and every EC private key is, so
+# CKA_SENSITIVE FALSE in an ECDH template is 0xD1. probe_ecdh_curves checks only that each
+# derive succeeds: its copy leaves SENSITIVE out. test_ecdh_peer_point compares the secrets:
+# its copy leaves SENSITIVE out and reads each secret through a wrap and an unwrap.
+sed -i '/^ *{ CKA_SENSITIVE,   &t_false, 1 },$/d; s/out_t, 5, &/out_t, 4, \&/; s/CK_BYTE t_true = 1, t_false = 0;/CK_BYTE t_true = 1;/' tests/probe_ecdh_curves.c
+[ "$(grep -c 'out_t, 4, &' tests/probe_ecdh_curves.c) $(grep -c 't_false' tests/probe_ecdh_curves.c)" = "4 0" ] || echo "DIV-057 probe patch did not apply" >&2
+sed -i 's/^        { CKA_SENSITIVE, &f, 1 }, { CKA_EXTRACTABLE, &t, 1 },$/        { CKA_EXTRACTABLE, \&t, 1 },/; s/C_DeriveKey(s, &m, base, tmpl, 5, &k)/C_DeriveKey(s, \&m, base, tmpl, 4, \&k)/; /^    return C_GetAttributeValue(s, k, &v, 1);$/d; /^    CK_ATTRIBUTE v = { CKA_VALUE, out, vlen };$/{
+r modernized/pqHSM/tests-support/hybrid/div057_peer_value.c
+d
+}' tests/test_ecdh_peer_point.c
+grep -q 'DIV-057 (the harness copy' tests/test_ecdh_peer_point.c && grep -q 'tmpl, 4, &k' tests/test_ecdh_peer_point.c || echo "DIV-057 peer-point patch did not apply" >&2
 { $M all 2>&1 | tail -5; echo "build rc=$?"
   $M test-bins tools/fhsm-token tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign tools/fhsm-crypt 2>&1 | tail -3; } > /out/build.log 2>&1
 

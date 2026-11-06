@@ -1231,3 +1231,33 @@ Recorded, not applied:
 - **L6:** RSA PKCS#1 v1.5 and X.509 wrap and unwrap are refused by the strict build the harness runs, so their bounds (11 bytes, the 1024 cap, the zero strip, the blob length) are checked by reading only. A unit test needs a token. Due with the all-mechanisms harness.
 - **Nit 10:** the OAEP label is a plain `Vec`, as C did not wipe it either.
 - **Gaps:** no rows for OAEP parameter refusals other than none at all, or for a KW blob of exactly 4104 bytes.
+
+### 6d: `C_DeriveKey`
+
+- **Golden first:** step 4n's scenario 5 (`p11_keys.c` `s_derive`, commit 3afecfb before the port): HKDF (every parameter check, salt kind, digest, length bound, class and key type), the concatenation family (each operand form, the 4096 bound, XOR's data-sets-the-length) and ECDH (each peer-point form: SPKI, bare, compressed, short and long DER OCTET STRING; off-curve, garbage, wrong curve), over keys made from fixed bytes and EC points computed from fixed scalars, so each derived value prints whole. A key that becomes sensitive on one side is also wrapped under a fixed key, so its value shows as the blob. It found DIV-068 and the second-key half of DIV-057.
+- **Port** (`p11/src/ffi/derive.rs`): the entry point and `derive_store_secret` (`Store::store`) in C's order. HKDF is `pqhsm-crypto`'s new `prim::hkdf` (checked against RFC 5869's first vector); ECDH is `Pkey::derive` and `Pkey::group`, also new, over `sig.rs`'s and `import.rs`'s `Pkey` helpers for the peer. `fhsm_check_key_mech_type` reduces, for the combiners, to "the base is CKK_GENERIC_SECRET", inline. `wrap.rs`'s nested-template check now takes which template (`check_nested`), and `attrs.rs`'s `imported` is `mark` with both bits.
+- **DIV-050:** the base is refused (0x60) where the token is first there, before C's three key checks, as the unwrap: logged out is 0x60 where C said 0x101, the SO's derive 0x60 where C derived. The salt key and the second key are read only after the base, which is always a secret or private key, so they need no check of their own.
+- **DIV-057:** a derived secret key is SENSITIVE if a secret input is (the base; for CKM_CONCATENATE_BASE_AND_KEY the second key too, §6.20.1); SENSITIVE FALSE from such an input is 0xD1. It is ALWAYS_SENSITIVE and NEVER_EXTRACTABLE only if every input was, kept as RULE-059's history bits (`mark`) after the object's metadata. CKA_CLASS = CKO_DATA is 0xD1 but for CKM_HKDF_DATA, whose data object reads as C (no history). Every EC private key is sensitive, so `test_ecdh_peer_point` and `probe_ecdh_curves` derive with SENSITIVE FALSE and get 0xD1: the harness runs patched copies (`inner.sh`). The probe's leaves SENSITIVE out; the peer-point test's also reads each secret through a wrap and an unwrap (`div057_peer_value.c`), so its three value checks still run. DIV-057's entry had planned only the first change, which would have left the value reads at 0x11.
+- **DIV-068:** a CKA_KEY_TYPE outside the five secret types is 0x13, compared whole; a CKK_AES value that is not 16, 24 or 32 bytes, or a CKK_DES3 value that is not 24, is 0x62. Both at C's key-type read, before the object is added.
+- **DIV-001:** a derived object whose record (EV_DERIVE 46) fails is destroyed and the call is 0x30. Test: `p11_divs.c` DIV-001 case 12.
+- **RULE-020:** the derive bounds (HKDF 1..255·HashLen, extract-only HashLen; the combiners 1..4096) are kept as C has them; the rule's fix is at the ML-KEM truncation, slice 7.
+- **Tests:** `p11_divs.c` DIV-057, DIV-068, DIV-050's derive step, DIV-001 case 12. `user_key` and DIV-050's session key now carry CKA_DERIVE, which no other check reads.
+- **Shortcut:** an ECDH peer point longer than `isize::MAX` breaks `from_raw_parts`' contract (a caller lying about its buffer; C handed it to d2i).
+
+### Slice 6d review (architecture critic, 2026-11-07)
+
+Every path traced against C (:4277-4878); the four divergences where their entries put them; no memory-safety finding. A background security review raised H1 too. Applied:
+- **H1:** the combiners could copy a sensitive, non-extractable base into an extractable key (empty data, or XOR with zeros), which `C_WrapKey` then exported. Now 0xD1, recorded as a widening of DIV-057's scope (PKCS#11 §6.20). Test: `p11_divs.c` DIV-057 (C: 0).
+- **M1:** `div_057` now checks NEVER_EXTRACTABLE both ways (the derived key's own EXTRACTABLE TRUE clears it) and two clean inputs (both keys generated sensitive: ALWAYS_SENSITIVE and NEVER_EXTRACTABLE TRUE, the no-`mark` path the golden never reaches); `div_068` checks DES3's size (16 bytes: 0x62).
+- **L1:** an input whose flags cannot be read fails the derive (C ignored it; read as 0, the key would have been neither sensitive nor ever extractable).
+- **L2:** the AES/DES3 size rule is `wrap.rs` `size_ok`, for unwrap (0x63, DIV-067) and derive (0x62, DIV-068).
+- **L3:** DIV-068 applies to keys only, as its entry says; a data object's KEY_TYPE is stored as C. ECDH on P-384 with CKK_AES is 0x62, now in DIV-068's entry.
+- **Nits:** `secret` borrows for the caller's lifetime, not `'static`; `TEMPLATE_INCOMPLETE` from `keygen.rs`.
+
+Found by the harness, not the review: the patched `probe_ecdh_curves` left `t_false` unused, which `-Werror` refused, and the failed build skipped every test binary after it (p4s6k: 70/106). The patch now drops the declaration too, and both copies are compiled with the build's flags before a run.
+
+Recorded, not applied:
+- **M1 (part):** DIV-001 case 12 does not check that the object is gone: the failed write latches ERROR, so no later call can look (as 6c's M2).
+- **L4:** the history bits are written after the object is stored; recorded in RULE-059's row.
+- **Security review, second finding:** the salt key and second key get no DIV-050 check of their own. Both are read only after the base passes it, so the session is already the user's; a mechanism allow-list check on them would go past C and the spec.
+- **Nits:** `check_nested` still takes `bit` beside `which`; the two `store` calls in `derive_concat`; `param`/`guarded` beside the inline readers in `keygen.rs`, `wrap.rs` and `crypt.rs`. The fragment does no `dlsym` NULL checks (a missing symbol crashes the test, which fails it); AES-KW fits the P-256 and P-384 secrets the test uses.

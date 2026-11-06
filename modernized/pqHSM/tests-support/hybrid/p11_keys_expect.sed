@@ -59,3 +59,23 @@ s/^uw class private\t0\t+1\t-$/uw class private\t0xd1\t-\t-\nuw class private ob
 # out 0x101, the SO 0).
 s/^\(wrap logged out\|unwrap logged out\)\t0x101$/\1\t0x60/
 s/^\(so wrap user key\|so unwrap with user key\)\t0$/\1\t0x60/
+# Scenario 5 (slice 6d, C_DeriveKey). DIV-068: a derived key is of a secret key type, compared
+# whole (0x13), and an AES key is 16, 24 or 32 bytes (0x62). DIV-057: a data object only from
+# CKM_HKDF_DATA, and a key derived from a sensitive key stays sensitive (0xD1 for SENSITIVE
+# FALSE); C stored each.
+/^\(hkdf class data\|hkdf class data from sensitive base\|hkdf key type aes 5\|hkdf key type ec\|hkdf key type wide\|hkdf from sensitive base, sensitive false\|concat key type aes\|concat class data\|concat class data from sensitive base\|ecdh sensitive false\|ecdh class data\) [A-Z_]*\t/d
+s/^\(hkdf key type ec\|hkdf key type wide\)\t0\t+1\t-$/\1\t0x13\t-\t-\n\1 objects\t0\t+0\t-/
+s/^\(hkdf key type aes 5\|concat key type aes\)\t0\t+1\t-$/\1\t0x62\t-\t-\n\1 objects\t0\t+0\t-/
+s/^\(hkdf class data\|hkdf class data from sensitive base\|hkdf from sensitive base, sensitive false\|concat class data\|concat class data from sensitive base\|ecdh sensitive false\|ecdh class data\)\t0\t+1\t-$/\1\t0xd1\t-\t-\n\1 objects\t0\t+0\t-/
+# DIV-057: SENSITIVE from a sensitive base or second key (every EC private key is one), so the
+# value no longer reads; its wrapped blob is unchanged.
+s/^\(\(hkdf from sensitive base\|hkdf from sensitive base, extractable\|concat key second sensitive\|concat from sensitive base\|ecdh \(bare point\|compressed point\|octet string\|spki\|cofactor\|p521 bare\|p521 octet string\|key type aes 32\|extractable\)\) SENSITIVE\t0\t0x1\t\)00$/\101/
+s/^\(hkdf from sensitive base, extractable\|ecdh extractable\) VALUE\t0\t0x20\t[0-9a-f]*$/\1 VALUE\t0x11\t0xffffffffffffffff\t-/
+# DIV-057, RULE-059: every base in scenario 5 came from C_CreateObject, so no derived key was
+# always sensitive or never extractable; C read both from the derived key's own flags. A data
+# object (CKM_HKDF_DATA's) has no history and reads as C.
+/^== scenario 5$/,$ { /^hkdf data\( from sensitive base\)\? [A-Z_]*\t/! s/^\(.* \(ALWAYS_SENSITIVE\|NEVER_EXTRACTABLE\)\t0\t0x1\t\)01$/\100/ }
+# DIV-050 (scenario 5): deriving from the user's key needs the user's login (C: logged out
+# 0x101, the SO 0).
+s/^hkdf logged out\t0x101$/hkdf logged out\t0x60/
+s/^\(so hkdf from user key\|so concat from user key\|so ecdh from user key\)\t0$/\1\t0x60/

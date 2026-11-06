@@ -6,6 +6,7 @@ mod copy;
 mod create;
 mod create_attrs;
 mod crypt;
+mod derive;
 mod digest;
 mod keygen;
 mod lifecycle;

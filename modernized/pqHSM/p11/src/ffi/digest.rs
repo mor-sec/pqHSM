@@ -32,7 +32,7 @@ pub struct Mech {
 
 /// `digest_mech_to_hash` (`:2644-2665`): the `fhsm_hash_t` and whether the strict build
 /// withdraws it as a standalone digest (SHA-1 and MD5).
-fn hash_of(mech: c_ulong) -> Option<(u32, bool)> {
+pub(super) fn hash_of(mech: c_ulong) -> Option<(u32, bool)> {
     Some(match mech {
         0x250 => (1, false),  // SHA256
         0x260 => (2, false),  // SHA384

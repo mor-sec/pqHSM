@@ -98,13 +98,12 @@ PQHSM_P11_RUST := C_GetFunctionList C_GetInterfaceList C_GetInterface \
                   C_DecryptInit C_Decrypt C_DecryptUpdate C_DecryptFinal \
                   C_SignInit C_Sign C_SignUpdate C_SignFinal \
                   C_VerifyInit C_Verify C_VerifyUpdate C_VerifyFinal \
-                  C_GenerateKey C_GenerateKeyPair C_CreateObject C_WrapKey C_UnwrapKey
+                  C_GenerateKey C_GenerateKeyPair C_CreateObject C_WrapKey C_UnwrapKey C_DeriveKey
 # Slice 1, DIV-051: the rest stay C's, renamed pqhsm_c_<name>; the shim's gated wrappers take
 # their names. C declares its entry points visible, so the renamed ones are made local once the
 # shim is linked to them.
 PQHSM_P11_GATED := C_GetMechanismList C_GetMechanismInfo C_WaitForSlotEvent C_GetFunctionStatus \
                    C_CancelFunction C_SeedRandom C_GenerateRandom \
-                   C_DeriveKey \
                    C_EncapsulateKey C_DecapsulateKey
 $(OBJDIR)/src/fhsm_pkcs11.o: src/fhsm_pkcs11.c $(PQHSM_P11_TU) $(PQHSM_P11_SHIM) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
