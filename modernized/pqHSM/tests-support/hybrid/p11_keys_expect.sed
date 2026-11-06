@@ -82,3 +82,27 @@ s/^\(so hkdf from user key\|so concat from user key\|so ecdh from user key\)\t0$
 # DIV-066 (scenario 6): so C_EncapsulateKey refuses that key (0x68), where C's key encapsulated.
 /^encap encapsulate false [A-Z_]*\t/d
 s/^encap encapsulate false\t0\t+1\t0x300$/encap encapsulate false\t0x68\t-\t0x800\nencap encapsulate false objects\t0\t+0\t-/
+# Scenario 6 (slice 7). RULE-037(a): no token object from a read-only session (0xB5, before the
+# encapsulation, so the length is untouched). DIV-069: a KEM key is stored as a derived key: a
+# secret key (0xD1), of a secret key type compared whole (0x13), at its size (RULE-020, 0x62),
+# with the template's usage and metadata (a malformed date 0x13 after the add, so the handle
+# is written and the key destroyed). DIV-050: the private key is the user's alone.
+/^\(encap ro token\|decap ro token\|decap class \(data\|private\)\|decap key type \(aes 5\|des3\|ec\|wide\|kem\)\|decap start date short\|encap key type \(aes 5\|ec\)\|encap class data\) [A-Z_]*\t/d
+s/^encap ro token\t0\t+3\t0x300$/encap ro token\t0xb5\t-\t0x800\nencap ro token objects\t0\t+0\t-/
+s/^encap ro session object\t0\t+1\t0x300$/encap ro session object\t0\t+3\t0x300/
+s/^decap ro token\t0\t+1\t-$/decap ro token\t0xb5\t-\t-\ndecap ro token objects\t0\t+0\t-/
+s/^\(decap class \(data\|private\)\)\t0\t+1\t-$/\1\t0xd1\t-\t-\n\1 objects\t0\t+0\t-/
+s/^\(decap key type \(aes 5\|des3\)\)\t0\t+1\t-$/\1\t0x62\t-\t-\n\1 objects\t0\t+0\t-/
+s/^\(decap key type \(ec\|wide\|kem\)\)\t0\t+1\t-$/\1\t0x13\t-\t-\n\1 objects\t0\t+0\t-/
+s/^decap start date short\t0\t+1\t-$/decap start date short\t0x13\t+1\t-\ndecap start date short objects\t0\t+0\t-/
+s/^encap key type aes 5\t0\t+1\t0x300$/encap key type aes 5\t0x62\t-\t0x300\nencap key type aes 5 objects\t0\t+0\t-/
+s/^encap key type ec\t0\t+1\t0x300$/encap key type ec\t0x13\t-\t0x300\nencap key type ec objects\t0\t+0\t-/
+s/^encap class data\t0\t+1\t0x300$/encap class data\t0xd1\t-\t0x300\nencap class data objects\t0\t+0\t-/
+s/^decap start date START_DATE\t0\t0\t-$/decap start date START_DATE\t0\t0x8\t3230323630313031/
+s/^encap id and dates END_DATE\t0\t0\t-$/encap id and dates END_DATE\t0\t0x8\t3230323630313031/
+s/^decap derive template DERIVE\t0\t0x1\t00$/decap derive template DERIVE\t0\t0x1\t01/
+s/^decap encrypt false ENCRYPT\t0\t0x1\t01$/decap encrypt false ENCRYPT\t0\t0x1\t00/
+s/^encryptinit with encrypt false\t0$/encryptinit with encrypt false\t0x68/
+s/^encrypt with encrypt false\t0$/encrypt with encrypt false\t0x91/
+s/^decap logged out\t0x101$/decap logged out\t0x60/
+s/^so decap with user key\t0$/so decap with user key\t0x60/

@@ -129,5 +129,5 @@ FWD(C_GenerateKeyPair, (UL h, P m, P pu, UL npu, P pr, UL npr, P hpu, P hpr), (h
 FWD(C_WrapKey, (UL h, P m, UL wk, UL k, P o, P on), (h, m, wk, k, o, on))
 FWD(C_UnwrapKey, (UL h, P m, UL uk, P w, UL wn, P t, UL n, P k), (h, m, uk, w, wn, t, n, k))
 FWD(C_DeriveKey, (UL h, P m, UL b, P t, UL n, P k), (h, m, b, t, n, k))
-GATE(C_EncapsulateKey, (UL h, P m, UL k, P t, UL n, P c, P cn, P nk), (h, m, k, t, n, c, cn, nk))
-GATE(C_DecapsulateKey, (UL h, P m, UL k, P t, UL n, P c, UL cn, P nk), (h, m, k, t, n, c, cn, nk))
+FWD(C_EncapsulateKey, (UL h, P m, UL k, P t, UL n, P c, P cn, P nk), (h, m, k, t, n, c, cn, nk))
+FWD(C_DecapsulateKey, (UL h, P m, UL k, P t, UL n, P c, UL cn, P nk), (h, m, k, t, n, c, cn, nk))

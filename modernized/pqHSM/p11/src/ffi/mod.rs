@@ -8,6 +8,7 @@ mod create_attrs;
 mod crypt;
 mod derive;
 mod digest;
+mod kem;
 mod keygen;
 mod lifecycle;
 mod login;

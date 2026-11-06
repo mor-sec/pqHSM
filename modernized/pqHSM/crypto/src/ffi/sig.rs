@@ -12,10 +12,10 @@ use openssl_sys::{
     EVP_MAC_fetch, EVP_MAC_final, EVP_MAC_free, EVP_MAC_init, EVP_MAC_update, EVP_MD, EVP_MD_CTX,
     EVP_MD_CTX_free, EVP_MD_CTX_get0_md, EVP_MD_CTX_new, EVP_MD_fetch, EVP_MD_free, EVP_PKEY,
     EVP_PKEY_CTX, EVP_PKEY_CTX_free, EVP_PKEY_CTX_new, EVP_PKEY_CTX_new_from_name,
-    EVP_PKEY_CTX_set_params, EVP_PKEY_PUBLIC_KEY, EVP_PKEY_free, EVP_PKEY_fromdata,
-    EVP_PKEY_fromdata_init, EVP_PKEY_get_bits, EVP_PKEY_is_a, EVP_PKEY_sign, EVP_PKEY_sign_init,
-    EVP_PKEY_verify, EVP_PKEY_verify_init, OSSL_LIB_CTX, OSSL_PARAM, OSSL_PARAM_construct_end,
-    OSSL_PARAM_construct_octet_string,
+    EVP_PKEY_CTX_set_params, EVP_PKEY_KEYPAIR, EVP_PKEY_PUBLIC_KEY, EVP_PKEY_free,
+    EVP_PKEY_fromdata, EVP_PKEY_fromdata_init, EVP_PKEY_get_bits, EVP_PKEY_is_a, EVP_PKEY_sign,
+    EVP_PKEY_sign_init, EVP_PKEY_verify, EVP_PKEY_verify_init, OSSL_LIB_CTX, OSSL_PARAM,
+    OSSL_PARAM_construct_end, OSSL_PARAM_construct_octet_string,
 };
 
 use super::cipher::{Owned, Pkey};
@@ -153,6 +153,17 @@ impl Pkey {
 
     /// A raw public key of algorithm `alg` (`EVP_PKEY_fromdata`, `:11687-11700`).
     pub fn raw_public(alg: &CStr, raw: &[u8]) -> Option<Self> {
+        Self::raw(alg, c"pub", EVP_PKEY_PUBLIC_KEY, raw)
+    }
+
+    /// An expanded private key of `alg` (`EVP_PKEY_fromdata`), the whole pair (C_DecapsulateKey's fallback,
+    /// `:5738-5770`). The parameter points at `raw`, so no copy of the key is left unwiped.
+    pub fn expanded_private(alg: &CStr, raw: &[u8]) -> Option<Self> {
+        Self::raw(alg, c"priv", EVP_PKEY_KEYPAIR, raw)
+    }
+
+    /// `EVP_PKEY_fromdata` of one octet-string parameter `name` over `raw`, selection `sel`.
+    fn raw(alg: &CStr, name: &CStr, sel: c_int, raw: &[u8]) -> Option<Self> {
         // SAFETY: a C string; raw readable for its length, which fromdata copies
         unsafe {
             let c = Owned::new(
@@ -164,14 +175,14 @@ impl Pkey {
             }
             let mut p = [
                 OSSL_PARAM_construct_octet_string(
-                    c"pub".as_ptr(),
+                    name.as_ptr(),
                     raw.as_ptr().cast_mut().cast(),
                     raw.len(),
                 ),
                 OSSL_PARAM_construct_end(),
             ];
             let mut k = null_mut();
-            EVP_PKEY_fromdata(c.0, &mut k, EVP_PKEY_PUBLIC_KEY, p.as_mut_ptr());
+            EVP_PKEY_fromdata(c.0, &mut k, sel, p.as_mut_ptr());
             Owned::new(k, EVP_PKEY_free).map(Self)
         }
     }

@@ -201,6 +201,7 @@ unsafe fn derive(
         tok,
         h,
         mech: m.mechanism,
+        event: Some(EV_DERIVE),
         t,
         out,
     };
@@ -427,19 +428,21 @@ fn peer_point(pk: &Pkey, raw: &[u8]) -> Result<Pkey, u32> {
     .ok_or(ATTRIBUTE_VALUE_INVALID)
 }
 
-/// What `derive_store_secret` needs besides the secret.
-struct Store<'a> {
-    tok: Tok,
-    h: c_ulong,
-    mech: c_ulong,
-    t: &'a [Attr],
-    out: *mut c_ulong,
+/// What `derive_store_secret` needs besides the secret; `event` its audit record, if any (the
+/// KEM entry points have none, DIV-069).
+pub(super) struct Store<'a> {
+    pub(super) tok: Tok,
+    pub(super) h: c_ulong,
+    pub(super) mech: c_ulong,
+    pub(super) t: &'a [Attr],
+    pub(super) out: *mut c_ulong,
+    pub(super) event: Option<c_int>,
 }
 
 impl Store<'_> {
     /// `derive_store_secret` (`:4789-4878`): the secret as a new object of `class` (unless the
     /// template names one), its secret inputs `bases`.
-    fn store(&self, secret: &[u8], class: c_ulong, bases: &[u32]) -> Result<u32, u32> {
+    pub(super) fn store(&self, secret: &[u8], class: c_ulong, bases: &[u32]) -> Result<u32, u32> {
         let (t, tp) = (self.t, self.tok.0.as_ptr());
         // The value comes from the derivation, never the template.
         if find(t, CKA_VALUE).is_some() {
@@ -552,11 +555,13 @@ impl Store<'_> {
         // SAFETY: as above (C ignores the result)
         unsafe { fhsm_token_object_set_usage(tp, o, compute_usage(class as u32, t)) };
         // DIV-001: a key whose record cannot be made is not kept.
-        let h = self.h;
-        step(audited(
-            OK,
-            audit(EV_DERIVE, -1, h as c_int, fhsm_session_role(h), OK, &[]),
-        ))?;
+        if let Some(ev) = self.event {
+            let h = self.h;
+            step(audited(
+                OK,
+                audit(ev, -1, h as c_int, fhsm_session_role(h), OK, &[]),
+            ))?;
+        }
         Ok(OK)
     }
 }

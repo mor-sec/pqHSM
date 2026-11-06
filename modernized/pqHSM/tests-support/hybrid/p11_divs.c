@@ -177,6 +177,7 @@ static void div_054(void) {
  * is gone, as in a process that never logged in, and a later login brings it back. C keeps it
  * decrypted and usable. Key use as SO or nobody, and an operation continued past the logout,
  * are slices 4 and 5's. */
+static void kem_pair(UL h, UL *pub, UL *priv, unsigned char *ct, UL *cl);
 static void div_050(void) {
     UL h = fresh(0), k = 0, cls = 4, kt = 0x1f, n = 0, found[16], out = 64;
     unsigned char yes = 1, key[16] = { 1 }, pt[16] = { 2 }, ct[64];
@@ -226,6 +227,9 @@ static void div_050(void) {
     };
     UL sk = 0;
     want("create a session key", CALL(C_CreateObject, h, st, 5UL, &sk), 0);
+    UL kpub = 0, kpriv = 0, kcl = 1568;
+    unsigned char kct[1568];
+    kem_pair(h, &kpub, &kpriv, kct, &kcl);
     want("logout before the session key's digest", CALL(C_Logout, h), 0);
     want("digestinit logged out", CALL(C_DigestInit, h, &sha256), 0);
     want("digest the session key logged out", CALL(C_DigestKey, h, sk), 0x60);
@@ -286,10 +290,24 @@ static void div_050(void) {
         { 1, 1, 0x250, 1, NULL, 0, 0, NULL, 0 };
     struct { UL m; void *p; UL len; } hkdf = { 0x402A, &hp, sizeof hp };
     want("so derives from the user's key", CALL(C_DeriveKey, h, &hkdf, sk, NULL, 0UL, &uo), 0x60);
+    /* Slice 7: nor decapsulate with the user's ML-KEM key. */
+    struct { UL m; void *p; UL len; } kem = { 0x17, NULL, 0 };
+    want("so decapsulates with the user's key",
+         CALL(C_DecapsulateKey, h, &kem, kpriv, NULL, 0UL, kct, kcl, &uo), 0x60);
     CALL(C_Finalize, NULL);
 }
 
 /* A user session and an AES session key of `n` bytes (key[i] = i) that may derive. */
+/* Slice 7: an ML-KEM-512 pair in session h (the user's) and one encapsulation to it: *ct of
+ * *cl bytes. */
+static void kem_pair(UL h, UL *pub, UL *priv, unsigned char *ct, UL *cl) {
+    UL set = 1, o = 0;
+    struct { UL type; void *p; UL len; } pu[] = { { 0x61D, &set, sizeof set } };
+    struct { UL m; void *p; UL len; } gen = { 0xF, NULL, 0 }, kem = { 0x17, NULL, 0 };
+    want("generate an ml-kem pair", CALL(C_GenerateKeyPair, h, &gen, pu, 1UL, NULL, 0UL, pub, priv), 0);
+    want("encapsulate to it", CALL(C_EncapsulateKey, h, &kem, *pub, NULL, 0UL, ct, cl, &o), 0);
+}
+
 static UL user_key(UL *h, UL n) {
     UL k = 0, cls = 4, kt = 0x1f;
     unsigned char no = 0, yes = 1, key[32];
@@ -1020,6 +1038,39 @@ static void div_068(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* DIV-069: a KEM key is stored as a derived key: a secret key of a secret key type at its
+ * size, with its usage. C stored each of these. RULE-037(a): not as a token object from a
+ * read-only session. */
+static void div_069(void) {
+    UL h, pub = 0, priv = 0, cl = 1568, o = 0, d = 0, data = 0, ec = 3, aes = 0x1f,
+       five = 5, sixteen = 16, ro = 0;
+    unsigned char ct[1568], no = 0, yes = 1;
+    user_key(&h, 32); /* the user's session */
+    kem_pair(h, &pub, &priv, ct, &cl);
+    Mech kem = { 0x17, NULL, 0 }, ecb = { 0x1081, NULL, 0 };
+    Attr td[] = { { 0x0, &data, sizeof data } }, te[] = { { 0x100, &ec, sizeof ec } },
+         t5[] = { { 0x100, &aes, sizeof aes }, { 0x161, &five, sizeof five } },
+         tn[] = { { 0x100, &aes, sizeof aes }, { 0x161, &sixteen, sizeof sixteen }, { 0x104, &no, 1 } },
+         tt[] = { { 0x1, &yes, 1 } };
+    want("decapsulate as a data object", CALL(C_DecapsulateKey, h, &kem, priv, td, 1UL, ct, cl, &o), 0xd1);
+    want("decapsulate as CKK_EC", CALL(C_DecapsulateKey, h, &kem, priv, te, 1UL, ct, cl, &o), 0x13);
+    want("decapsulate a 5-byte AES key", CALL(C_DecapsulateKey, h, &kem, priv, t5, 2UL, ct, cl, &o), 0x62);
+    want("decapsulate an AES key that may not encrypt",
+         CALL(C_DecapsulateKey, h, &kem, priv, tn, 3UL, ct, cl, &o), 0);
+    want("which does not encrypt", CALL(C_EncryptInit, h, &ecb, o), 0x68);
+    /* PKCS#11's default: a secret key derives only with CKA_DERIVE TRUE (C recorded no usage). */
+    Mech hkdf = { 0x402A, &hk, sizeof hk };
+    Attr tdv[] = { { 0x10C, &yes, 1 } };
+    want("decapsulate a generic secret", CALL(C_DecapsulateKey, h, &kem, priv, NULL, 0UL, ct, cl, &o), 0);
+    want("which does not derive", CALL(C_DeriveKey, h, &hkdf, o, NULL, 0UL, &d), 0x68);
+    want("decapsulate one that may derive", CALL(C_DecapsulateKey, h, &kem, priv, tdv, 1UL, ct, cl, &o), 0);
+    want("which derives", CALL(C_DeriveKey, h, &hkdf, o, NULL, 0UL, &d), 0);
+    want("open a read-only session", CALL(C_OpenSession, 0UL, 4UL, NULL, NULL, &ro), 0);
+    want("decapsulate to a token object there",
+         CALL(C_DecapsulateKey, ro, &kem, priv, tt, 1UL, ct, cl, &o), 0xb5);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
@@ -1031,7 +1082,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-006", rule_006 }, { "RULE-014", rule_014 }, { "RULE-015", rule_015 },
     { "RULE-017", rule_017 }, { "DIV-065", div_065 }, { "DIV-066", div_066 },
     { "DIV-058", div_058 }, { "DIV-067", div_067 }, { "DIV-057", div_057 },
-    { "DIV-068", div_068 },
+    { "DIV-068", div_068 }, { "DIV-069", div_069 },
 };
 
 int main(int argc, char **argv) {

@@ -13,10 +13,12 @@ use openssl_sys::{
     EVP_CIPHER_CTX_set_padding, EVP_CIPHER_fetch, EVP_CIPHER_free, EVP_DecryptFinal_ex,
     EVP_DecryptInit_ex, EVP_DecryptUpdate, EVP_EncryptFinal_ex, EVP_EncryptInit_ex,
     EVP_EncryptUpdate, EVP_MD, EVP_MD_fetch, EVP_MD_free, EVP_MD_get_size, EVP_PKEY, EVP_PKEY_CTX,
-    EVP_PKEY_CTX_free, EVP_PKEY_CTX_new, EVP_PKEY_decrypt, EVP_PKEY_decrypt_init, EVP_PKEY_derive,
-    EVP_PKEY_derive_init, EVP_PKEY_derive_set_peer, EVP_PKEY_encrypt, EVP_PKEY_encrypt_init,
-    EVP_PKEY_free, EVP_PKEY_get_size, EVP_aes_128_ccm, EVP_aes_128_gcm, EVP_aes_192_ccm,
-    EVP_aes_192_gcm, EVP_aes_256_ccm, EVP_aes_256_gcm, OSSL_PARAM, d2i_AutoPrivateKey, d2i_PUBKEY,
+    EVP_PKEY_CTX_free, EVP_PKEY_CTX_new, EVP_PKEY_decapsulate, EVP_PKEY_decapsulate_init,
+    EVP_PKEY_decrypt, EVP_PKEY_decrypt_init, EVP_PKEY_derive, EVP_PKEY_derive_init,
+    EVP_PKEY_derive_set_peer, EVP_PKEY_encapsulate, EVP_PKEY_encapsulate_init, EVP_PKEY_encrypt,
+    EVP_PKEY_encrypt_init, EVP_PKEY_free, EVP_PKEY_get_size, EVP_aes_128_ccm, EVP_aes_128_gcm,
+    EVP_aes_192_ccm, EVP_aes_192_gcm, EVP_aes_256_ccm, EVP_aes_256_gcm, OSSL_PARAM,
+    d2i_AutoPrivateKey, d2i_PUBKEY,
 };
 
 use crate::rv;
@@ -345,7 +347,8 @@ impl Pkey {
     }
 }
 
-/// `EVP_PKEY_CTX` for one RSA encryption or decryption.
+/// `EVP_PKEY_CTX` for one RSA encryption or decryption, or one ML-KEM encapsulation or
+/// decapsulation.
 pub struct PkeyCtx {
     ctx: Owned<EVP_PKEY_CTX>,
     enc: bool,
@@ -401,7 +404,7 @@ impl PkeyCtx {
         Ok(c)
     }
 
-    /// `EVP_PKEY_CTX_new`; HOST_MEMORY without one.
+    /// `EVP_PKEY_CTX_new`; HOST_MEMORY without one. `enc`: encrypt, or for a KEM encapsulate.
     pub fn new(k: &Pkey, enc: bool) -> Result<Self, u32> {
         // SAFETY: a live key
         let ctx = Owned::new(
@@ -421,6 +424,44 @@ impl PkeyCtx {
                 EVP_PKEY_decrypt_init(self.ctx.0)
             }) > 0
         }
+    }
+
+    /// `EVP_PKEY_encapsulate_init` or `_decapsulate_init`, without parameters.
+    pub fn kem_init(&mut self) -> bool {
+        // SAFETY: a live context; no parameters
+        unsafe {
+            (if self.enc {
+                EVP_PKEY_encapsulate_init(self.ctx.0, null())
+            } else {
+                EVP_PKEY_decapsulate_init(self.ctx.0, null())
+            }) > 0
+        }
+    }
+
+    /// `EVP_PKEY_encapsulate`: NULL `ct` and `ss` ask only the lengths. On entry `*ctl` and
+    /// `*ssl` are the buffers' capacities; on success the lengths.
+    ///
+    /// # Safety
+    /// `ct` NULL or writable for `*ctl` bytes, `ss` NULL or writable for `*ssl` bytes.
+    pub unsafe fn encapsulate(
+        &mut self,
+        ct: *mut u8,
+        ctl: &mut usize,
+        ss: *mut u8,
+        ssl: &mut usize,
+    ) -> bool {
+        // SAFETY: a live context; the buffers the caller's
+        unsafe { EVP_PKEY_encapsulate(self.ctx.0, ct, ctl, ss, ssl) > 0 }
+    }
+
+    /// `EVP_PKEY_decapsulate` of `ct`: a NULL `ss` asks only the length; on entry `*ssl` is its
+    /// capacity, on success the length.
+    ///
+    /// # Safety
+    /// `ss` NULL or writable for `*ssl` bytes.
+    pub unsafe fn decapsulate(&mut self, ss: *mut u8, ssl: &mut usize, ct: &[u8]) -> bool {
+        // SAFETY: a live context; ct readable for its length; ss the caller's
+        unsafe { EVP_PKEY_decapsulate(self.ctx.0, ss, ssl, ct.as_ptr(), ct.len()) > 0 }
     }
 
     /// `EVP_PKEY_CTX_set_rsa_padding`.
