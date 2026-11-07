@@ -233,7 +233,7 @@ About 2.6 KSLOC (the dead dispatch layer, `fhsm_mode.c` and `kat/fhsm_kat_rsp.c`
   - [x] Phase 3 exit criteria are met. *(2026-11-03: see Phase 3 above; harness run p3x2)*
   - [x] Q12–Q17 are ticked. *(2026-11-03)* **Q14 (RULE-041 and RULE-064) is a P0 blocker.**
   - [x] *(2026-11-03: DIV-050 to DIV-059, DIV-001's Phase 4 sites and the 21-row table, each with its expected harness diff)* `DIVERGENCES.md` has a decision for every suspected-defect rule gated at Phase 4. Every intended divergence lists the exact expected harness diff, as return code and call.
-  - [ ] **Pilot slice named and done first:** the *lifecycle, session and login group*:
+  - [x] *(2026-11-04: slice 1)* **Pilot slice named and done first:** the *lifecycle, session and login group*:
     - `C_Initialize`, `C_Finalize`, `C_GetInfo`;
     - `C_OpenSession`, `C_CloseSession`, `C_CloseAllSessions`, `C_GetSessionInfo`;
     - `C_Login`, `C_Logout`, `C_InitToken`, `C_InitPIN`, `C_SetPIN`;
@@ -241,12 +241,12 @@ About 2.6 KSLOC (the dead dispatch layer, `fhsm_mode.c` and `kat/fhsm_kat_rsp.c`
 
     Every other group depends on it, and it holds most of the reproduced defects. Its exit (harness clean apart from recorded divergences) gates the remaining groups. In order: object management; digest; encrypt/decrypt; sign/verify; keygen/wrap/derive; KEM.
 - **Exit criteria:**
-  - [ ] No C object is linked into the module. `nm -D` shows only the PKCS#11 exports plus the documented extras.
-  - [ ] The harness shows zero unexplained diffs over the full call-sequence corpus and the 92-mechanism probe.
-  - [ ] Every intended divergence (SEC-001, the "not initialized" gate, `C_SetPIN`, and the others in `DIVERGENCES.md`) has a new test that fails on the C library and passes on Rust.
+  - [x] *(2026-11-07: slice 8c; the export shim and build_config.c stay C, TRANSFORMATION_NOTES § Phase 4 exit criteria)* No C object is linked into the module. `nm -D` shows only the PKCS#11 exports plus the documented extras.
+  - [x] *(2026-11-07: run pct)* The harness shows zero unexplained diffs over the full call-sequence corpus and the 92-mechanism probe.
+  - [x] *(2026-11-07: p11_divs.c, 32 tests; p11_lifecycle.c)* Every intended divergence (SEC-001, the "not initialized" gate, `C_SetPIN`, and the others in `DIVERGENCES.md`) has a new test that fails on the C library and passes on Rust.
   - [x] *(2026-11-07: harness step 11, run pct: C and hybrid 10/10, identical less DIV-059 and RULE-014; enumeration and keygen, not signing)* Contract tests per `docs/THIRD_PARTY_CONSUMERS.md` pass: OpenSC `pkcs11-tool`, OpenSSL `pkcs11-provider`, and p11-kit using `contrib/p11-kit/`.
   - [ ] `test_concurrency` and `test_apilock` pass under TSan, and cargo-fuzz runs the attribute and template parsers with no crash.
-  - [ ] Every P0 rule gated at Phase 4 in §5 passes, or shows its recorded divergence.
+  - [x] *(2026-11-07: all 50, TRANSFORMATION_NOTES § Phase 4 exit criteria)* Every P0 rule gated at Phase 4 in §5 passes, or shows its recorded divergence.
 - **Risk: Very high.**
   1. *Splitting one 13.4k-line file that shares global per-session state with C halfway through (`g_op_*[]`, `op_init` with CCN 129).* Mitigation: Rust owns the session and operation tables from the pilot slice onward, and the remaining C reaches them only through accessor symbols. The group-by-group order keeps each diff small.
   2. *Intended divergences flood the diff and hide real regressions.* Mitigation: the harness reads `DIVERGENCES.md` and suppresses only the exact recorded call and return-code pairs; anything else fails.
@@ -257,7 +257,7 @@ About 2.6 KSLOC (the dead dispatch layer, `fhsm_mode.c` and `kat/fhsm_kat_rsp.c`
 - **Entry criteria:**
   - [ ] Phase 3 exit criteria are met, because the tools need `pqhsm-pki` and the revocation component.
   - [ ] `DIVERGENCES.md` has a decision for every suspected-defect rule gated at Phase 5, including SEC-011 (PINs read from environment variables).
-  - [ ] **Pilot slice named and done first:** `fhsm-csr` → `pqhsm-csr`, the smallest tool at 157 lines. It runs the whole recipe end to end: `cryptoki` load, PKI crate, golden outputs. The other tools follow in this order: `token`, `crypt`, `sign`, `ca`, then the GUI.
+  - [x] *(2026-11-04: slice 1)* **Pilot slice named and done first:** `fhsm-csr` → `pqhsm-csr`, the smallest tool at 157 lines. It runs the whole recipe end to end: `cryptoki` load, PKI crate, golden outputs. The other tools follow in this order: `token`, `crypt`, `sign`, `ca`, then the GUI.
 - **Exit criteria:**
   - [ ] For each tool, the outputs from the same inputs and token match the C tool. Randomised signatures are cross-verified instead of byte-compared.
   - [ ] `test_pkiops*` (including the envelope and RSA envelope tests) pass when re-pointed at the Rust tools.
