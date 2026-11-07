@@ -1334,3 +1334,18 @@ Covering 8b-i and 8b-ii. No defect in the port: every branch, failure and edge (
 
 - The slice 8b review's M1. C's two-pass extractors answered a buffer too small with CK_UNAVAILABLE_INFORMATION and CKR_OK, where every other attribute answers 0x150. The modulus, its bits, the exponent, the EC params and point and the certificate's subject, issuer and serial now give their bytes to `C_GetAttributeValue`'s common copy, so `two_pass` is gone: a size query, a fitting buffer and a short one are answered as for every other attribute.
 - Test: `p11_divs.c` DIV-070 (C fails, hybrid passes). Recorded rows: step 4i's ten 1-byte reads, step 4n scenario 7's 36 short reads.
+
+### 8c: the unlink
+
+- `hybrid.mk` compiles no C of `src/fhsm_pkcs11.c`: `fhsm_pkcs11.o` is the export shim (`p11/shim/interface.c`) and `p11/shim/build_config.c`, which defines the two constants the Rust read from the C: `pqhsm_c_audit_mandatory` (`FHSM_AUDIT_MANDATORY`, `include/fhsm_common.h`'s default, 0 under `make audit-switch`) and `fhsm_build_fips_strict` (0 for `PROFILE=all-mechanisms`, else 1: the formula the Makefile's `check-profile` asserts the generated `src/gen/fhsm_dispatch.c` holds; the object depends on the generated `src/gen/fhsm_dispatch.c`, which regenerates on a change of profile, as the legacy chain through `gen/fhsm_dispatch.o` did, so `check-profile` still holds: review H1). Recommended over cargo features, whose build a change of profile would not invalidate. `p11/shim/pkcs11_tu.c` is deleted.
+- Emptied with §1's: `fhsm_ecdsa_raw.o`, `fhsm_pq_params.o`, `gen/fhsm_dispatch.o`, and (Q16: not ported) `fhsm_mode.o` and the twelve `src/dispatch/*.o`. `tests/test_conf` unit-tests `fhsm_mode.c` through `$(LIB_OBJ)`; its link alone takes the C object (`fhsm_mode_unit.o`), so the module carries none.
+- `-DFHSM_MAX_SESSIONS=129` is gone: nothing compiled reads it (`tests/test_session_cap.c` names it in comments only).
+- Exit (§1): `nm -D` 63 symbols, the same list as C's; NEEDED identical; no object of the legacy C files in the module (each emptied object holds no symbol, `fhsm_pkcs11.o` the export forwarders and the two constants). The C linked is the shims: export (`interface.c`, `build_config.c`), audit's variadic entry point, the KAT results export, and the integrity digest section.
+
+### Slice 8c review (architecture critic, 2026-11-07)
+
+`PQHSM_FIPS_STRICT` equals the generator's value for every profile and alias; `test_conf`'s link order, the flag's removal and the C still linked (the shims, and the service's read of `fhsm_build_fips_strict`, now `build_config.c`'s) checked. Applied (user: "keep going and select the recommended option"):
+- **H1:** with `gen/fhsm_dispatch.o` emptied nothing depended on `src/gen/fhsm_dispatch.c`, so a hybrid build that changed profile (step 4p) never regenerated it and stopped at `check-profile`. `fhsm_pkcs11.o` now depends on the generated source instead of the stamp.
+- **M1:** nothing ran the hybrid with `-DFHSM_AUDIT_MANDATORY=0` (`make audit-switch` recurses without `-f`). New step 4q: C and the hybrid built that way on fresh copies, `tests/audit_switch.sh optional` on each.
+- **M2:** §1's exit sentence says what the 8c note does: no object compiled from the legacy C sources; the shims stay C.
+- **L1-L3:** RULE-091's record notes the flag's removal; `hybrid.mk`'s header says "in the module"; an emptied object holds no symbol.

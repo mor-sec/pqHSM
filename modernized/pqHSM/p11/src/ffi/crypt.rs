@@ -295,7 +295,7 @@ unsafe fn emit(
 }
 
 pub(super) fn strict() -> bool {
-    // SAFETY: a constant the C build defines
+    // SAFETY: a constant p11/shim/build_config.c defines from the build profile
     (unsafe { fhsm_build_fips_strict }) != 0
 }
 

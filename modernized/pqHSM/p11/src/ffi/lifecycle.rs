@@ -4,8 +4,7 @@
 //! As C: the process that initialised is remembered, and a forked child's `C_Initialize`
 //! drops everything it inherited (tokens, sessions, operation and find state, the state
 //! machine) before starting; `C_Finalize` releases the same state in its own process. The
-//! operation, find and OAEP tables are still C's, so those two teardowns call into
-//! `p11/shim/pkcs11_tu.c` for them, in C's order.
+//! operation and find tables are this crate's (slices 2 to 8b), cleared in C's order.
 #![allow(clippy::missing_safety_doc)]
 
 use std::ffi::{CStr, CString, OsStr, c_char, c_int, c_ulong, c_void};

@@ -427,6 +427,21 @@ printf '; all-mechanisms: %s, C %s, hybrid %s, %s mechanisms, less recorded DIVs
   "$(grep '^init list get' /out/p11_misc_am_c.txt | cut -f3)" \
   "$(pl_same /out/p11_misc_am_c_expect.txt /out/p11_misc_am_hybrid.txt)" >> /out/p11_misc.txt
 
+# 4q. Slice 8c review M1: the audit switch's other side. `make audit-switch` recurses without
+#     -f, so under hybrid.mk it builds pure C; this is its second half, on fresh copies of each
+#     tree: built with -DFHSM_AUDIT_MANDATORY=0 (p11/shim/build_config.c on the hybrid side),
+#     FHSM_AUDIT=off must be honoured, loudly (tests/audit_switch.sh optional).
+AOC=$(mktemp -d) && AOH=$(mktemp -d) && cp -a /c/. $AOC && cp -a /work/. $AOH
+for t in c hybrid; do
+  d=$([ $t = c ] && echo $AOC || echo $AOH); mk=$([ $t = c ] && echo make || echo "$M")
+  (cd $d && make clean && $mk EXTRA_CFLAGS=-DFHSM_AUDIT_MANDATORY=0 all tests/test_audit_switch \
+     && LD_LIBRARY_PATH=.:/usr/local/ssl/lib64:/usr/local/ssl/lib sh tests/audit_switch.sh optional) \
+    > /out/audit_optional_$t.log 2>&1
+  echo "rc=$?" >> /out/audit_optional_$t.log
+done
+printf 'audit optional: C %s, hybrid %s\n' "$(tail -1 /out/audit_optional_c.log)" \
+  "$(tail -1 /out/audit_optional_hybrid.log)" > /out/audit_optional.txt
+
 # 5. DIV-009: a forked child that re-initialises must leave its parent's log intact.
 cc -o /tmp/fork_parent_log modernized/pqHSM/tests-support/hybrid/fork_parent_log.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
@@ -618,6 +633,7 @@ rm -rf /tmp/wy /tmp/venv
   cat /out/p11_sign.txt; echo
   cat /out/p11_keys.txt; echo
   cat /out/p11_misc.txt; echo
+  cat /out/audit_optional.txt
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }
   echo "token files left by tests: C run $(wc -l < /out/tok_c_reads_c.txt), hybrid run $(wc -l < /out/tok_c_reads_rust.txt); C reading Rust-written vs C-written: $(same /out/tok_c_reads_c.txt /out/tok_c_reads_rust.txt); Rust reading C-written vs C: $(same /out/tok_c_reads_c.txt /out/tok_rust_reads_c.txt); load failures: $(cat /out/tok_*_reads_*.txt | grep -vc 'load=0x0')"

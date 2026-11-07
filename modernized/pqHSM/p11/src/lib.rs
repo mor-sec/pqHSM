@@ -3,8 +3,8 @@
 //! symbol, Rust's or C's. Slice 1a: the session table's C ABI (`src/fhsm_session.c`)
 //! over `pqhsm-core`. Slice 1b: the module state (`src/fhsm_state.c`). Slice 1c: the API lock
 //! (`src/fhsm_apilock.c`), all in `ffi`: it is pthread throughout. Slice 1d: `C_Initialize` to
-//! `C_SetPIN` and the slot registry (`src/fhsm_pkcs11.c:393-1789`); the operation, find and
-//! OAEP tables stay C's, reached through `p11/shim/pkcs11_tu.c`.
+//! `C_SetPIN` and the slot registry (`src/fhsm_pkcs11.c:393-1789`). Slices 2 to 8b: every other
+//! entry point, and the tables they own. Slice 8c: `src/fhsm_pkcs11.c` is no longer linked.
 
 #[cfg(feature = "ffi")]
 mod ffi;

@@ -20,7 +20,7 @@ Method: `/modernize-transform`, slice by slice, as in Phases 2 and 3: characteri
 
 Not ported (Q16, confirmed): `src/fhsm_mode.c` (160) and the 12 `src/dispatch/*` handlers. The build profile is the only mode switch. Behaviour comes from the hand-written `switch` blocks in `fhsm_pkcs11.c`, never from `src/dispatch/` (brief).
 
-At the exit no C object is linked into the module, and `nm -D` shows only the PKCS#11 exports plus the documented extras (today 63 symbols, identical between C and hybrid).
+At the exit no object compiled from the legacy C sources is linked into the module (the shims the 8c note lists stay C, as in Phases 1 and 3; `tests/test_conf` alone links `src/fhsm_mode.c`), and `nm -D` shows only the PKCS#11 exports plus the documented extras (today 63 symbols, identical between C and hybrid).
 
 ## 2. Slices, in the brief's order
 
@@ -85,3 +85,4 @@ Slice 1 closed: harness clean apart from recorded DIVs, every slice 1 DIV with a
     - **8b:** the accessors: attribute extraction from a certificate and a public key, the PQC raw public key and the parameter-set selector (`attrs.rs`), and the operation hooks (`login.rs`, `lifecycle.rs`: the per-session reset, the active-operation test, the context-auth grant, fork's forget and finalize's release). Each is ported, or removed where it reaches C state no C entry point uses any more; which is which is checked first.
       Checked first (2026-11-07; user: "keep going and select the recommended option", the recommended option being two commits): the five operation hooks read and reset C tables (`g_op_*`, `g_finds`, the OAEP tables) that only C entry points fill, and none runs after 8a, so **8b-i** removes them; their one observable answer, -1 for a handle outside the tables, is `context_login`'s range check (C's tables are built at RULE-091's 129, as `core::session::MAX`). **8b-ii** ports the four attribute readbacks, golden coverage checked first.
     - **8c:** the unlink: `pkcs11_tu.c` and `fhsm_pkcs11.c` leave the build, with every C object §1 names, and §1's exit is checked (`nm -D` the 63 symbols, NEEDED unchanged, the harness clean apart from recorded DIVs).
+      Done 2026-11-07 (user: "keep going and select the recommended option"). The two constants the Rust read from the C (`pqhsm_c_audit_mandatory`, `fhsm_build_fips_strict`) are `p11/shim/build_config.c`'s, beside the export shim, the recommended option over cargo features (which a change of profile would not rebuild). `src/fhsm_mode.c` and `src/dispatch/` (Q16: not ported) leave the module too; `tests/test_conf`, which unit-tests `fhsm_mode.c`, links that one object itself.

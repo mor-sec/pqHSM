@@ -1,6 +1,6 @@
 //! What the entry points call outside this crate: the token, audit and crypto exports of the
-//! other crates (linked into the same staticlib), and the C objects still linked (slice 8c
-//! unlinks `src/fhsm_pkcs11.c`; `p11/shim/pkcs11_tu.c` keeps only its audit switch).
+//! other crates (linked into the same staticlib), and the two build-time constants of
+//! `p11/shim/build_config.c` (no C of `src/fhsm_pkcs11.c` is linked since slice 8c).
 #![allow(non_camel_case_types)]
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -195,7 +195,7 @@ unsafe extern "C" {
         sig_len: usize,
     ) -> u32;
 
-    // p11/shim/pkcs11_tu.c: the build profile's audit switch.
+    // p11/shim/build_config.c: the build's audit switch (-DFHSM_AUDIT_MANDATORY).
     pub static pqhsm_c_audit_mandatory: c_int;
 }
 

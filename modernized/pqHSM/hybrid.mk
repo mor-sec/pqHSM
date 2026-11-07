@@ -16,6 +16,9 @@
 # (fifteen entry points of src/fhsm_pkcs11.c) and the slot registry. Slice 2: the object
 # entry points but C_CreateObject. Slice 3: the five digest entry points and their table.
 # Slices 4 to 6c: encrypt and decrypt, sign and verify, key generation, C_CreateObject, wrap.
+# Slices 6d to 8b: the rest of src/fhsm_pkcs11.c. Slice 8c: no part of it, nor of
+# src/fhsm_ecdsa_raw.c, src/fhsm_pq_params.c, src/fhsm_mode.c, src/gen/ or src/dispatch/, is in
+# the module (tests/test_conf alone links fhsm_mode.c).
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -26,9 +29,6 @@
 # there reaches the module and the internal-linking tests alike. --exclude-libs keeps every
 # Rust symbol out of the module's dynamic symbol table: fhsm_audit_* stay hidden, as in C.
 include Makefile
-# RULE-091: C's per-session tables sized as the Rust session table (core::session::MAX); since
-# slice 8b nothing reads them, so the flag changes no result. It goes with the C in slice 8c.
-override CFLAGS += -DFHSM_MAX_SESSIONS=129
 
 PQHSM_DIR  := modernized/pqHSM
 PQHSM_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_module.a
@@ -68,7 +68,10 @@ $(OBJDIR)/src/fhsm_tpm.o $(OBJDIR)/src/fhsm_token_tpm.o $(OBJDIR)/src/fhsm_token
 $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o $(OBJDIR)/src/fhsm_drbg.o \
 $(OBJDIR)/kat/fhsm_kat_vectors.o $(OBJDIR)/kat/cavp_extended.o $(OBJDIR)/src/fhsm_pairwise.o \
 $(OBJDIR)/src/fhsm_composite.o $(OBJDIR)/src/fhsm_session.o $(OBJDIR)/src/fhsm_state.o \
-$(OBJDIR)/src/fhsm_apilock.o $(OBJDIR)/src/fhsm_create_attrs.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
+$(OBJDIR)/src/fhsm_apilock.o $(OBJDIR)/src/fhsm_create_attrs.o \
+$(OBJDIR)/src/fhsm_ecdsa_raw.o $(OBJDIR)/src/fhsm_pq_params.o $(OBJDIR)/src/fhsm_mode.o \
+$(OBJDIR)/src/gen/fhsm_dispatch.o $(patsubst %.c,$(OBJDIR)/%.o,$(wildcard src/dispatch/*.c)): \
+		$(PQHSM_EMPTY) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -82,33 +85,27 @@ $(OBJDIR)/src/fhsm_integrity.o: $(PQHSM_DIGEST_SHIM) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# fhsm_pkcs11.o: the C entry points Rust now has are made local, and the shim exporting Rust's
-# is linked into the same object, so every $(LIB_OBJ) link picks it up unchanged. From slice 8a
-# every C_* is Rust's; until slice 8c unlinks it the C is compiled through
-# pkcs11_tu.c, which appends the one accessor Rust still reads: the audit switch.
-PQHSM_P11_SHIM := $(PQHSM_DIR)/p11/shim/interface.c
-PQHSM_P11_TU   := $(PQHSM_DIR)/p11/shim/pkcs11_tu.c
-PQHSM_P11_RUST := C_GetFunctionList C_GetInterfaceList C_GetInterface \
-                  C_Initialize C_Finalize C_GetInfo C_GetSlotList C_GetSlotInfo C_GetTokenInfo \
-                  C_InitToken C_OpenSession C_CloseSession C_CloseAllSessions C_GetSessionInfo \
-                  C_Login C_Logout C_InitPIN C_SetPIN \
-                  C_FindObjectsInit C_FindObjects C_FindObjectsFinal C_GetObjectSize C_DestroyObject \
-                  C_GetAttributeValue C_SetAttributeValue C_CopyObject \
-                  C_DigestInit C_Digest C_DigestUpdate C_DigestKey C_DigestFinal \
-                  C_EncryptInit C_Encrypt C_EncryptUpdate C_EncryptFinal \
-                  C_DecryptInit C_Decrypt C_DecryptUpdate C_DecryptFinal \
-                  C_SignInit C_Sign C_SignUpdate C_SignFinal \
-                  C_VerifyInit C_Verify C_VerifyUpdate C_VerifyFinal \
-                  C_GenerateKey C_GenerateKeyPair C_CreateObject C_WrapKey C_UnwrapKey C_DeriveKey \
-                  C_EncapsulateKey C_DecapsulateKey \
-                  C_GetMechanismList C_GetMechanismInfo C_WaitForSlotEvent C_GetFunctionStatus \
-                  C_CancelFunction C_SeedRandom C_GenerateRandom
-$(OBJDIR)/src/fhsm_pkcs11.o: src/fhsm_pkcs11.c $(PQHSM_P11_TU) $(PQHSM_P11_SHIM) $(PQHSM_LIB)
+# fhsm_pkcs11.o: every C_* is Rust's (slice 8a), so the object is the shim exporting them and
+# the two build-time settings the Rust reads (slice 8c); src/fhsm_pkcs11.c is not compiled.
+PQHSM_P11_SHIM   := $(PQHSM_DIR)/p11/shim/interface.c
+PQHSM_P11_CONFIG := $(PQHSM_DIR)/p11/shim/build_config.c
+# The Makefile's check-profile formula: all-mechanisms is the one profile that is not strict.
+PQHSM_FIPS_STRICT := $(if $(filter all-mechanisms,$(PROFILE_CANON)),0,1)
+# On the generated source, not the stamp: it is what regenerates src/gen on a change of profile
+# (the legacy chain ran through gen/fhsm_dispatch.o), so check-profile still holds.
+$(OBJDIR)/src/fhsm_pkcs11.o: $(PQHSM_P11_SHIM) $(PQHSM_P11_CONFIG) $(PQHSM_LIB) src/gen/fhsm_dispatch.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@.c.o $(PQHSM_P11_TU)
-	objcopy $(addprefix --localize-symbol=,$(PQHSM_P11_RUST)) $@.c.o
 	$(CC) $(CFLAGS) -c -o $@.shim.o $(PQHSM_P11_SHIM)
-	$(LD) -r -o $@ $@.c.o $@.shim.o
+	$(CC) $(CFLAGS) -DPQHSM_FIPS_STRICT=$(PQHSM_FIPS_STRICT) -c -o $@.config.o $(PQHSM_P11_CONFIG)
+	$(LD) -r -o $@ $@.shim.o $@.config.o
+
+# tests/test_conf unit-tests src/fhsm_mode.c, which the module no longer links (Q16: not
+# ported; the profile is the build's only mode switch). Its link alone takes the C object.
+$(OBJDIR)/src/fhsm_mode_unit.o: src/fhsm_mode.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+tests/test_conf: LDFLAGS := $(OBJDIR)/src/fhsm_mode_unit.o $(LDFLAGS)
+tests/test_conf: $(OBJDIR)/src/fhsm_mode_unit.o
 
 # test_tpm linked fhsm_tpm.c rebuilt with -DFHSM_TPM_TEST_HOOKS. That seam is now the Rust
 # feature, so the object is empty and test_tpm links the hooks staticlib instead. LDFLAGS is

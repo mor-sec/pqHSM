@@ -2,8 +2,8 @@
  * Rust's (modernized/pqHSM/p11, feature `ffi`).
  *
  * hybrid.mk links the staticlib with --exclude-libs,ALL, which hides every symbol that comes
- * from it, so the three exports are defined here. hybrid.mk makes C's own three local in
- * fhsm_pkcs11.o and links this file into that object. */
+ * from it, so the exports are defined here. hybrid.mk links this file, with build_config.c,
+ * as fhsm_pkcs11.o (slice 8c: no C of src/fhsm_pkcs11.c is linked). */
 typedef unsigned long CK_RV;
 
 CK_RV pqhsm_p11_get_function_list(void *out);
@@ -31,7 +31,7 @@ CK_RV C_GetInterface(const char *name, const void *version, void *out, unsigned 
 }
 
 /* Phase 4 slice 1d: the lifecycle, slot, session and login entry points (p11/src/ffi/
- * lifecycle.rs, slots.rs, login.rs). hybrid.mk makes C's own fifteen local. */
+ * lifecycle.rs, slots.rs, login.rs). (Until slice 8c hybrid.mk made C's own local.) */
 typedef unsigned long UL;
 #define FWD(name, params, args) \
     CK_RV pqhsm_##name params; CK_RV name params; \
