@@ -233,23 +233,6 @@ fn usage_bool(t: *mut fhsm_token_t, o: u32, bit: u8, class_default: bool) -> u8 
     })
 }
 
-/// C's two-pass readbacks: a size query answers the length, a buffer that fits gets the bytes,
-/// and one too small (C's -2 past the size query) or no value (-1) is unavailable, rv unchanged.
-///
-/// # Safety
-/// `a.value` is NULL or the caller's buffer of `a.len` bytes.
-unsafe fn two_pass(a: &mut Attr, v: Option<Vec<u8>>) {
-    a.len = match v {
-        Some(v) if a.value.is_null() => v.len() as c_ulong,
-        Some(v) if v.len() as c_ulong <= a.len => {
-            // SAFETY: the caller's buffer holds a.len >= v.len() bytes
-            unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), a.value, v.len()) };
-            v.len() as c_ulong
-        }
-        _ => UNAVAILABLE,
-    };
-}
-
 /// A stored key's DER as OpenSSL reads it: an SPKI, or a private key.
 fn key_of(class: u32, der: &[u8]) -> Option<Pkey> {
     match class {
@@ -490,9 +473,13 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
                 &b
             }
             CKA_MODULUS_BITS | CKA_MODULUS | CKA_PUBLIC_EXPONENT | CKA_EC_POINT | CKA_EC_PARAMS => {
-                // SAFETY: the caller's buffer of a.len bytes
-                unsafe { two_pass(a, pubkey_attr(t, o, (class, kt, value), a.kind)) };
-                continue;
+                // DIV-070: through the common copy below, so a buffer too small is 0x150
+                let Some(v) = pubkey_attr(t, o, (class, kt, value), a.kind) else {
+                    a.len = UNAVAILABLE;
+                    continue;
+                };
+                raw = v;
+                &raw
             }
             CKA_LABEL => {
                 let (mut p, mut l) = (null::<c_char>(), 0usize);
@@ -591,12 +578,16 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
                     CKA_ISSUER => CertField::Issuer,
                     _ => CertField::Serial,
                 };
-                let v = (class == CKO_CERTIFICATE)
+                // DIV-070: as above
+                let Some(v) = (class == CKO_CERTIFICATE)
                     .then(|| cert_field(value, f))
-                    .flatten();
-                // SAFETY: the caller's buffer of a.len bytes
-                unsafe { two_pass(a, v) };
-                continue;
+                    .flatten()
+                else {
+                    a.len = UNAVAILABLE;
+                    continue;
+                };
+                raw = v;
+                &raw
             }
             _ => {
                 a.len = UNAVAILABLE;

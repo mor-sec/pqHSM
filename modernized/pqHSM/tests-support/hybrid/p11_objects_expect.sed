@@ -49,3 +49,5 @@ copy encrypt false attr 0x40000600\t0\t0x8\t8110000000000000
 # RULE-059 (slice 6b): a key from C_CreateObject was in the clear outside the token, so it was
 # never always sensitive nor never extractable.
 /^\(aes-s\|gen\) \(NEVER_EXTRACTABLE\|ALWAYS_SENSITIVE\) \(1\|get\)\t0\t0x1\t01$/s/01$/00/
+# DIV-070: a 1-byte buffer for an attribute read back through OpenSSL is 0x150.
+s/^\(\(ec-pub\|ec-prv\) \(EC_PARAMS\|EC_POINT\) 1\t\|\(rsa-pub\|rsa-prv\) \(MODULUS\|MODULUS_BITS\|PUBLIC_EXPONENT\) 1\t\)0\(\t0xffffffffffffffff\t\)/\10x150\6/

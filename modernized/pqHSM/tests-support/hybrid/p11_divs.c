@@ -1071,6 +1071,24 @@ static void div_069(void) {
     CALL(C_Finalize, NULL);
 }
 
+/* DIV-070: a buffer too small for an attribute read back through OpenSSL is 0x150 with the
+ * length unavailable, as for every other attribute. C answered 0 (its two-pass extractors). */
+static void div_070(void) {
+    UL h, pk = 0, vk = 0;
+    user_key(&h, 16);
+    unsigned char p256[] = { 0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x03, 0x01, 0x07 }, pt[67];
+    Attr pub[] = { { 0x180, p256, sizeof p256 } };
+    Mech gen = { 0x1040, NULL, 0 };
+    want("generate p-256", CALL(C_GenerateKeyPair, h, &gen, pub, 1UL, NULL, 0UL, &pk, &vk), 0);
+    Attr q = { 0x181, pt, sizeof pt - 1 };   /* the point is 04 41 04 x y: 67 bytes */
+    want("ec point one byte short", CALL(C_GetAttributeValue, h, pk, &q, 1UL), 0x150);
+    want("its length unavailable", q.len, (UL)-1);
+    q.len = sizeof pt;
+    want("ec point whole", CALL(C_GetAttributeValue, h, pk, &q, 1UL), 0);
+    want("its length", q.len, sizeof pt);
+    CALL(C_Finalize, NULL);
+}
+
 static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-071", rule_071 }, { "RULE-083", rule_083 }, { "DIV-059", div_059 },
     { "DIV-055", div_055 }, { "RULE-084", rule_084 },
@@ -1082,7 +1100,7 @@ static const struct { const char *name; void (*fn)(void); } tests[] = {
     { "RULE-006", rule_006 }, { "RULE-014", rule_014 }, { "RULE-015", rule_015 },
     { "RULE-017", rule_017 }, { "DIV-065", div_065 }, { "DIV-066", div_066 },
     { "DIV-058", div_058 }, { "DIV-067", div_067 }, { "DIV-057", div_057 },
-    { "DIV-068", div_068 }, { "DIV-069", div_069 },
+    { "DIV-068", div_068 }, { "DIV-069", div_069 }, { "DIV-070", div_070 },
 };
 
 int main(int argc, char **argv) {

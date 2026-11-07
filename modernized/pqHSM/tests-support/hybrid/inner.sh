@@ -284,7 +284,7 @@ done >> /out/div_tests.txt
 # 4i. Phase 4 slice 2: p11_objects.c drives the nine object entry points (create, copy,
 #     destroy, get/set attribute, size, find) over every attribute of every kind of object;
 #     randomly drawn bytes print as their length. C and hybrid must print the same, less the
-#     recorded rows in p11_objects_expect.sed (DIV-050, 056, 060; exact rows, nothing else).
+#     recorded rows in p11_objects_expect.sed (DIV-050, 056, 060, 070; exact rows, nothing else).
 cc -std=gnu17 -o /tmp/p11_objects modernized/pqHSM/tests-support/hybrid/p11_objects.c -ldl
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)

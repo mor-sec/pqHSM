@@ -108,3 +108,6 @@ s/^encryptinit with encrypt false\t0$/encryptinit with encrypt false\t0x68/
 s/^encrypt with encrypt false\t0$/encrypt with encrypt false\t0x91/
 s/^decap logged out\t0x101$/decap logged out\t0x60/
 s/^so decap with user key\t0$/so decap with user key\t0x60/
+# DIV-070 (scenario 7): a buffer one byte short for an attribute read back through OpenSSL
+# (modulus, its bits, exponent, EC params and point, subject, issuer, serial) is 0x150.
+s/^\(fixed [a-z0-9 ]* 0x\(120\|121\|122\|180\|181\|101\|81\|82\) short\t\)0\(\t0xffffffffffffffff\t\)/\10x150\3/

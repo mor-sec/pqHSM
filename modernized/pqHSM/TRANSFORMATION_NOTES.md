@@ -1329,3 +1329,8 @@ Covering 8b-i and 8b-ii. No defect in the port: every branch, failure and edge (
 - C's `fhsm_session_ops_reset` (`:8975-8989`), called by `C_OpenSession` (`:786`) and `C_CloseSession` (`:798`), clears `g_finds[h]` with the operation tables. Since slice 2a the find state is `objects::FINDS`, and only finalize and fork cleared it, so a handle's next session inherited a find left open: `C_FindObjectsInit` answered 0x90, and `C_FindObjects` the old session's handles, found under its login. Slice 2a's note read C the wrong way round (corrected above).
 - `objects::reset_find(h)`, called beside `digest`/`crypt`/`sign::reset` in `pqhsm_C_OpenSession` and `close_session` (`login.rs`), where C reset.
 - Golden: step 4i `s_find` gains "ro find left open" ... "reopened find init" (C 0; the hybrid answered 0x90 before the fix). A port fix, not a DIV: the hybrid now answers as C.
+
+### DIV-070: a short buffer for an OpenSSL readback is 0x150
+
+- The slice 8b review's M1. C's two-pass extractors answered a buffer too small with CK_UNAVAILABLE_INFORMATION and CKR_OK, where every other attribute answers 0x150. The modulus, its bits, the exponent, the EC params and point and the certificate's subject, issuer and serial now give their bytes to `C_GetAttributeValue`'s common copy, so `two_pass` is gone: a size query, a fitting buffer and a short one are answered as for every other attribute.
+- Test: `p11_divs.c` DIV-070 (C fails, hybrid passes). Recorded rows: step 4i's ten 1-byte reads, step 4n scenario 7's 36 short reads.
