@@ -555,9 +555,8 @@ impl Store<'_> {
         }
         // SAFETY: as above (C ignores the result)
         unsafe { fhsm_token_object_set_usage(tp, o, compute_usage(class as u32, t)) };
-        // SAFETY: as above
-        step(unsafe { fhsm_token_object_publish(tp, o) })?;
-        // DIV-001: a key whose record cannot be made is not kept.
+        // DIV-001: a key whose record cannot be made is not kept. Recorded before it is
+        // published, so the destroy drops it from memory even when the log is failing.
         if let Some(ev) = self.event {
             let h = self.h;
             step(audited(
@@ -565,6 +564,8 @@ impl Store<'_> {
                 audit(ev, -1, h as c_int, fhsm_session_role(h), OK, &[]),
             ))?;
         }
+        // SAFETY: as above
+        step(unsafe { fhsm_token_object_publish(tp, o) })?;
         Ok(OK)
     }
 }

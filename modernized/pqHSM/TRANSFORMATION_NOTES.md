@@ -1226,7 +1226,7 @@ Nothing high: every path traced against C, the five divergences where their entr
 - **Nits:** `aes_name(..).ok_or(..)` in place of `expect` (no panic site across the FFI); `audited` for the unwrap's record; `imported` before `set_usage`, as in `create.rs`; `OBJF_UNWRAP_SENS` from `keygen.rs`; DIV-067's entry states the whole-CK_ULONG comparison, with a test (2^32 + CKK_AES: 0x13; C stored it as AES).
 
 Recorded, not applied:
-- **M2:** DIV-001 case 11 checks the 0x30 but not that the key is gone. The failed write latches ERROR, which refuses every later find in that process, and the destroy's result is ignored as C ignored it.
+- **M2:** DIV-001 case 11 checks the 0x30 but not that the key is gone. The failed write latches ERROR, which refuses every later find in that process, and the destroy's result is ignored as C ignored it. **Fixed (2026-11-08):** that destroy failed on its own record, so the key stayed; see DIVERGENCES § DIV-001 in Phase 4, "The undo, fixed". Case 11 never reached the site (the add's OBJECT_CREATE record fails first).
 - **L5:** `kw_iv`, `oaep_params`, `raw_ctx` and `rsa_run` repeat `crypt.rs`'s Init-side code with different codes and no label cap. Merging them means giving the Init parse optional switches; left until slice 7 needs a third caller.
 - **L6:** RSA PKCS#1 v1.5 and X.509 wrap and unwrap are refused by the strict build the harness runs, so their bounds (11 bytes, the 1024 cap, the zero strip, the blob length) are checked by reading only. A unit test needs a token. Due with the all-mechanisms harness.
 - **Nit 10:** the OAEP label is a plain `Vec`, as C did not wipe it either.
@@ -1257,7 +1257,7 @@ Every path traced against C (:4277-4878); the four divergences where their entri
 Found by the harness, not the review: the patched `probe_ecdh_curves` left `t_false` unused, which `-Werror` refused, and the failed build skipped every test binary after it (p4s6k: 70/106). The patch now drops the declaration too, and both copies are compiled with the build's flags before a run.
 
 Recorded, not applied:
-- **M1 (part):** DIV-001 case 12 does not check that the object is gone: the failed write latches ERROR, so no later call can look (as 6c's M2).
+- **M1 (part):** DIV-001 case 12 does not check that the object is gone: the failed write latches ERROR, so no later call can look (as 6c's M2). **Fixed (2026-11-08)** with 6c's M2.
 - **L4:** the history bits are written after the object is stored; recorded in RULE-059's row.
 - **Security review, second finding:** the salt key and second key get no DIV-050 check of their own. Both are read only after the base passes it, so the session is already the user's; a mechanism allow-list check on them would go past C and the spec.
 - **Nits:** `check_nested` still takes `bit` beside `which`; the two `store` calls in `derive_concat`; `param`/`guarded` beside the inline readers in `keygen.rs`, `wrap.rs` and `crypt.rs`. The fragment does no `dlsym` NULL checks (a missing symbol crashes the test, which fails it); AES-KW fits the P-256 and P-384 secrets the test uses.

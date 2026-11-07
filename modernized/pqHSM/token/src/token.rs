@@ -1400,12 +1400,13 @@ impl Token {
         let i = g.find(h).ok_or(Rv::KEY_HANDLE_INVALID)?;
         let mut next = g.clone();
         next.store.objects.swap_remove(i);
-        let _lock = Flock::take(&mut g)?;
-        next.counters_from(&g);
-        self.audit(event::OBJECT_DESTROY, g.role, Rv::OK, &[])?;
-        next.write()?;
-        *g = next;
-        Ok(())
+        let r = self.commit(&mut g, next, Some((event::OBJECT_DESTROY, Vec::new())));
+        // DIV-001's undo: an object not yet in the file goes even when its destroy cannot be
+        // recorded or written, since nothing durable is suppressed by dropping it.
+        if r.is_err() && g.store.objects[i].pending {
+            g.store.objects.swap_remove(i);
+        }
+        r
     }
 
     pub fn object_mark_session(&self, h: Handle, owner: u32) -> Result<(), Rv> {

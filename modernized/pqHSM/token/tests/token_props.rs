@@ -399,3 +399,33 @@ fn a_pending_object_reaches_the_file_once_with_its_attributes_rule059() {
     t.object_publish(h).unwrap();
     assert_eq!(fs::read(&path).unwrap(), after);
 }
+
+/// DIV-001's undo: a pending object (never in the file) is dropped even when its destroy cannot
+/// be recorded; a published one is kept, its destroy suppressed (6c M2, 6d M1).
+#[test]
+fn a_pending_object_goes_when_its_destroy_cannot_be_recorded_div001() {
+    struct NoDestroy;
+    impl Audit for NoDestroy {
+        fn event(&self, e: &AuditEvent<'_>) -> Result<(), Rv> {
+            if e.code == event::OBJECT_DESTROY {
+                Err(Rv::DEVICE_ERROR)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = start(dir.path(), "user_base");
+    let t = Token::load(&path, platform_with(dir.path(), Box::new(NoDestroy))).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    let before = fs::read(&path).unwrap();
+    let p = t
+        .object_add_pending(4, 31, Some(b"p"), &[7; 16], b"", 0)
+        .unwrap();
+    assert_eq!(t.object_destroy(p), Err(Rv::DEVICE_ERROR));
+    assert_eq!(t.object_get_flags3(p), Err(Rv::KEY_HANDLE_INVALID));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let k = t.object_add(4, 31, Some(b"k"), &[7; 16], b"", 0).unwrap();
+    assert_eq!(t.object_destroy(k), Err(Rv::DEVICE_ERROR));
+    assert!(t.object_get_flags3(k).is_ok());
+}

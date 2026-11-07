@@ -657,13 +657,14 @@ unsafe fn unwrap(
     step(imported(tp, o))?;
     // SAFETY: as above (C ignores the result)
     unsafe { fhsm_token_object_set_usage(tp, o, compute_usage(CKO_SECRET_KEY, t)) };
-    // SAFETY: as above
-    step(unsafe { fhsm_token_object_publish(tp, o) })?;
-    // DIV-001: a key whose record cannot be made is not kept.
+    // DIV-001: a key whose record cannot be made is not kept (recorded before it is published,
+    // as in derive.rs's `Store::store`).
     step(audited(
         OK,
         audit(EV_UNWRAP, -1, h as c_int, fhsm_session_role(h), OK, &[]),
     ))?;
+    // SAFETY: as above
+    step(unsafe { fhsm_token_object_publish(tp, o) })?;
     Ok(OK)
 }
 
