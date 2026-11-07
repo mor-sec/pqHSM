@@ -245,7 +245,7 @@ About 2.6 KSLOC (the dead dispatch layer, `fhsm_mode.c` and `kat/fhsm_kat_rsp.c`
   - [x] *(2026-11-07: run pct)* The harness shows zero unexplained diffs over the full call-sequence corpus and the 92-mechanism probe.
   - [x] *(2026-11-07: p11_divs.c, 32 tests; p11_lifecycle.c)* Every intended divergence (SEC-001, the "not initialized" gate, `C_SetPIN`, and the others in `DIVERGENCES.md`) has a new test that fails on the C library and passes on Rust.
   - [x] *(2026-11-07: harness step 11, run pct: C and hybrid 10/10, identical less DIV-059 and RULE-014; enumeration and keygen, not signing)* Contract tests per `docs/THIRD_PARTY_CONSUMERS.md` pass: OpenSC `pkcs11-tool`, OpenSSL `pkcs11-provider`, and p11-kit using `contrib/p11-kit/`.
-  - [ ] `test_concurrency` and `test_apilock` pass under TSan, and cargo-fuzz runs the attribute and template parsers with no crash.
+  - [x] *(2026-11-07: TSan step 7; core/fuzz three targets and token/fuzz two, 300 s each, no crash)* `test_concurrency` and `test_apilock` pass under TSan, and cargo-fuzz runs the attribute and template parsers with no crash.
   - [x] *(2026-11-07: all 50, TRANSFORMATION_NOTES § Phase 4 exit criteria)* Every P0 rule gated at Phase 4 in §5 passes, or shows its recorded divergence.
 - **Risk: Very high.**
   1. *Splitting one 13.4k-line file that shares global per-session state with C halfway through (`g_op_*[]`, `op_init` with CCN 129).* Mitigation: Rust owns the session and operation tables from the pilot slice onward, and the remaining C reaches them only through accessor symbols. The group-by-group order keeps each diff small.

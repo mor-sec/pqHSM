@@ -1,0 +1,44 @@
+# cargo-fuzz targets for pqhsm-core's parsers (brief Phase 4 exit criterion; PHASE4_PLAN §4.6):
+# the Rust side of the legacy fuzz/fuzz_create_attrs.c, fuzz_attr_template.c and fuzz_ecdsa_raw.c,
+# with their invariants, seeded from fuzz/corpus. Outside the workspace, as token/fuzz.
+#
+#   cargo +nightly fuzz run create_attrs  corpus/create_attrs  ../../../../fuzz/corpus/create_attrs
+#   cargo +nightly fuzz run attr_template corpus/attr_template ../../../../fuzz/corpus/attr_template
+#   cargo +nightly fuzz run ecdsa_raw     corpus/ecdsa_raw     ../../../../fuzz/corpus/ecdsa_raw
+# The stored form of the nested templates is token/fuzz's store_plaintext. fuzz_pq_params.c has
+# no Rust counterpart: the block is three CK_ULONGs read in place (p11/src/ffi/sign.rs `params`).
+[package]
+name = "pqhsm-core-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pqhsm-core = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "create_attrs"
+path = "fuzz_targets/create_attrs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "attr_template"
+path = "fuzz_targets/attr_template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ecdsa_raw"
+path = "fuzz_targets/ecdsa_raw.rs"
+test = false
+doc = false
+bench = false
