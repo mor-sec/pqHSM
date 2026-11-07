@@ -1359,6 +1359,8 @@ PHASE4_PLAN §5.3, user: "Fetch once (Recommended)". The seven .debs (OpenSC 0.2
 
 ## Phase 4 exit criteria: status (2026-11-07)
 
+Closed 2026-11-07 (user: "Close Phase 4 (Recommended)"). Last commits: contract tests `8348cff`, fuzzing `ea13f2b`.
+
 Evidence run `pct`, after the contract tests (`8348cff`): 106/106, `nm -D` (63 symbols) and NEEDED identical, every PKCS#11 probe (steps 4f to 4n) identical less recorded DIVs, all-mechanisms build identical, audit optional C = hybrid, contract 10/10 both, TSan 0 races, corpus 61 same / 7 expected DIFF, 32 DIV and RULE tests "C fails, hybrid passes".
 
 | Brief exit criterion | Evidence | Status |
