@@ -48,7 +48,7 @@ pub(super) const BOOL_ATTRS: [c_ulong; 22] = [
 pub(super) const ULONG_ATTRS: [c_ulong; 5] = [0x000, 0x100, 0x161, 0x121, 0x080];
 
 unsafe extern "C" {
-    pub(super) fn fhsm_token_object_add(
+    pub(super) fn fhsm_token_object_add_pending(
         t: *mut fhsm_token_t,
         class: u32,
         kt: u32,
@@ -60,6 +60,8 @@ unsafe extern "C" {
         flags: u8,
         out: *mut u32,
     ) -> u32;
+    /// Writes an object added pending, with what was set on it since (one file write per create).
+    pub(super) fn fhsm_token_object_publish(t: *mut fhsm_token_t, h: u32) -> u32;
     pub(super) fn fhsm_token_object_set_usage(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
     pub(super) fn fhsm_token_object_mark_session(t: *mut fhsm_token_t, h: u32, owner: u32) -> u32;
     fn fhsm_token_object_set_allowed_mechs(
@@ -474,7 +476,7 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
     let mut new = 0u32;
     // SAFETY: as above; the store copies what it is handed
     let r = unsafe {
-        fhsm_token_object_add(
+        fhsm_token_object_add_pending(
             tok,
             class,
             kt,
@@ -641,6 +643,11 @@ unsafe fn copy(h: c_ulong, tok: *mut fhsm_token_t, o: u32, t: &[Attr]) -> Result
         }
     }
     let r = apply_obj_meta(tok, t, new);
+    if r != OK {
+        return Err(undo(r));
+    }
+    // SAFETY: as above
+    let r = unsafe { fhsm_token_object_publish(tok, new) };
     if r != OK {
         return Err(undo(r));
     }

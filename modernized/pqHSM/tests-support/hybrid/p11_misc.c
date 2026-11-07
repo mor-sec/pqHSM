@@ -147,8 +147,12 @@ static void s_random(void) {
     row("random rw", ra, wa > 0, NULL, 0);
     row("random ro", rb, wb > 0, NULL, 0);
     row("random differ", 0, memcmp(a, b, sizeof a) != 0, NULL, 0);
-    memset(a, 0xAA, sizeof a);
-    ra = P11(C_GenerateRandom, h, a, 1UL);
+    // A random byte is 0xAA one time in 256; four draws make a false failure 2^-32.
+    for (int k = 0; k < 4; ++k) {
+        memset(a, 0xAA, sizeof a);
+        ra = P11(C_GenerateRandom, h, a, 1UL);
+        if (ra != 0 || a[0] != 0xAA) break;
+    }
     row("random 1", ra, a[0] != 0xAA && a[1] == 0xAA, NULL, 0);
     rv_row("seed bad session", P11(C_SeedRandom, 0x7777UL, a, 16UL));
     rv_row("seed null", P11(C_SeedRandom, h, NULL, 16UL));

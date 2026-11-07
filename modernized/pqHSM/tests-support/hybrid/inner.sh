@@ -137,7 +137,7 @@ done
   done; } > /out/heap_tests.txt
 
 # 4c. Phase 3 slice 2: probe_keygen_drbg reads fhsm_drbg_get_stats around key generation and has
-#     no Makefile rule; it links like test_secure_heap. C and hybrid must draw the same counts.
+#     no Makefile rule; it links like test_secure_heap. C and hybrid must draw the same counts, less DIV-071's.
 #     PINs are invented for the harness.
 PROBE_RULE='tests/probe_keygen_drbg: tests/probe_keygen_drbg.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)'
@@ -150,8 +150,11 @@ for d in /tmp/cb /work; do
      && ./tools/fhsm-token init --slot 0 --module ./libfreehsm.so > /out/drbg_token_$tag.txt 2>&1 \
      && ./tests/probe_keygen_drbg > /out/drbg_probe_$tag.txt 2>&1; echo "rc=$?" >> /out/drbg_probe_$tag.txt)
 done
-printf 'probe_keygen_drbg: C %s, hybrid %s, output %s' "$(tail -1 /out/drbg_probe_c.txt)" "$(tail -1 /out/drbg_probe_hybrid.txt)" \
-  "$(cmp -s /out/drbg_probe_c.txt /out/drbg_probe_hybrid.txt && echo same || echo DIFF)" > /out/drbg_tests.txt
+# DIV-071: the hybrid writes a new pair to the token file twice, not eight times (12 nonce bytes each)
+sed 's/\(drbg bytes drawn: \)96$/\124/' /out/drbg_probe_c.txt > /out/drbg_probe_c_expect.txt
+printf 'probe_keygen_drbg: C %s, hybrid %s, output %s, less recorded DIVs %s' "$(tail -1 /out/drbg_probe_c.txt)" "$(tail -1 /out/drbg_probe_hybrid.txt)" \
+  "$(cmp -s /out/drbg_probe_c.txt /out/drbg_probe_hybrid.txt && echo same || echo DIFF)" \
+  "$(cmp -s /out/drbg_probe_c_expect.txt /out/drbg_probe_hybrid.txt && echo same || echo DIFF)" > /out/drbg_tests.txt
 
 # 4d. Phase 3 slice 4: `make test-integrity` (not in `make tests`, Makefile:568) signs and
 #     tampers a statically linked binary and runs the check without the bypass, on C and hybrid.

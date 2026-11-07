@@ -373,3 +373,29 @@ fn logout_drops_private_objects_and_login_brings_them_back_div050() {
     let next = t.object_add(2, 3, Some(b"n"), &[1; 8], b"", 0).unwrap();
     assert!(!want.contains(&next), "handle {next} reused");
 }
+
+#[test]
+fn a_pending_object_reaches_the_file_once_with_its_attributes_rule059() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = start(dir.path(), "user_base");
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    let before = fs::read(&path).unwrap();
+    let h = t
+        .object_add_pending(4, 31, Some(b"p"), &[7; 16], b"", 0)
+        .unwrap();
+    t.object_set_flags3(h, 0x06).unwrap();
+    t.object_set_allowed_mechs(h, &[0x1082]).unwrap();
+    // A crash here leaves the file as it was: no object without its restrictions.
+    assert_eq!(fs::read(&path).unwrap(), before);
+    t.object_publish(h).unwrap();
+    assert_ne!(fs::read(&path).unwrap(), before);
+    let again = Token::load(&path, platform(dir.path())).unwrap();
+    again.login(Role::User, USER_PIN).unwrap();
+    assert_eq!(again.object_get_flags3(h).unwrap(), 0x06);
+    assert_eq!(again.object_get_allowed_mechs(h).unwrap(), vec![0x1082]);
+    // Publishing twice writes nothing more.
+    let after = fs::read(&path).unwrap();
+    t.object_publish(h).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), after);
+}

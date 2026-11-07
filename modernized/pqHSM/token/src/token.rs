@@ -804,19 +804,28 @@ impl Token {
     }
 
     /// H4: lock, audit, write the copy, swap.
-    fn commit(
+    fn commit(&self, g: &mut Inner, next: Inner, audit: Option<(u32, Params)>) -> Result<(), Rv> {
+        self.commit_with(g, next, audit, true)
+    }
+
+    /// `commit`, or with `write` false the same in memory only: a change to a pending object,
+    /// which no file image holds until [`Self::object_publish`].
+    fn commit_with(
         &self,
         g: &mut Inner,
         mut next: Inner,
         audit: Option<(u32, Params)>,
+        write: bool,
     ) -> Result<(), Rv> {
-        let _lock = Flock::take(g)?;
+        let _lock = if write { Some(Flock::take(g)?) } else { None };
         next.counters_from(g);
         if let Some((code, p)) = audit {
             let p: Vec<(&[u8], &[u8])> = p.iter().map(|(k, v)| (&k[..], &v[..])).collect();
             self.audit(code, g.role, Rv::OK, &p)?;
         }
-        next.write()?;
+        if write {
+            next.write()?;
+        }
         *g = next;
         Ok(())
     }
@@ -1021,6 +1030,56 @@ impl Token {
         id: &[u8],
         flags: u8,
     ) -> Result<Handle, Rv> {
+        self.add(class, key_type, label, value, id, flags, false)
+    }
+
+    /// `object_add`, the object held out of the file until [`Self::object_publish`]: its
+    /// attributes set in between are written with it in one image, so a crash part-way leaves
+    /// no object without its restrictions on disk. Audited as `object_add` is.
+    pub fn object_add_pending(
+        &self,
+        class: u32,
+        key_type: u32,
+        label: Option<&[u8]>,
+        value: &[u8],
+        id: &[u8],
+        flags: u8,
+    ) -> Result<Handle, Rv> {
+        self.add(class, key_type, label, value, id, flags, true)
+    }
+
+    /// Writes a pending object, with every attribute set since its add; a published object
+    /// is left as it is.
+    pub fn object_publish(&self, h: Handle) -> Result<(), Rv> {
+        let mut g = self.g();
+        g.writable()?;
+        let i = g.find(h).ok_or(Rv::KEY_HANDLE_INVALID)?;
+        if !g.store.objects[i].pending {
+            return Ok(());
+        }
+        let mut next = g.clone();
+        next.store.objects[i].pending = false;
+        // Written even for a session object (which the image leaves out), as C did: the file's
+        // next handle moves past it, so a reload hands out the same handles as C.
+        let r = self.commit(&mut g, next, None);
+        if r.is_err() {
+            // Never written, so nothing on disk to undo: the object goes, not left pending.
+            g.store.objects.swap_remove(i);
+        }
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add(
+        &self,
+        class: u32,
+        key_type: u32,
+        label: Option<&[u8]>,
+        value: &[u8],
+        id: &[u8],
+        flags: u8,
+        pending: bool,
+    ) -> Result<Handle, Rv> {
         if value.len() > store::VALUE_MAX {
             return Err(Rv::KEY_SIZE_RANGE);
         }
@@ -1043,6 +1102,7 @@ impl Token {
             key_type,
             value: store::Value::new(value, flags & store::OBJF_SENSITIVE != 0)?,
             flags,
+            pending,
             ..Default::default()
         };
         if let Some(l) = label {
@@ -1056,10 +1116,11 @@ impl Token {
         next.store.next_handle = h.wrapping_add(1);
         next.store.objects.push(o);
         let lab = label.map(|l| cstr(l).to_vec()).unwrap_or_default();
-        self.commit(
+        self.commit_with(
             &mut g,
             next,
             Some((event::OBJECT_CREATE, vec![(b"label".to_vec(), lab)])),
+            !pending,
         )?;
         Ok(h)
     }
@@ -1127,7 +1188,9 @@ impl Token {
         let i = g.find(h).ok_or(Rv::KEY_HANDLE_INVALID)?;
         let mut next = g.clone();
         f(&mut next.store.objects[i])?;
-        self.commit(&mut g, next, None)
+        // A pending object is in no file image, so changing it writes nothing.
+        let write = !g.store.objects[i].pending;
+        self.commit_with(&mut g, next, None, write)
     }
 
     pub fn object_set_meta(

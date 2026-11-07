@@ -19,8 +19,8 @@ use super::attrs::{
 };
 use super::copy::{
     BOOL_ATTRS, ULONG_ATTRS, apply_allowed_mechs, apply_encap_flags, apply_nested_all,
-    apply_obj_meta, bbool, bytes, check_ro_token, check_trusted, fhsm_token_object_add,
-    fhsm_token_object_set_usage, find,
+    apply_obj_meta, bbool, bytes, check_ro_token, check_trusted, fhsm_token_object_add_pending,
+    fhsm_token_object_publish, fhsm_token_object_set_usage, find,
 };
 use super::crypt::strict;
 use super::keygen::{
@@ -211,7 +211,7 @@ impl Store<'_> {
         let mut o = 0u32;
         // SAFETY: a token the registry holds; each buffer valid for its length; o our own
         let rv = unsafe {
-            fhsm_token_object_add(
+            fhsm_token_object_add_pending(
                 self.tok,
                 class,
                 kt,
@@ -256,6 +256,8 @@ impl Store<'_> {
         }
         // SAFETY: a token the registry holds (C ignores the result)
         unsafe { fhsm_token_object_set_usage(tok, o, compute_usage(class, t)) };
+        // SAFETY: as above
+        step(unsafe { fhsm_token_object_publish(tok, o) })?;
         Ok(OK)
     }
 }

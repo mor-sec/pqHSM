@@ -142,6 +142,8 @@ pub struct Object {
     pub derive: [PolicyAttr; POLICY_ATTR_MAX],
     /// In memory only: 0 for a token object, else the owning session (never serialised).
     pub owner_session: u32,
+    /// In memory only: added by `object_add_pending` and not yet published (never serialised).
+    pub pending: bool,
 }
 
 impl Default for Object {
@@ -173,6 +175,7 @@ impl Default for Object {
             derive_count: 0,
             derive: [PolicyAttr::default(); POLICY_ATTR_MAX],
             owner_session: 0,
+            pending: false,
         }
     }
 }
@@ -380,7 +383,7 @@ pub fn serialize(store: &Store, public_only: bool) -> Vec<u8> {
             if public_only {
                 is_public(o)
             } else {
-                o.owner_session == 0
+                o.owner_session == 0 && !o.pending
             }
         })
         .collect();
@@ -439,6 +442,7 @@ pub fn is_private_class(class: u32) -> bool {
 
 pub fn is_public(o: &Object) -> bool {
     o.owner_session == 0
+        && !o.pending
         && (o.class == CKO_PUBLIC_KEY || o.class == CKO_CERTIFICATE)
         && o.flags & OBJF_SENSITIVE == 0
 }

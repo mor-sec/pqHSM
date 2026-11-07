@@ -25,7 +25,8 @@ use super::attrs::{
 };
 use super::copy::{
     BOOL_ATTRS, ULONG_ATTRS, apply_allowed_mechs, apply_nested_all, apply_obj_meta, bbool, bytes,
-    check_ro_token, check_trusted, fhsm_token_object_add, fhsm_token_object_set_usage, find,
+    check_ro_token, check_trusted, fhsm_token_object_add_pending, fhsm_token_object_publish,
+    fhsm_token_object_set_usage, find,
 };
 use super::crypt::{Secret, object, strict};
 use super::digest::{Mech, hash_of};
@@ -515,7 +516,7 @@ impl Store<'_> {
         // SAFETY: a token the registry holds; label NUL-terminated; secret valid for len; o
         // our own
         ok(unsafe {
-            fhsm_token_object_add(
+            fhsm_token_object_add_pending(
                 tp,
                 class as u32,
                 kt,
@@ -554,6 +555,8 @@ impl Store<'_> {
         }
         // SAFETY: as above (C ignores the result)
         unsafe { fhsm_token_object_set_usage(tp, o, compute_usage(class as u32, t)) };
+        // SAFETY: as above
+        step(unsafe { fhsm_token_object_publish(tp, o) })?;
         // DIV-001: a key whose record cannot be made is not kept.
         if let Some(ev) = self.event {
             let h = self.h;

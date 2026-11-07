@@ -404,6 +404,57 @@ pub unsafe extern "C" fn fhsm_token_object_add(
     flags: u8,
     out_handle: *mut u32,
 ) -> u32 {
+    unsafe {
+        add(
+            t, cko_class, ckk_type, label, value, value_len, id, id_len, flags, out_handle, false,
+        )
+    }
+}
+
+/// `fhsm_token_object_add`, the object written only by `fhsm_token_object_publish`, with every
+/// attribute set in between (the PKCS#11 layer's creates; the C callers keep the plain add).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fhsm_token_object_add_pending(
+    t: *mut fhsm_token_t,
+    cko_class: u32,
+    ckk_type: u32,
+    label: *const c_char,
+    value: *const u8,
+    value_len: usize,
+    id: *const u8,
+    id_len: usize,
+    flags: u8,
+    out_handle: *mut u32,
+) -> u32 {
+    unsafe {
+        add(
+            t, cko_class, ckk_type, label, value, value_len, id, id_len, flags, out_handle, true,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fhsm_token_object_publish(t: *mut fhsm_token_t, handle: u32) -> u32 {
+    let Some(t) = (unsafe { tok(t) }) else {
+        return BAD;
+    };
+    t.token.object_publish(handle).err().map_or(OK, |e| e.0)
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn add(
+    t: *mut fhsm_token_t,
+    cko_class: u32,
+    ckk_type: u32,
+    label: *const c_char,
+    value: *const u8,
+    value_len: usize,
+    id: *const u8,
+    id_len: usize,
+    flags: u8,
+    out_handle: *mut u32,
+    pending: bool,
+) -> u32 {
     let Some(t) = (unsafe { tok(t) }) else {
         return BAD;
     };
@@ -418,10 +469,14 @@ pub unsafe extern "C" fn fhsm_token_object_add(
         return BAD;
     }
     let (label, value, id) = unsafe { (cstr(label), bytes(value, value_len), bytes(id, id_len)) };
-    match t
-        .token
-        .object_add(cko_class, ckk_type, label, value, id, flags)
-    {
+    let r = if pending {
+        t.token
+            .object_add_pending(cko_class, ckk_type, label, value, id, flags)
+    } else {
+        t.token
+            .object_add(cko_class, ckk_type, label, value, id, flags)
+    };
+    match r {
         Ok(h) => {
             unsafe { *out_handle = h };
             OK

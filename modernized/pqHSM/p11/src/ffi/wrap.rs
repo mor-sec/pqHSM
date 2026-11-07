@@ -22,7 +22,8 @@ use super::attrs::{
 };
 use super::copy::{
     BOOL_ATTRS, ULONG_ATTRS, apply_allowed_mechs, apply_nested_all, apply_obj_meta, bbool, bytes,
-    check_ro_token, check_trusted, fhsm_token_object_add, fhsm_token_object_set_usage, find,
+    check_ro_token, check_trusted, fhsm_token_object_add_pending, fhsm_token_object_publish,
+    fhsm_token_object_set_usage, find,
 };
 use super::crypt::{Secret, aes_name, keyed, mgf_md, oaep_md, object, run, strict};
 use super::digest::{Mech, sized};
@@ -624,7 +625,7 @@ unsafe fn unwrap(
     let mut o = 0u32;
     // SAFETY: a token the registry holds; label NUL-terminated; pt valid for len; o our own
     ok(unsafe {
-        fhsm_token_object_add(
+        fhsm_token_object_add_pending(
             tp,
             CKO_SECRET_KEY,
             kt,
@@ -656,6 +657,8 @@ unsafe fn unwrap(
     step(imported(tp, o))?;
     // SAFETY: as above (C ignores the result)
     unsafe { fhsm_token_object_set_usage(tp, o, compute_usage(CKO_SECRET_KEY, t)) };
+    // SAFETY: as above
+    step(unsafe { fhsm_token_object_publish(tp, o) })?;
     // DIV-001: a key whose record cannot be made is not kept.
     step(audited(
         OK,
