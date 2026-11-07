@@ -63,6 +63,7 @@ pub unsafe extern "C" fn pqhsm_C_OpenSession(
             super::digest::reset(h);
             super::crypt::reset(h);
             super::sign::reset(h);
+            super::objects::reset_find(h);
             TABLE.attach(h, Some(t));
             OK.into()
         }
@@ -79,6 +80,7 @@ fn close_session(h: c_ulong) -> u32 {
     super::digest::reset(h);
     super::crypt::reset(h);
     super::sign::reset(h);
+    super::objects::reset_find(h);
     let t = TABLE.token(h);
     if let Some(t) = t {
         // SAFETY: a token the registry holds

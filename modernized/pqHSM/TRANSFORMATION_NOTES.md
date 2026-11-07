@@ -1323,3 +1323,9 @@ Covering 8b-i and 8b-ii. No defect in the port: every branch, failure and edge (
 - **M2:** stale comments in `sys.rs`, `hybrid.mk` and the slice 2a/2b notes.
 - **L1:** the certificate subject from the DER: kept as C (`DIVERGENCES.md`, Phase 4 table).
 - **L2-L5:** `group_oid`'s lookups stop at the first, as C's; flags3 read for Edwards keys only; the functions openssl-sys binds imported, not redeclared; a test of `octet_string`'s long form.
+
+### Slice 8b review H1: a session's find cleared at open and close
+
+- C's `fhsm_session_ops_reset` (`:8975-8989`), called by `C_OpenSession` (`:786`) and `C_CloseSession` (`:798`), clears `g_finds[h]` with the operation tables. Since slice 2a the find state is `objects::FINDS`, and only finalize and fork cleared it, so a handle's next session inherited a find left open: `C_FindObjectsInit` answered 0x90, and `C_FindObjects` the old session's handles, found under its login. Slice 2a's note read C the wrong way round (corrected above).
+- `objects::reset_find(h)`, called beside `digest`/`crypt`/`sign::reset` in `pqhsm_C_OpenSession` and `close_session` (`login.rs`), where C reset.
+- Golden: step 4i `s_find` gains "ro find left open" ... "reopened find init" (C 0; the hybrid answered 0x90 before the fix). A port fix, not a DIV: the hybrid now answers as C.

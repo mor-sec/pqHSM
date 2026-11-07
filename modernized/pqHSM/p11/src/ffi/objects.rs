@@ -52,9 +52,9 @@ impl Find {
     };
 }
 
-/// One find per session handle, as C's table. shortcut: like C's, it is not cleared when a
-/// session closes, so a reused handle inherits a search left active (recorded as a candidate);
-/// and a fork while another thread holds the mutex leaves the child's stuck (review M3).
+/// One find per session handle, as C's table, cleared when a session opens or closes (C's
+/// `fhsm_session_ops_reset`). shortcut: a fork while another thread holds the mutex leaves the
+/// child's stuck (review M3).
 static FINDS: Mutex<[Find; MAX]> = Mutex::new([const { Find::IDLE }; MAX]);
 
 fn finds() -> std::sync::MutexGuard<'static, [Find; MAX]> {
@@ -64,6 +64,13 @@ fn finds() -> std::sync::MutexGuard<'static, [Find; MAX]> {
 /// C's `fhsm_zeroize(g_finds)`, at finalize and after a fork.
 pub(crate) fn reset_finds() {
     finds().iter_mut().for_each(|f| *f = Find::IDLE);
+}
+
+/// C's `memset(&g_finds[h], 0, ...)` in `fhsm_session_ops_reset` (`src/fhsm_pkcs11.c:8987`).
+pub(super) fn reset_find(h: c_ulong) {
+    if let Some(f) = finds().get_mut(h as usize) {
+        *f = Find::IDLE;
+    }
 }
 
 /// DIV-051 and DIV-053, as the shim's gate applied them before the C ran.

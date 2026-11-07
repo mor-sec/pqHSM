@@ -501,6 +501,16 @@ static void s_find(void) {
     row("find final bad session", P11(C_FindObjectsFinal, 99UL), 0, NULL, 0, 0);
     P11(C_OpenSession, 0UL, 4UL, NULL, NULL, &ro);
     find(ro, "ro find all", NULL, 0, 100);
+    /* C clears a session's find when it closes (fhsm_session_ops_reset): its handle's next
+     * session starts with none. */
+    row("ro find left open", P11(C_FindObjectsInit, ro, NULL, 0UL), 0, NULL, 0, 0);
+    row("close ro with find open", P11(C_CloseSession, ro), 0, NULL, 0, 0);
+    { UL r2 = 0;
+      UL rv = P11(C_OpenSession, 0UL, 4UL, NULL, NULL, &r2);
+      row("reopen gets the same handle", rv, r2 == ro, NULL, 0, 0);
+      row("reopened find init", P11(C_FindObjectsInit, r2, NULL, 0UL), 0, NULL, 0, 0);
+      row("reopened find final", P11(C_FindObjectsFinal, r2), 0, NULL, 0, 0);
+      ro = r2; }
     P11(C_Logout, h);
     find(h, "nobody find all", NULL, 0, 100);
     row("close ro", P11(C_CloseSession, ro), 0, NULL, 0, 0);   /* an SO login needs none open */
