@@ -110,7 +110,7 @@ const CKA_USAGE: [(c_ulong, u8); 7] = [
 
 pub(super) const OBJF_UNWRAP_SENS: u8 = 0x80;
 const OBJF2_WRAP_WITH_TRUSTED: u8 = 0x80;
-const OBJF3_ED_CURVE_NAME: u8 = 0x01;
+pub(super) const OBJF3_ED_CURVE_NAME: u8 = 0x01;
 
 /// `FHSM_PBKDF2_MAX_OUT`.
 const PBKDF2_MAX: usize = 256;
@@ -128,9 +128,9 @@ const PW_EDDSA: c_int = 6;
 const PW_ECM: c_int = 7;
 
 /// `fhsm_pset_from_selector`'s tables: the CKP_* order of each family.
-const ML_KEM_SETS: [&CStr; 3] = [c"ML-KEM-512", c"ML-KEM-768", c"ML-KEM-1024"];
-const ML_DSA_SETS: [&CStr; 3] = [c"ML-DSA-44", c"ML-DSA-65", c"ML-DSA-87"];
-const SLH_DSA_SETS: [&CStr; 12] = [
+pub(super) const ML_KEM_SETS: [&CStr; 3] = [c"ML-KEM-512", c"ML-KEM-768", c"ML-KEM-1024"];
+pub(super) const ML_DSA_SETS: [&CStr; 3] = [c"ML-DSA-44", c"ML-DSA-65", c"ML-DSA-87"];
+pub(super) const SLH_DSA_SETS: [&CStr; 12] = [
     c"SLH-DSA-SHA2-128s",
     c"SLH-DSA-SHAKE-128s",
     c"SLH-DSA-SHA2-128f",

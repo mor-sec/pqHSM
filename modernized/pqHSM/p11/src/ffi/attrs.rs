@@ -1,15 +1,20 @@
 //! Phase 4 slice 2b: `C_GetAttributeValue` and `C_SetAttributeValue`
 //! (`src/fhsm_pkcs11.c:7155-7647, 7700-7972`), in C's order, over the token's C ABI. The
 //! OpenSSL readbacks (RSA and EC components, certificate fields, the parameter set, a PQC
-//! public key's raw form) are still C's, through `p11/shim/pkcs11_tu.c`.
-//! shortcut: those four stay C until the PKI side of Phase 4 ports them (slice 5 at the latest).
+//! public key's raw form) are Rust's since slice 8b-ii, over `pqhsm_crypto::readback`.
 
-use std::ffi::{c_char, c_int, c_ulong};
+use std::ffi::{CStr, c_char, c_int, c_ulong};
 use std::ptr::null;
 
 use pqhsm_core::session::{ROLE_NONE, ROLE_SO};
+use pqhsm_crypto::cipher::Pkey;
+use pqhsm_crypto::readback::{CertField, cert_field};
 
 use super::apilock::Held;
+use super::keygen::{
+    CKK_EC, CKK_EC_EDWARDS, CKK_EC_MONTGOMERY, CKK_RSA, CKK_SLH_DSA, ML_DSA_SETS, ML_KEM_SETS,
+    OBJF3_ED_CURVE_NAME, SLH_DSA_SETS,
+};
 use super::objects::{
     Attr, CKA_CLASS, CKA_ID, CKA_LABEL, CKF_RW_SESSION, CKO_PRIVATE_KEY, CKO_SECRET_KEY,
     MAX_TEMPLATE_ATTRS, OBJF_UNDESTROYABLE, access_denied, check_template, class_of, gate,
@@ -153,31 +158,7 @@ pub struct PolicyAttr {
 }
 
 type Getter = unsafe extern "C" fn(*mut fhsm_token_t, u32, *mut u8) -> u32;
-type Extract = unsafe extern "C" fn(*mut fhsm_token_t, u32, c_ulong, *mut u8, *mut usize) -> c_int;
-
 unsafe extern "C" {
-    fn pqhsm_c_extract_pubkey_attr(
-        t: *mut fhsm_token_t,
-        h: u32,
-        kind: c_ulong,
-        out: *mut u8,
-        out_len: *mut usize,
-    ) -> c_int;
-    fn pqhsm_c_extract_cert_attr(
-        t: *mut fhsm_token_t,
-        h: u32,
-        kind: c_ulong,
-        out: *mut u8,
-        out_len: *mut usize,
-    ) -> c_int;
-    fn pqhsm_c_pset_selector_of(
-        class: u32,
-        key_type: u32,
-        v: *const u8,
-        n: usize,
-        sel: *mut c_ulong,
-    ) -> c_int;
-    fn pqhsm_c_pqc_raw_pub(v: *const u8, n: usize, out: *mut u8, out_len: *mut usize) -> c_int;
     pub(super) fn fhsm_token_object_get_flags3(t: *mut fhsm_token_t, h: u32, out: *mut u8) -> u32;
     pub(super) fn fhsm_token_object_set_flags3(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
     pub(super) fn fhsm_token_object_get_tmpl(
@@ -252,29 +233,91 @@ fn usage_bool(t: *mut fhsm_token_t, o: u32, bit: u8, class_default: bool) -> u8 
     })
 }
 
-/// The two-pass readbacks still in C: `-1` not applicable, `-2` buffer too small.
+/// C's two-pass readbacks: a size query answers the length, a buffer that fits gets the bytes,
+/// and one too small (C's -2 past the size query) or no value (-1) is unavailable, rv unchanged.
 ///
 /// # Safety
 /// `a.value` is NULL or the caller's buffer of `a.len` bytes.
-unsafe fn two_pass(a: &mut Attr, t: *mut fhsm_token_t, o: u32, f: Extract) {
-    if a.value.is_null() {
-        let mut need = 0usize;
-        // SAFETY: NULL out is the size query
-        let e = unsafe { f(t, o, a.kind, std::ptr::null_mut(), &mut need) };
-        a.len = if e == -1 {
-            UNAVAILABLE
-        } else {
-            need as c_ulong
-        };
-    } else {
-        let mut out_len = a.len as usize;
-        // SAFETY: the caller's buffer of a.len bytes
-        let e = unsafe { f(t, o, a.kind, a.value, &mut out_len) };
-        a.len = if e == 0 {
-            out_len as c_ulong
-        } else {
-            UNAVAILABLE
-        };
+unsafe fn two_pass(a: &mut Attr, v: Option<Vec<u8>>) {
+    a.len = match v {
+        Some(v) if a.value.is_null() => v.len() as c_ulong,
+        Some(v) if v.len() as c_ulong <= a.len => {
+            // SAFETY: the caller's buffer holds a.len >= v.len() bytes
+            unsafe { std::ptr::copy_nonoverlapping(v.as_ptr(), a.value, v.len()) };
+            v.len() as c_ulong
+        }
+        _ => UNAVAILABLE,
+    };
+}
+
+/// A stored key's DER as OpenSSL reads it: an SPKI, or a private key.
+fn key_of(class: u32, der: &[u8]) -> Option<Pkey> {
+    match class {
+        CKO_PUBLIC_KEY => Pkey::public(der),
+        CKO_PRIVATE_KEY => Pkey::private(der),
+        _ => None,
+    }
+}
+
+/// DER OCTET STRING (long form past 127; C wrote the length's low byte).
+fn octet_string(p: &[u8]) -> Vec<u8> {
+    let n = p.len() as u8;
+    let len: &[u8] = if p.len() > 127 { &[0x81, n] } else { &[n] };
+    [&[0x04], len, p].concat()
+}
+
+/// `extract_pubkey_attr` (`src/fhsm_pkcs11.c:6951-7120`): RSA's and EC's public parts of the
+/// stored key `der`, and the Edwards and Montgomery curves' OID or RFC 8032 name and key.
+fn pubkey_attr(
+    t: *mut fhsm_token_t,
+    o: u32,
+    (class, kt, der): (u32, u32, &[u8]),
+    kind: c_ulong,
+) -> Option<Vec<u8>> {
+    let k = key_of(class, der)?;
+    match (kt, kind) {
+        (CKK_RSA, CKA_MODULUS_BITS) => Some((k.bits() as c_ulong).to_ne_bytes().to_vec()),
+        (CKK_RSA, CKA_MODULUS) => k.bn(c"n"),
+        (CKK_RSA, CKA_PUBLIC_EXPONENT) => k.bn(c"e"),
+        (CKK_EC, CKA_EC_POINT) => k
+            .octets(c"encoded-pub-key", 256)
+            .filter(|p| !p.is_empty())
+            .map(|p| octet_string(&p)),
+        (CKK_EC, CKA_EC_PARAMS) => k.group_oid(),
+        (CKK_EC_EDWARDS | CKK_EC_MONTGOMERY, CKA_EC_PARAMS | CKA_EC_POINT) => {
+            // RFC 8410's consecutive OIDs 1.3.101.110-113
+            let last = [
+                (c"X25519", 0x6E),
+                (c"X448", 0x6F),
+                (c"ED25519", 0x70),
+                (c"ED448", 0x71),
+            ]
+            .into_iter()
+            .find(|(alg, _)| k.is_a(alg))?
+            .1;
+            if kind == CKA_EC_POINT {
+                return k
+                    .octets(c"pub", 64)
+                    .filter(|r| !r.is_empty())
+                    .map(|r| octet_string(&r));
+            }
+            // An Edwards key created with its RFC 8032 curve name answers it (flags3 read for
+            // those only, as C)
+            let named = last >= 0x70 && {
+                let (frv, f3) = flags_of(t, o, fhsm_token_object_get_flags3);
+                frv == OK && f3 & OBJF3_ED_CURVE_NAME != 0
+            };
+            if named {
+                let nm: &[u8] = if last == 0x70 {
+                    b"edwards25519"
+                } else {
+                    b"edwards448"
+                };
+                return Some([&[0x13, nm.len() as u8], nm].concat());
+            }
+            Some(vec![0x06, 0x03, 0x2B, 0x65, last])
+        }
+        _ => None,
     }
 }
 
@@ -320,7 +363,7 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
     for a in tmpl.iter_mut() {
         let ul: [u8; size_of::<c_ulong>()];
         let b: [u8; 1];
-        let mut raw = [0u8; PQC_RAW_MAX];
+        let raw: Vec<u8>;
         let mut mechs = [0u8; POLICY_MECH_MAX * size_of::<c_ulong>()];
         let src: &[u8] = match a.kind {
             CKA_CLASS => {
@@ -352,13 +395,16 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
                     continue;
                 }
                 if class == CKO_PUBLIC_KEY && (kt == CKK_ML_KEM || kt == CKK_ML_DSA) {
-                    let mut rl = raw.len();
-                    // SAFETY: the stored SPKI; raw has rl bytes
-                    if unsafe { pqhsm_c_pqc_raw_pub(vp, vl, raw.as_mut_ptr(), &mut rl) } == 0 {
+                    // C read it into a buffer of PQC_RAW_MAX bytes
+                    let Some(r) = Pkey::public(value)
+                        .and_then(|k| k.raw_pub())
+                        .filter(|r| r.len() <= PQC_RAW_MAX)
+                    else {
                         a.len = UNAVAILABLE;
                         continue;
-                    }
-                    &raw[..rl]
+                    };
+                    raw = r;
+                    &raw
                 } else {
                     value
                 }
@@ -368,13 +414,22 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
                 &ul
             }
             CKA_PARAMETER_SET => {
-                let mut sel: c_ulong = 0;
-                // SAFETY: the stored value; an out pointer of our own
-                if unsafe { pqhsm_c_pset_selector_of(class, kt, vp, vl, &mut sel) } == 0 {
+                // fhsm_pset_selector_of (src/fhsm_pkcs11.c:6505): the CKP_* the key is
+                let sets: &[&CStr] = match kt {
+                    CKK_ML_KEM => &ML_KEM_SETS,
+                    CKK_ML_DSA => &ML_DSA_SETS,
+                    CKK_SLH_DSA => &SLH_DSA_SETS,
+                    _ => &[],
+                };
+                let found = (!sets.is_empty())
+                    .then(|| key_of(class, value))
+                    .flatten()
+                    .and_then(|k| sets.iter().position(|s| k.is_a(s)));
+                let Some(i) = found else {
                     a.len = UNAVAILABLE;
                     continue;
-                }
-                ul = ulong(sel);
+                };
+                ul = ulong(i as c_ulong + 1);
                 &ul
             }
             CKA_ENCAPSULATE | CKA_DECAPSULATE => {
@@ -436,7 +491,7 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
             }
             CKA_MODULUS_BITS | CKA_MODULUS | CKA_PUBLIC_EXPONENT | CKA_EC_POINT | CKA_EC_PARAMS => {
                 // SAFETY: the caller's buffer of a.len bytes
-                unsafe { two_pass(a, t, o, pqhsm_c_extract_pubkey_attr) };
+                unsafe { two_pass(a, pubkey_attr(t, o, (class, kt, value), a.kind)) };
                 continue;
             }
             CKA_LABEL => {
@@ -531,8 +586,16 @@ pub unsafe extern "C" fn pqhsm_C_GetAttributeValue(
                 }
             }
             CKA_SUBJECT | CKA_ISSUER | CKA_SERIAL_NUMBER => {
+                let f = match a.kind {
+                    CKA_SUBJECT => CertField::Subject,
+                    CKA_ISSUER => CertField::Issuer,
+                    _ => CertField::Serial,
+                };
+                let v = (class == CKO_CERTIFICATE)
+                    .then(|| cert_field(value, f))
+                    .flatten();
                 // SAFETY: the caller's buffer of a.len bytes
-                unsafe { two_pass(a, t, o, pqhsm_c_extract_cert_attr) };
+                unsafe { two_pass(a, v) };
                 continue;
             }
             _ => {
@@ -856,6 +919,15 @@ unsafe fn set(h: c_ulong, t: *mut fhsm_token_t, o: u32, tmpl: &[Attr]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn octet_strings_take_the_long_form_past_127() {
+        let os = |n: usize| octet_string(&vec![0xAB; n]);
+        assert_eq!(os(127)[..2], [0x04, 0x7F]);
+        assert_eq!(os(128)[..3], [0x04, 0x81, 0x80]);
+        assert_eq!(os(255)[..3], [0x04, 0x81, 0xFF]);
+        assert_eq!(os(128).len(), 131);
+    }
 
     #[test]
     fn dates_are_shape_checked_as_c_s() {

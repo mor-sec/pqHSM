@@ -8,6 +8,7 @@ pub mod cipher;
 pub mod import;
 pub mod keygen;
 pub mod prim;
+pub mod readback;
 pub mod sig;
 pub(crate) mod sys;
 

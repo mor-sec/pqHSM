@@ -957,7 +957,7 @@ Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against 
 
 - `p11/src/ffi/objects.rs`: `C_FindObjectsInit`, `C_FindObjects`, `C_FindObjectsFinal`, `C_GetObjectSize`, `C_DestroyObject`, in C's check order over the token's C ABI, as C called it. Each applies DIV-051's and DIV-053's gate itself, as the shim's wrapper did. `hybrid.mk` moves the five from the gated list to the Rust-owned one; `p11/shim/interface.c` forwards them.
 - **Find state:** C's `g_finds` becomes `objects::FINDS`, reset where C reset it (finalize, after a fork). Kept as C: a find is set active even when the token's search fails (that rv is returned); the result is clamped to the store's 1,024; an object whose class lookup fails is not hidden; a CKA_ID over 32 bytes is no filter at all; the label is cut at 63 bytes.
-- **Candidate defect, kept:** a session's find is not cleared when the session closes, so the next session on that handle inherits it (`C_FindObjectsInit` 0x90, or the old results). C's `fhsm_session_ops_reset` clears the operation tables, not `g_finds`.
+- **Candidate defect, kept (wrong: C clears it, `:8987`; fixed after slice 8b-ii, below):** a session's find is not cleared when the session closes, so the next session on that handle inherits it (`C_FindObjectsInit` 0x90, or the old results). C's `fhsm_session_ops_reset` clears the operation tables, not `g_finds`.
 - **Destroy:** as C, no visibility check yet. That is DIV-050's destroy part (0x82), the next commit, with its test.
 - **Golden:** step 4i identical before and after the port (1,877 rows).
 
@@ -969,7 +969,7 @@ Range `e956620..7ac859e`. Two HIGH, four MEDIUM, five LOW; each checked against 
 ### Slice 2b: get and set attribute in Rust
 
 - `p11/src/ffi/attrs.rs`: `C_GetAttributeValue` (every arm of C's switch: the withheld CKA_VALUE and its 0x11, the nested templates filled in the caller's own buffers, the usage defaults by class, the CK_UNAVAILABLE_INFORMATION shapes) and `C_SetAttributeValue` (validate every row, then apply; the one-way SENSITIVE, EXTRACTABLE, COPYABLE and WRAP_WITH_TRUSTED rules; CKA_TRUSTED only by the SO). C's order of checks and of the three error codes is kept.
-- **Still C, through `p11/shim/pkcs11_tu.c`:** the OpenSSL readbacks: `extract_pubkey_attr` (RSA and EC components), `extract_cert_attr` (subject, issuer, serial), `fhsm_pset_selector_of`, and the raw PQC public key the CKA_VALUE arm decoded inline (`pqhsm_c_pqc_raw_pub`, the same five lines). They move with the PKI side, by slice 5.
+- **Still C, through `p11/shim/pkcs11_tu.c` (ported in slice 8b-ii, below):** the OpenSSL readbacks: `extract_pubkey_attr` (RSA and EC components), `extract_cert_attr` (subject, issuer, serial), `fhsm_pset_selector_of`, and the raw PQC public key the CKA_VALUE arm decoded inline (`pqhsm_c_pqc_raw_pub`, the same five lines). They move with the PKI side, by slice 5.
 - **Kept as C in the port:** `C_SetAttributeValue` checks no visibility (`C_GetAttributeValue` and `C_GetObjectSize` do), so the SO may relabel the user's key or turn on its CKA_SENSITIVE. Decided 2026-11-05 as a new part of DIV-050 (user: "Fix, under DIV-050 (Recommended)"); the next commit.
 - **Golden:** step 4i identical (all rows but the two DIV-050 records).
 
@@ -1308,3 +1308,18 @@ Nothing high: every path's order, codes and writes as C's; the profile rule equa
 
 - `pqhsm_c_session_ops_reset`, `_has_active_op`, `_ctx_auth_grant`, `pqhsm_c_ops_forget_all` and `_release_all` (`p11/shim/pkcs11_tu.c`) reached C's operation tables, find state and OAEP tables. Only C's entry points fill those, and since 8a none runs, so every hook read zeros and reset nothing. Removed with their calls (`login.rs`, `lifecycle.rs`) and declarations (`sys.rs`).
 - The one answer they gave that could differ, `fhsm_session_has_active_op`'s -1 for handle 0 or one past its tables (`:2161-2165`), is now `context_login`'s own check against `core::session::MAX`, the 129 C's tables were built with (RULE-091, `hybrid.mk`). Golden: step 4h's `s_context` ("context bad handle 0", "context bad handle 999").
+
+### 8b-ii: the attribute readbacks in Rust
+
+- `crypto/src/ffi/readback.rs`: the OpenSSL calls of `extract_pubkey_attr` (`:6951-7120`), `extract_cert_attr` (`:7128-7151`), `fhsm_pset_selector_of` (`:6505-6526`) and the shim's `pqhsm_c_pqc_raw_pub`: `Pkey::bn`, `octets`, `group_oid`, `raw_pub`, and `cert_field`. `p11/src/ffi/attrs.rs` keeps C's branches (`pubkey_attr`, the CKA_VALUE, CKA_PARAMETER_SET and certificate arms); the four wrappers leave `pkcs11_tu.c`, which keeps only the audit switch.
+- C's -1/-2/0 contract is `Option<Vec<u8>>`: `two_pass` answers the length to a size query, copies into a buffer that fits, and answers CK_UNAVAILABLE_INFORMATION with rv unchanged otherwise. -1 and -2 differed only in the size query, where None is unavailable and Some its length.
+- Golden: step 4n scenario 7 (`s_attrs`, committed first): fixed RSA, EC (P-256, P-384, P-521's long-form point, secp256k1), Edwards by OID and by name, Montgomery, ML-DSA, ML-KEM raw and SPKI keys and a fixed certificate, each read-back attribute sized, read one byte short and read whole. Identical less RULE-059's history bits on its 11 private keys.
+
+### Slice 8b review (architecture critic, 2026-11-07)
+
+Covering 8b-i and 8b-ii. No defect in the port: every branch, failure and edge (an empty or over-256-byte point, a failed flags3 read, a raw key over 2592 bytes, the SLH-DSA order) as C's, every pattern constant a const. Applied (user: "keep going and select the recommended option"):
+- **H1:** a session's find is not cleared when its handle is reused; C clears `g_finds[h]` in `fhsm_session_ops_reset` at open and close (`:8987`, `:786`, `:798`). Slice 2a's note said the opposite. Fixed in the next commit, with its golden row.
+- **M1:** a buffer too small for these ten attributes answers CKR_OK with CK_UNAVAILABLE_INFORMATION, where every other attribute answers 0x150. A DIV, after H1.
+- **M2:** stale comments in `sys.rs`, `hybrid.mk` and the slice 2a/2b notes.
+- **L1:** the certificate subject from the DER: kept as C (`DIVERGENCES.md`, Phase 4 table).
+- **L2-L5:** `group_oid`'s lookups stop at the first, as C's; flags3 read for Edwards keys only; the functions openssl-sys binds imported, not redeclared; a test of `octet_string`'s long form.

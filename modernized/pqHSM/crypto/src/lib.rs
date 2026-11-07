@@ -14,6 +14,7 @@ pub use ffi::cipher;
 pub use ffi::import;
 pub use ffi::keygen;
 pub use ffi::prim;
+pub use ffi::readback;
 pub use ffi::sig;
 /// The module locks that a fork child takes afresh; the self-test crate uses it too.
 #[cfg(feature = "ffi")]

@@ -26,7 +26,8 @@
 # there reaches the module and the internal-linking tests alike. --exclude-libs keeps every
 # Rust symbol out of the module's dynamic symbol table: fhsm_audit_* stay hidden, as in C.
 include Makefile
-# RULE-091: C's per-session operation tables match the Rust session table (core::session::MAX).
+# RULE-091: C's per-session tables sized as the Rust session table (core::session::MAX); since
+# slice 8b nothing reads them, so the flag changes no result. It goes with the C in slice 8c.
 override CFLAGS += -DFHSM_MAX_SESSIONS=129
 
 PQHSM_DIR  := modernized/pqHSM
@@ -84,7 +85,7 @@ $(OBJDIR)/src/fhsm_integrity.o: $(PQHSM_DIGEST_SHIM) $(PQHSM_LIB)
 # fhsm_pkcs11.o: the C entry points Rust now has are made local, and the shim exporting Rust's
 # is linked into the same object, so every $(LIB_OBJ) link picks it up unchanged. From slice 8a
 # every C_* is Rust's; until slice 8c unlinks it the C is compiled through
-# pkcs11_tu.c, which appends the accessors to its statics that the Rust entry points call.
+# pkcs11_tu.c, which appends the one accessor Rust still reads: the audit switch.
 PQHSM_P11_SHIM := $(PQHSM_DIR)/p11/shim/interface.c
 PQHSM_P11_TU   := $(PQHSM_DIR)/p11/shim/pkcs11_tu.c
 PQHSM_P11_RUST := C_GetFunctionList C_GetInterfaceList C_GetInterface \

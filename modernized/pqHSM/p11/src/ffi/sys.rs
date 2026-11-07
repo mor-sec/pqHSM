@@ -1,7 +1,6 @@
 //! What the entry points call outside this crate: the token, audit and crypto exports of the
-//! other crates (linked into the same staticlib), and the C still in `src/fhsm_pkcs11.c`,
-//! reached through `p11/shim/pkcs11_tu.c` (the operation tables, find state and OAEP tables,
-//! which later slices own).
+//! other crates (linked into the same staticlib), and the C objects still linked (slice 8c
+//! unlinks `src/fhsm_pkcs11.c`; `p11/shim/pkcs11_tu.c` keeps only its audit switch).
 #![allow(non_camel_case_types)]
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
