@@ -7,13 +7,14 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr::{null, null_mut};
 
 use openssl_sys::{
-    BN_bin2bn, BN_clear_free, BN_cmp, BN_num_bits, EC_GROUP_free, EC_GROUP_new_by_curve_name,
-    EC_POINT_free, EC_POINT_mul, EC_POINT_new, EC_POINT_point2oct, EVP_PKEY_CTX, EVP_PKEY_CTX_free,
-    EVP_PKEY_CTX_new_from_name, EVP_PKEY_KEYPAIR, EVP_PKEY_PUBLIC_KEY, EVP_PKEY_free,
-    EVP_PKEY_fromdata, EVP_PKEY_fromdata_init, EVP_PKEY_new_raw_private_key_ex,
-    EVP_PKEY_public_check, OBJ_sn2nid, OSSL_PARAM_BLD_free, OSSL_PARAM_BLD_new,
-    OSSL_PARAM_BLD_push_BN, OSSL_PARAM_BLD_push_octet_string, OSSL_PARAM_BLD_push_utf8_string,
-    OSSL_PARAM_BLD_to_param, OSSL_PARAM_free, point_conversion_form_t,
+    BN_bin2bn, BN_clear_free, BN_cmp, BN_num_bits, BN_secure_new, EC_GROUP_free,
+    EC_GROUP_new_by_curve_name, EC_POINT_free, EC_POINT_mul, EC_POINT_new, EC_POINT_point2oct,
+    EVP_PKEY_CTX, EVP_PKEY_CTX_free, EVP_PKEY_CTX_new_from_name, EVP_PKEY_KEYPAIR,
+    EVP_PKEY_PUBLIC_KEY, EVP_PKEY_free, EVP_PKEY_fromdata, EVP_PKEY_fromdata_init,
+    EVP_PKEY_new_raw_private_key_ex, EVP_PKEY_public_check, OBJ_sn2nid, OSSL_PARAM_BLD_free,
+    OSSL_PARAM_BLD_new, OSSL_PARAM_BLD_push_BN, OSSL_PARAM_BLD_push_octet_string,
+    OSSL_PARAM_BLD_push_utf8_string, OSSL_PARAM_BLD_to_param, OSSL_PARAM_free,
+    point_conversion_form_t,
 };
 
 use super::cipher::{Owned, Pkey};
@@ -61,6 +62,8 @@ fn owned(k: *mut openssl_sys::EVP_PKEY) -> Option<Pkey> {
 unsafe fn fromdata(alg: &CStr, sel: c_int, bld: *mut openssl_sys::OSSL_PARAM_BLD) -> Option<Pkey> {
     // SAFETY: the params and context are freed here; a C string
     unsafe {
+        // A BIGNUM pushed from the secure heap lands in the array's secure block, which
+        // OSSL_PARAM_free clears: the private parts (RSA d, p, q; an EC scalar) are copied there.
         let ps = Owned::new(OSSL_PARAM_BLD_to_param(bld), OSSL_PARAM_free)?;
         let c = Owned::new(
             EVP_PKEY_CTX_new_from_name(null_mut(), alg.as_ptr(), null()),
@@ -72,6 +75,22 @@ unsafe fn fromdata(alg: &CStr, sel: c_int, bld: *mut openssl_sys::OSSL_PARAM_BLD
             return None;
         }
         owned(k)
+    }
+}
+
+/// `v` as a BIGNUM from the secure heap (so its param copy is cleared too); NULL on failure.
+///
+/// # Safety
+/// None beyond the call: the result is the caller's to `BN_clear_free`.
+unsafe fn secure_bn(v: &[u8]) -> *mut openssl_sys::BIGNUM {
+    // SAFETY: a fresh BIGNUM, filled from v's bytes, freed here if that fails
+    unsafe {
+        let bn = BN_secure_new();
+        if !bn.is_null() && BN_bin2bn(v.as_ptr(), v.len() as c_int, bn).is_null() {
+            BN_clear_free(bn);
+            return null_mut();
+        }
+        bn
     }
 }
 
@@ -115,7 +134,7 @@ impl Pkey {
                             ) == 1
                         }
                         Param::Bn(k, v) => {
-                            let bn = BN_bin2bn(v.as_ptr(), v.len() as c_int, null_mut());
+                            let bn = secure_bn(v);
                             !bn.is_null() && {
                                 bns.push(bn);
                                 OSSL_PARAM_BLD_push_BN(bld.0, k.as_ptr(), bn) == 1
@@ -149,10 +168,7 @@ impl Pkey {
                 nid = OBJ_sn2nid(curve.as_ptr());
             }
             let g = Owned::new(EC_GROUP_new_by_curve_name(nid), EC_GROUP_free)?;
-            let s = Owned::new(
-                BN_bin2bn(d.as_ptr(), d.len() as c_int, null_mut()),
-                BN_clear_free,
-            )?;
+            let s = Owned::new(secure_bn(d), BN_clear_free)?;
             let order = EC_GROUP_get0_order(g.0);
             if BN_num_bits(s.0) == 0 || order.is_null() || BN_cmp(s.0, order) >= 0 {
                 return None;
@@ -236,6 +252,24 @@ mod tests {
             .map(|(n, v)| Param::Bn(n, v))
             .collect();
         Pkey::from_data(c"RSA", pair, &ps)
+    }
+
+    #[test]
+    fn imported_bignums_come_from_the_secure_heap() {
+        // OSSL_PARAM_BLD puts a secure BIGNUM's copy in the block OSSL_PARAM_free clears.
+        // SAFETY: a BIGNUM of our own, read and freed here
+        unsafe {
+            let bn = secure_bn(&[0, 0x12, 0x34]);
+            assert!(!bn.is_null());
+            assert_eq!(
+                openssl_sys::BN_get_flags(bn, openssl_sys::BN_FLG_SECURE),
+                openssl_sys::BN_FLG_SECURE
+            );
+            let mut out = [0u8; 2];
+            assert_eq!(openssl_sys::BN_bn2bin(bn, out.as_mut_ptr()), 2);
+            assert_eq!(out, [0x12, 0x34]);
+            BN_clear_free(bn);
+        }
     }
 
     #[test]
