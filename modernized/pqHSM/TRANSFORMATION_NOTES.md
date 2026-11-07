@@ -1349,3 +1349,10 @@ Covering 8b-i and 8b-ii. No defect in the port: every branch, failure and edge (
 - **M1:** nothing ran the hybrid with `-DFHSM_AUDIT_MANDATORY=0` (`make audit-switch` recurses without `-f`). New step 4q: C and the hybrid built that way on fresh copies, `tests/audit_switch.sh optional` on each.
 - **M2:** §1's exit sentence says what the 8c note does: no object compiled from the legacy C sources; the shims stay C.
 - **L1-L3:** RULE-091's record notes the flag's removal; `hybrid.mk`'s header says "in the module"; an emptied object holds no symbol.
+
+### Contract tests (harness step 11, 2026-11-07)
+
+PHASE4_PLAN §5.3, user: "Fetch once (Recommended)". The seven .debs (OpenSC 0.26.1 with libeac3, pkcs11-provider 1.0, p11-kit 0.25.5 with its modules, libglib) were already in `netcache/debs`; `run.sh` checks them against `netcache/debs.sha256` and mounts them read-only, and step 11 installs them offline. It runs before steps 10 and 9, since step 9 replaces the container's OpenSSL configuration.
+- `contract.sh LIB` runs, on a fresh token: pkcs11-tool init token, init PIN, `-L`, `-M`, an EC P-256 pair and `-O`; `openssl storeutl` through pkcs11-provider; `p11-kit server` (it needs `XDG_RUNTIME_DIR`), then `-L`, `-M` and `-O` through `p11-kit-client.so`. It prints one transcript with what is random per run replaced (serials, key bytes, PEM, paths).
+- Run pct: C 10/10 rc=0, hybrid 10/10. The raw diff is 8 lines, the two recorded divergences a consumer sees, each direct and through p11-kit: DIV-059 (`pin min/max 8/64`) and RULE-014 (generic secret from 14 bytes). Less those, it is identical (`contract_expect.sed`).
+- Not covered: signing through a consumer (neither earlier measurement did it), and a token holding a composite key, which pkcs11-provider refuses in its entirety (`docs/THIRD_PARTY_CONSUMERS.md`; upstream's limit).

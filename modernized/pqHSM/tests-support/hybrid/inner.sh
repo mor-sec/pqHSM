@@ -518,6 +518,26 @@ pub() {  # reader, run dir: one sorted line per token file, keyed by command num
 (cd /tmp/cwork && pub $CG hybrid) > /out/tok_c_reads_rust.txt
 (cd /work && pub $RG c) > /out/tok_rust_reads_c.txt
 
+# 11. Contract tests (brief Phase 4 exit; docs/THIRD_PARTY_CONSUMERS.md, docs/P11_KIT_REMOTING.md):
+#     OpenSC pkcs11-tool, OpenSSL pkcs11-provider and p11-kit server/client on a fresh token, C
+#     and hybrid, from the .debs in netcache/debs (run.sh, CONTRACT_DEBS), installed offline.
+#     Before 10 and 9: step 9 replaces the container's OpenSSL configuration.
+if ls /cdebs/*.deb > /dev/null 2>&1; then
+  dpkg -i /cdebs/*.deb > /out/contract_install.log 2>&1; echo "install rc=$?" >> /out/contract_install.log
+  CT=/work/modernized/pqHSM/tests-support/hybrid
+  sh $CT/contract.sh /c/libfreehsm.so > /out/contract_c.txt 2>&1
+  sh $CT/contract.sh /work/libfreehsm.so > /out/contract_hybrid.txt 2>&1
+  n=$(grep -c '^rc=' /out/contract_c.txt)
+  printf 'contract: %s; C %s/%s rc=0, hybrid %s/%s rc=0; raw %s, less recorded DIVs %s\n' \
+    "$(tail -1 /out/contract_install.log)" "$(grep -c '^rc=0$' /out/contract_c.txt)" $n \
+    "$(grep -c '^rc=0$' /out/contract_hybrid.txt)" $n \
+    "$(cmp -s /out/contract_c.txt /out/contract_hybrid.txt && echo identical || echo "DIFFER: $(diff /out/contract_c.txt /out/contract_hybrid.txt | grep -c '^[<>]') lines")" \
+    "$(sed -f $CT/contract_expect.sed /out/contract_c.txt | diff - /out/contract_hybrid.txt > /out/contract.diff && echo identical || echo "DIFFER: $(grep -c '^[<>]' /out/contract.diff) lines")" \
+    > /out/contract.txt
+else
+  echo "contract: skipped: no CONTRACT_DEBS" > /out/contract.txt
+fi
+
 # 10. Wycheproof (PHASE3_PLAN.md §5.2, BASELINE.md § Wycheproof), from Phase 3 slice 4: the
 #     legacy runner, full mode, as CI's nightly job, on the C and the hybrid module. Offline:
 #     python-pkcs11 from the cached wheel, the vectors from the one-time fetch (run.sh,
@@ -645,6 +665,7 @@ rm -rf /tmp/wy /tmp/venv
   echo "fork, parent log: $(tr '\n' ';' < /out/fork_parent_log.txt)"
   echo "corpus: $(awk -F'\t' '$3>0' /out/corpus.tsv | wc -l) commands wrote audit logs ($(awk -F'\t' '{r+=$4} END{print r}' /out/corpus.tsv) records); same $(awk -F'\t' '$5=="same" && $3>0' /out/corpus.tsv | wc -l), order-only $(grep -c 'order-only$' /out/corpus.tsv), DIFF $(grep -c 'DIFF$' /out/corpus.tsv)"
   echo "tsan: $(grep -c 'rc=0' /out/tsan_build.log) build ok; $(awk -F'\t' '{printf "%s rc=%s races=%s; ", $1, $2, $3}' /out/tsan.tsv)"
+  cat /out/contract.txt
   echo "wycheproof: $(cat /out/wycheproof.txt)"
   echo "fips: $(grep 'install rc' /out/fips_install.log 2>/dev/null)"; sed 's/^/  /' /out/fips.txt
   echo "cross_impl (C tool on Rust logs): $(grep -E 'test result|rc=' /out/x_cross_impl.txt | tr '\n' ' ')"

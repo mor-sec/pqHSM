@@ -244,7 +244,7 @@ About 2.6 KSLOC (the dead dispatch layer, `fhsm_mode.c` and `kat/fhsm_kat_rsp.c`
   - [ ] No C object is linked into the module. `nm -D` shows only the PKCS#11 exports plus the documented extras.
   - [ ] The harness shows zero unexplained diffs over the full call-sequence corpus and the 92-mechanism probe.
   - [ ] Every intended divergence (SEC-001, the "not initialized" gate, `C_SetPIN`, and the others in `DIVERGENCES.md`) has a new test that fails on the C library and passes on Rust.
-  - [ ] Contract tests per `docs/THIRD_PARTY_CONSUMERS.md` pass: OpenSC `pkcs11-tool`, OpenSSL `pkcs11-provider`, and p11-kit using `contrib/p11-kit/`.
+  - [x] *(2026-11-07: harness step 11, run pct: C and hybrid 10/10, identical less DIV-059 and RULE-014; enumeration and keygen, not signing)* Contract tests per `docs/THIRD_PARTY_CONSUMERS.md` pass: OpenSC `pkcs11-tool`, OpenSSL `pkcs11-provider`, and p11-kit using `contrib/p11-kit/`.
   - [ ] `test_concurrency` and `test_apilock` pass under TSan, and cargo-fuzz runs the attribute and template parsers with no crash.
   - [ ] Every P0 rule gated at Phase 4 in §5 passes, or shows its recorded divergence.
 - **Risk: Very high.**

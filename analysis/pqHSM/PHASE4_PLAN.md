@@ -64,7 +64,7 @@ Each slice's exit is the harness clean apart from recorded divergences. The pilo
    - DIV-054: an SO `C_SetPIN` re-wraps the DEK but does not rotate it.
    - DIV-059: PIN minimum 8 on every path, at the cost of one legacy assertion (`test_input_validation`, `ulMinPinLen == 4`), or 4 everywhere.
    - The 21-row table of keep / fix / defer.
-3. **Contract-test tools, once:** none of `pkcs11-tool`, `pkcs11-provider` or p11-kit is in the build image. Proposal: fetch their Debian packages once, cache them beside the FIPS ones (`netcache/debs`), and install them offline in each harness run, as for the FIPS provider.
+3. **Contract-test tools, once:** none of `pkcs11-tool`, `pkcs11-provider` or p11-kit is in the build image. Proposal: fetch their Debian packages once, cache them beside the FIPS ones (`netcache/debs`), and install them offline in each harness run, as for the FIPS provider. **Decided 2026-11-07** (user: "Fetch once (Recommended)"): the seven .debs in `netcache/debs`, checked against `netcache/debs.sha256` by `run.sh`; harness step 11 (`tests-support/hybrid/contract.sh`).
 
 ## 6. Revision after the pilot (2026-11-05)
 
