@@ -397,7 +397,7 @@ printf 'p11 keys: C %s, hybrid %s, %s rows, raw %s, less recorded DIVs %s' \
 #     mechanism, every other type below 0x4400), random and seed, and the three stubs, after
 #     C_Finalize and in ERROR. C and hybrid must print the same, less the recorded rows in
 #     p11_misc_expect.sed (RULE-014, DIV-051, 053; exact rows only).
-cc -std=gnu17 -o /tmp/p11_misc modernized/pqHSM/tests-support/hybrid/p11_misc.c -ldl
+cc -std=gnu17 -o /tmp/p11_misc modernized/pqHSM/tests-support/hybrid/p11_misc.c -ldl -lcrypto
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
   d=$(mktemp -d)

@@ -10,6 +10,7 @@
  * Written from the C (src/fhsm_pkcs11.c:573-658, 1540-1653, 2589-2596) before the Rust, as its
  * characterisation. */
 #include <dlfcn.h>
+#include <openssl/bn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -207,8 +208,142 @@ static void s_error(void) {
     P11(C_Finalize, NULL);
 }
 
-static void (*const S[])(void) = { s_mechs, s_random, s_stubs, s_error };
-static const char *const SN[] = { "mechanisms", "random", "stubs", "error" };
+/* Slice 6c review L6: RSA PKCS#1 v1.5 and X.509 wrap and unwrap, which only an all-mechanisms
+ * build serves (step 4p; the strict build refuses each, step 4o). The bounds: a key within 11
+ * bytes of the modulus (v1.5) or longer than it (X.509), X.509's 1024-byte modulus cap, its
+ * zero strip at unwrap, a blob that is not modulus-sized. A v1.5 blob is random, so only its
+ * length prints; an X.509 blob and every unwrapped value print whole. The key is the fixed
+ * RSA-2048 key of p11_keys.c (rsa_fixed). */
+typedef struct { unsigned char p[1100]; int n; } Blob;
+static void bn(const BIGNUM *x, Blob *b) { b->n = BN_bn2bin(x, b->p); }
+/* The first prime from a fixed start of `len` bytes, top two bits set. */
+static void prime_len(unsigned char s, int len, BIGNUM *p, BN_CTX *x) {
+    unsigned char b[128];
+    for (int i = 0; i < len; ++i) b[i] = (unsigned char)(s * 31 + i * 7);
+    b[0] |= 0xC0, b[len - 1] |= 1;
+    BN_bin2bn(b, len, p);
+    while (BN_check_prime(p, x, NULL) != 1) BN_add_word(p, 2);
+}
+static Blob rn, re, rd, rp, rq, rdp, rdq, rqi;
+static void rsa_fixed(void) {
+    BN_CTX *x = BN_CTX_new();
+    BIGNUM *p = BN_new(), *q = BN_new(), *n = BN_new(), *e = BN_new(), *d = BN_new(),
+           *p1 = BN_new(), *q1 = BN_new(), *phi = BN_new(), *dp = BN_new(), *dq = BN_new(),
+           *qi = BN_new();
+    prime_len(1, 128, p, x), prime_len(2, 128, q, x);
+    BN_mul(n, p, q, x), BN_set_word(e, 65537);
+    BN_sub(p1, p, BN_value_one()), BN_sub(q1, q, BN_value_one()), BN_mul(phi, p1, q1, x);
+    if (!BN_mod_inverse(d, e, phi, x) || !BN_mod_inverse(qi, q, p, x)) exit(2);
+    BN_mod(dp, d, p1, x), BN_mod(dq, d, q1, x);
+    bn(n, &rn), bn(e, &re), bn(d, &rd), bn(p, &rp), bn(q, &rq), bn(dp, &rdp), bn(dq, &rdq);
+    bn(qi, &rqi);
+}
+typedef struct { UL type; const void *p; UL len; } Attr;
+static void hex_row(const char *label, UL rv, UL n, const unsigned char *p, UL plen) {
+    printf("%s\t%#lx\t%#lx\t", label, rv, n);
+    if (!p || !plen) printf("-");
+    for (UL i = 0; p && i < plen; ++i) printf("%02x", p[i]);
+    printf("\n");
+}
+static UL mk(UL h, Attr *t, UL n) {
+    UL o = 0;
+    UL rv = P11(C_CreateObject, h, t, n, &o);
+    return rv ? (UL)-1 : o;
+}
+static const unsigned char T = 1, Fa = 0;
+static const UL c_sec = 4, c_pub = 2, c_prv = 3, k_gen = 0x10, k_rsa = 0;
+/* A generic secret of `len` bytes, byte i = i + `first` (so `first` 0 starts on a zero). */
+static UL secret(UL h, UL len, unsigned first) {
+    unsigned char v[300];
+    for (UL i = 0; i < len; ++i) v[i] = (unsigned char)(i + first);
+    Attr t[] = { { 0x0, &c_sec, sizeof c_sec }, { 0x100, &k_gen, sizeof k_gen },
+                 { 0x11, v, len }, { 0x162, &T, 1 } };
+    return mk(h, t, 4);
+}
+/* Unwraps `blob` as an extractable, non-sensitive generic secret; prints the rv and the value. */
+static void unwrap(UL h, const char *label, UL mech, UL key, const unsigned char *blob, UL n) {
+    struct { UL m; void *p; UL len; } m = { mech, NULL, 0 };
+    Attr t[] = { { 0x0, &c_sec, sizeof c_sec }, { 0x100, &k_gen, sizeof k_gen },
+                 { 0x103, &Fa, 1 }, { 0x162, &T, 1 } };
+    UL o = 0;
+    UL rv = P11(C_UnwrapKey, h, &m, key, blob, n, t, 4UL, &o);
+    unsigned char v[1100];
+    Attr a = { 0x11, v, sizeof v };
+    if (rv || P11(C_GetAttributeValue, h, o, &a, 1UL)) a.len = 0;
+    hex_row(label, rv, a.len, v, a.len);
+}
+/* Wraps `key`; prints the rv, the length and (X.509 only) the blob, which `out` keeps. */
+static UL wrap(UL h, const char *label, UL mech, UL wk, UL key, UL cap, unsigned char *out) {
+    struct { UL m; void *p; UL len; } m = { mech, NULL, 0 };
+    UL n = cap;
+    UL rv = P11(C_WrapKey, h, &m, wk, key, out, &n);
+    hex_row(label, rv, n, mech == 3 && out ? out : NULL, rv == 0 && out ? n : 0);
+    return rv ? 0 : n;
+}
+static void s_rsawrap(void) {
+    UL ro;
+    UL h = setup(&ro);
+    rsa_fixed();
+    Attr pub[] = { { 0x0, &c_pub, sizeof c_pub }, { 0x100, &k_rsa, sizeof k_rsa },
+                   { 0x120, rn.p, (UL)rn.n }, { 0x122, re.p, (UL)re.n }, { 0x106, &T, 1 } };
+    Attr prv[] = { { 0x0, &c_prv, sizeof c_prv }, { 0x100, &k_rsa, sizeof k_rsa },
+                   { 0x120, rn.p, (UL)rn.n }, { 0x122, re.p, (UL)re.n }, { 0x123, rd.p, (UL)rd.n },
+                   { 0x124, rp.p, (UL)rp.n }, { 0x125, rq.p, (UL)rq.n }, { 0x126, rdp.p, (UL)rdp.n },
+                   { 0x127, rdq.p, (UL)rdq.n }, { 0x128, rqi.p, (UL)rqi.n }, { 0x107, &T, 1 } };
+    UL wk = mk(h, pub, 5), uk = mk(h, prv, 11);
+    row("rsawrap keys", wk == (UL)-1 || uk == (UL)-1, 0, NULL, 0);
+    unsigned char b[1100], junk[257];
+    for (int i = 0; i < 257; ++i) junk[i] = (unsigned char)(i + 1);
+    static const UL mechs[] = { 1, 3 };
+    for (int i = 0; i < 2; ++i) {
+        UL m = mechs[i];
+        char l[64];
+        const char *mn = m == 1 ? "v1.5" : "x509";
+#define L(s) (snprintf(l, sizeof l, "%s %s", mn, s), l)
+        UL k16 = secret(h, 16, 1), n;
+        wrap(h, L("size query"), m, wk, k16, 0, NULL);
+        wrap(h, L("short buffer"), m, wk, k16, 255, b);
+        if ((n = wrap(h, L("wrap 16"), m, wk, k16, sizeof b, b))) unwrap(h, L("unwrap 16"), m, uk, b, n);
+        /* v1.5: 245 = 256 - 11 fits, 246 does not; X.509: 256 fits, 257 does not */
+        UL fit = m == 1 ? 245 : 256;
+        if ((n = wrap(h, L("wrap longest"), m, wk, secret(h, fit, 1), sizeof b, b)))
+            unwrap(h, L("unwrap longest"), m, uk, b, n);
+        wrap(h, L("wrap one over"), m, wk, secret(h, fit + 1, 1), sizeof b, b);
+        /* leading zeros: X.509 cannot tell them from its padding */
+        if ((n = wrap(h, L("wrap zero-led"), m, wk, secret(h, 16, 0), sizeof b, b)))
+            unwrap(h, L("unwrap zero-led"), m, uk, b, n);
+        wrap(h, L("wrap under the private key"), m, uk, k16, sizeof b, b);
+        unwrap(h, L("unwrap under the public key"), m, wk, junk, 256);
+        unwrap(h, L("unwrap 255 bytes"), m, uk, junk, 255);
+        unwrap(h, L("unwrap 257 bytes"), m, uk, junk, 257);
+        unwrap(h, L("unwrap junk"), m, uk, junk, 256);
+#undef L
+    }
+    /* X.509's cap: a modulus past 1024 bytes, the product of 33 distinct 256-bit primes (8448
+     * bits; it passes the public check DIV-065 added, which a made-up modulus does not) */
+    Blob big;
+    {
+        BN_CTX *x = BN_CTX_new();
+        BIGNUM *n = BN_new(), *p = BN_new();
+        BN_one(n);
+        for (int i = 0; i < 33; ++i) prime_len((unsigned char)(i + 10), 32, p, x), BN_mul(n, n, p, x);
+        bn(n, &big);
+    }
+    Attr bp[] = { { 0x0, &c_pub, sizeof c_pub }, { 0x100, &k_rsa, sizeof k_rsa },
+                  { 0x120, big.p, (UL)big.n }, { 0x122, re.p, (UL)re.n }, { 0x106, &T, 1 } };
+    UL bk = mk(h, bp, 5);
+    row("x509 big modulus key", bk == (UL)-1, 0, NULL, 0);
+    if (bk != (UL)-1) {
+        UL k16 = secret(h, 16, 1);
+        wrap(h, "x509 big size query", 3, bk, k16, 0, NULL);
+        wrap(h, "x509 big wrap", 3, bk, k16, sizeof b, b);
+        wrap(h, "v1.5 big wrap", 1, bk, k16, sizeof b, b);
+    }
+    P11(C_Finalize, NULL);
+}
+
+static void (*const S[])(void) = { s_mechs, s_random, s_stubs, s_error, s_rsawrap };
+static const char *const SN[] = { "mechanisms", "random", "stubs", "error", "rsa wrap" };
 
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: p11_misc LIB BASE\n"); return 2; }
