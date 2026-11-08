@@ -388,7 +388,7 @@ fn a_pending_object_reaches_the_file_once_with_its_attributes_rule059() {
     t.object_set_allowed_mechs(h, &[0x1082]).unwrap();
     // A crash here leaves the file as it was: no object without its restrictions.
     assert_eq!(fs::read(&path).unwrap(), before);
-    t.object_publish(h).unwrap();
+    t.object_publish(&[h]).unwrap();
     assert_ne!(fs::read(&path).unwrap(), before);
     let again = Token::load(&path, platform(dir.path())).unwrap();
     again.login(Role::User, USER_PIN).unwrap();
@@ -396,7 +396,7 @@ fn a_pending_object_reaches_the_file_once_with_its_attributes_rule059() {
     assert_eq!(again.object_get_allowed_mechs(h).unwrap(), vec![0x1082]);
     // Publishing twice writes nothing more.
     let after = fs::read(&path).unwrap();
-    t.object_publish(h).unwrap();
+    t.object_publish(&[h]).unwrap();
     assert_eq!(fs::read(&path).unwrap(), after);
 }
 
@@ -428,4 +428,84 @@ fn a_pending_object_goes_when_its_destroy_cannot_be_recorded_div001() {
     let k = t.object_add(4, 31, Some(b"k"), &[7; 16], b"", 0).unwrap();
     assert_eq!(t.object_destroy(k), Err(Rv::DEVICE_ERROR));
     assert!(t.object_get_flags3(k).is_ok());
+}
+
+/// DIV-071 review: a pending object is in no file image, encrypted or public, and no find
+/// returns it, while another object is written (M2, M4); a logout drops a pending session
+/// object, so a later login cannot rejoin it pending (L4).
+#[test]
+fn a_pending_object_is_in_no_image_and_no_find_div071() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = start(dir.path(), "user_base");
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    let all = |t: &Token| t.object_find(None, None, 64).unwrap().0;
+    let reread = |login: bool| {
+        let r = Token::load(&path, platform(dir.path())).unwrap();
+        if login {
+            r.login(Role::User, USER_PIN).unwrap();
+        }
+        all(&r)
+    };
+    let p = t
+        .object_add_pending(2, 3, Some(b"pub"), &[1; 8], b"", 0)
+        .unwrap();
+    let k = t
+        .object_add_pending(4, 31, Some(b"sec"), &[7; 16], b"", 0)
+        .unwrap();
+    let o = t.object_add(4, 31, Some(b"o"), &[9; 16], b"", 0).unwrap();
+    let mine = all(&t);
+    assert!(mine.contains(&o) && !mine.contains(&p) && !mine.contains(&k), "{mine:?}");
+    for login in [false, true] {
+        let hs = reread(login);
+        assert!(!hs.contains(&p) && !hs.contains(&k), "login {login}: {hs:?}");
+    }
+    t.object_publish(&[p, k]).unwrap();
+    assert!(reread(false).contains(&p));
+    let hs = reread(true);
+    assert!(hs.contains(&p) && hs.contains(&k), "{hs:?}");
+
+    let q = t
+        .object_add_pending(2, 3, Some(b"q"), &[2; 8], b"", 0)
+        .unwrap();
+    t.object_mark_session(q, 9).unwrap();
+    t.logout();
+    t.login(Role::User, USER_PIN).unwrap();
+    assert_eq!(t.object_publish(&[q]), Err(Rv::KEY_HANDLE_INVALID));
+}
+
+/// DIV-071 review M1: a publish whose write fails drops the objects and records each as
+/// destroyed, so the log does not end on a create for a key that never existed.
+#[test]
+fn a_failed_publish_drops_and_records_destroy_div071() {
+    use std::os::unix::fs::PermissionsExt;
+    struct Codes(Arc<Mutex<Vec<u32>>>);
+    impl Audit for Codes {
+        fn event(&self, e: &AuditEvent<'_>) -> Result<(), Rv> {
+            self.0.lock().unwrap().push(e.code);
+            Ok(())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = start(dir.path(), "user_base");
+    let codes = Arc::new(Mutex::new(Vec::new()));
+    let t = Token::load(&path, platform_with(dir.path(), Box::new(Codes(codes.clone())))).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    let a = t
+        .object_add_pending(2, 3, Some(b"a"), &[1; 8], b"", 0)
+        .unwrap();
+    let b = t
+        .object_add_pending(3, 3, Some(b"b"), &[2; 8], b"", 0)
+        .unwrap();
+    let tokdir = path.parent().unwrap();
+    let mode = fs::metadata(tokdir).unwrap().permissions();
+    // The write's temporary file cannot be made (the tests run without CAP_DAC_OVERRIDE).
+    fs::set_permissions(tokdir, fs::Permissions::from_mode(0o500)).unwrap();
+    codes.lock().unwrap().clear();
+    let r = t.object_publish(&[a, b]);
+    fs::set_permissions(tokdir, mode).unwrap();
+    assert!(r.is_err());
+    assert_eq!(*codes.lock().unwrap(), vec![event::OBJECT_DESTROY; 2]);
+    assert_eq!(t.object_get_flags3(a), Err(Rv::KEY_HANDLE_INVALID));
+    assert_eq!(t.object_get_flags3(b), Err(Rv::KEY_HANDLE_INVALID));
 }

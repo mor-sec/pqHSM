@@ -791,9 +791,10 @@ impl Token {
         g.drop_dek();
         g.role = Role::None;
         if g.loaded {
-            g.store
-                .objects
-                .retain(|o| o.owner_session != 0 || !store::is_private_class(o.class));
+            // A pending object goes too: its create can no longer publish it (review L4).
+            g.store.objects.retain(|o| {
+                !o.pending && (o.owner_session != 0 || !store::is_private_class(o.class))
+            });
             g.loaded = false;
             g.public = true;
         }
@@ -809,7 +810,7 @@ impl Token {
     }
 
     /// `commit`, or with `write` false the same in memory only: a change to a pending object,
-    /// which no file image holds until [`Self::object_publish`].
+    /// which no file image holds until [`Self::object_publish`]; that skips the file lock too.
     fn commit_with(
         &self,
         g: &mut Inner,
@@ -1048,23 +1049,33 @@ impl Token {
         self.add(class, key_type, label, value, id, flags, true)
     }
 
-    /// Writes a pending object, with every attribute set since its add; a published object
-    /// is left as it is.
-    pub fn object_publish(&self, h: Handle) -> Result<(), Rv> {
+    /// Writes pending objects in one image (a key pair's two halves together), with every
+    /// attribute set since their add; a published object is left as it is.
+    pub fn object_publish(&self, hs: &[Handle]) -> Result<(), Rv> {
         let mut g = self.g();
         g.writable()?;
-        let i = g.find(h).ok_or(Rv::KEY_HANDLE_INVALID)?;
-        if !g.store.objects[i].pending {
+        let mut next = g.clone();
+        let mut any = false;
+        for &h in hs {
+            let i = g.find(h).ok_or(Rv::KEY_HANDLE_INVALID)?;
+            any |= next.store.objects[i].pending;
+            next.store.objects[i].pending = false;
+        }
+        if !any {
             return Ok(());
         }
-        let mut next = g.clone();
-        next.store.objects[i].pending = false;
         // Written even for a session object (which the image leaves out), as C did: the file's
         // next handle moves past it, so a reload hands out the same handles as C.
         let r = self.commit(&mut g, next, None);
         if r.is_err() {
-            // Never written, so nothing on disk to undo: the object goes, not left pending.
-            g.store.objects.swap_remove(i);
+            // Not in the file (unless the write failed after its rename, as any commit can): the
+            // objects go, each recorded as destroyed, best effort, so the log ends as C's undo
+            // did and not on a success record for a key that never existed (review M1).
+            let gone = |o: &Object| o.pending && hs.contains(&o.handle);
+            for _ in g.store.objects.iter().filter(|o| gone(o)) {
+                let _ = self.audit(event::OBJECT_DESTROY, g.role, Rv::OK, &[]);
+            }
+            g.store.objects.retain(|o| !gone(o));
         }
         r
     }
@@ -1156,7 +1167,9 @@ impl Token {
         let mut hs = Vec::new();
         let mut n = 0;
         for o in &g.store.objects {
-            if class.is_some_and(|c| c != o.class) {
+            // Another session's create in progress: not found before its restrictions are set
+            // (review M2).
+            if o.pending || class.is_some_and(|c| c != o.class) {
                 continue;
             }
             if let Some(w) = want
@@ -1394,6 +1407,7 @@ impl Token {
         ])
     }
 
+    /// A pending object whose destroy fails is still removed, and the error still returned.
     pub fn object_destroy(&self, h: Handle) -> Result<(), Rv> {
         let mut g = self.g();
         g.writable()?;
@@ -1404,7 +1418,7 @@ impl Token {
         // DIV-001's undo: an object not yet in the file goes even when its destroy cannot be
         // recorded or written, since nothing durable is suppressed by dropping it.
         if r.is_err() && g.store.objects[i].pending {
-            g.store.objects.swap_remove(i);
+            g.store.objects.remove(i);
         }
         r
     }

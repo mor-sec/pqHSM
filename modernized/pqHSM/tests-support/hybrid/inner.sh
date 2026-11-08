@@ -150,8 +150,8 @@ for d in /tmp/cb /work; do
      && ./tools/fhsm-token init --slot 0 --module ./libfreehsm.so > /out/drbg_token_$tag.txt 2>&1 \
      && ./tests/probe_keygen_drbg > /out/drbg_probe_$tag.txt 2>&1; echo "rc=$?" >> /out/drbg_probe_$tag.txt)
 done
-# DIV-071: the hybrid writes a new pair to the token file twice, not eight times (12 nonce bytes each)
-sed 's/\(drbg bytes drawn: \)96$/\124/' /out/drbg_probe_c.txt > /out/drbg_probe_c_expect.txt
+# DIV-071: the hybrid writes a new pair to the token file once, not eight times (12 nonce bytes each)
+sed 's/\(drbg bytes drawn: \)96$/\112/' /out/drbg_probe_c.txt > /out/drbg_probe_c_expect.txt
 printf 'probe_keygen_drbg: C %s, hybrid %s, output %s, less recorded DIVs %s' "$(tail -1 /out/drbg_probe_c.txt)" "$(tail -1 /out/drbg_probe_hybrid.txt)" \
   "$(cmp -s /out/drbg_probe_c.txt /out/drbg_probe_hybrid.txt && echo same || echo DIFF)" \
   "$(cmp -s /out/drbg_probe_c_expect.txt /out/drbg_probe_hybrid.txt && echo same || echo DIFF)" > /out/drbg_tests.txt
@@ -267,7 +267,7 @@ cc -std=gnu17 -o /tmp/p11_notinit modernized/pqHSM/tests-support/hybrid/p11_noti
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
   d=$(mktemp -d)
-  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$d /tmp/p11_notinit $lib > /out/p11_notinit_$tag.txt 2>/dev/null
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$d /tmp/p11_notinit $lib 2>/dev/null | cat > /out/p11_notinit_$tag.txt
   echo "rc=$?" >> /out/p11_notinit_$tag.txt
 done
 # -rdynamic: DIV-052 interposes the libcrypto call that the pairwise check makes.
@@ -275,7 +275,8 @@ cc -std=gnu17 -rdynamic -o /tmp/p11_divs modernized/pqHSM/tests-support/hybrid/p
 for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
   d=$(mktemp -d)
-  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_divs $lib $d > /out/p11_divs_$tag.txt 2>/dev/null
+  # through a pipe: DIV-001's RLIMIT_FSIZE would cut a file stdout short (and the next verdict line)
+  FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_divs $lib $d 2>/dev/null | cat > /out/p11_divs_$tag.txt
 done
 printf %s "DIV tests: 051 C $(grep -q '^DIV-051: FAIL' /out/p11_notinit_c.txt && echo fails || echo 'PASSES (wrong)'), hybrid $(grep -q '^DIV-051: pass' /out/p11_notinit_hybrid.txt && echo passes || echo FAILS)" > /out/div_tests.txt
 printf '; DIV-053 C %s, hybrid %s' "$(grep -q '^DIV-053: FAIL' /out/p11_notinit_c.txt && echo fails || echo 'PASSES (wrong)')" "$(grep -q '^DIV-053: pass' /out/p11_notinit_hybrid.txt && echo passes || echo FAILS)" >> /out/div_tests.txt

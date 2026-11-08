@@ -25,7 +25,8 @@ use super::attrs::{
 use super::copy::{
     BOOL_ATTRS, ULONG_ATTRS, apply_allowed_mechs, apply_encap_flags, apply_nested_all,
     apply_obj_meta, bbool, bytes, check_ro_token, check_trusted, fhsm_token_object_add_pending,
-    fhsm_token_object_mark_session, fhsm_token_object_publish, fhsm_token_object_set_usage, find,
+    fhsm_token_object_mark_session, fhsm_token_object_publish, fhsm_token_object_publish_pair,
+    fhsm_token_object_set_usage, find,
 };
 use super::crypt::strict;
 use super::digest::Mech;
@@ -919,12 +920,10 @@ unsafe fn store_pair(
     }
     // SAFETY: as above
     unsafe { fhsm_token_object_set_usage(tok, hk, pu) };
-    for o in [hp, hk] {
-        // SAFETY: as above
-        let r = unsafe { fhsm_token_object_publish(tok, o) };
-        if r != OK {
-            return Err(both(r));
-        }
+    // SAFETY: as above
+    let r = unsafe { fhsm_token_object_publish_pair(tok, hp, hk) };
+    if r != OK {
+        return Err(both(r));
     }
     Ok(OK)
 }

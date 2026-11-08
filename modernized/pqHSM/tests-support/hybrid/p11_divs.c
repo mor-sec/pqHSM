@@ -389,9 +389,8 @@ static void div_063(void) {
     CALL(C_Finalize, NULL);
 }
 
-/* The next audit write fails: RLIMIT_FSIZE at the size of the log the module has open (the
- * newest audit.log* in FHSM_TOKENS_DIR). The write that fails latches ERROR. */
-static void fail_audit(void) {
+/* The size of the log the module has open (the newest audit.log* in FHSM_TOKENS_DIR), or -1. */
+static off_t log_size(void) {
     const char *d = getenv("FHSM_TOKENS_DIR");
     char p[700];
     struct stat st;
@@ -407,10 +406,33 @@ static void fail_audit(void) {
         }
     }
     if (dd) closedir(dd);
-    if (size < 0) { ++bad; printf("  no audit.log* in %s\n", d); return; }
+    return size;
+}
+
+/* The audit write after `extra` more bytes fails: RLIMIT_FSIZE at the log's size plus `extra`.
+ * The write that fails latches ERROR. */
+static void fail_audit_after(off_t extra) {
+    off_t size = log_size();
+    if (size < 0) { ++bad; printf("  no audit.log* in %s\n", getenv("FHSM_TOKENS_DIR")); return; }
     signal(SIGXFSZ, SIG_IGN);
-    struct rlimit rl = { (rlim_t)size, (rlim_t)size };
+    struct rlimit rl = { (rlim_t)(size + extra), (rlim_t)(size + extra) };
     setrlimit(RLIMIT_FSIZE, &rl);
+}
+
+static void fail_audit(void) { fail_audit_after(0); }
+
+/* DIV-001 case 13's second half, a new process on the same tokens (the first latched ERROR):
+ * the unwrapped token key is not there. */
+static void div_001_gone(void) {
+    UL h = 0, o[4], n = 9, cls = 4;
+    struct { UL type; void *p; UL len; } f[] = { { 0x000, &cls, sizeof cls }, { 0x003, "w13", 3 } };
+    want("initialize", CALL(C_Initialize, NULL), 0);
+    want("open", CALL(C_OpenSession, 0UL, 6UL, NULL, NULL, &h), 0);
+    want("login user", CALL(C_Login, h, 1UL, USER, (UL)strlen(USER)), 0);
+    want("findinit", CALL(C_FindObjectsInit, h, f, 2UL), 0);
+    want("find", CALL(C_FindObjects, h, o, 4UL, &n), 0);
+    want("the unwrapped key is not on the token", n, 0);
+    CALL(C_Finalize, NULL);
 }
 
 /* DIV-001 at slice 1's sites: a call that succeeded but could not be audited is
@@ -479,6 +501,31 @@ static void div_001_case(int which) {
         struct { UL m; void *p; UL len; } hkdf = { 0x402A, &hp, sizeof hp };
         fail_audit();
         want("derive, audit failing", CALL(C_DeriveKey, hs, &hkdf, k, NULL, 0UL, &o), 0x30);
+        return;
+    }
+    if (which == 13) {
+        /* After DIV-071 (6c M2, 6d M1): an unwrapped token key whose EV_UNWRAP record fails is
+         * never in the token file. The limit lets exactly its OBJECT_CREATE record through, as
+         * long as the create below made (same label length); div_001_gone checks the file. */
+        UL hs, kek = user_key(&hs, 16), x = 0, o = 0, out = 64, cls = 4, kt = 0x1f;
+        unsigned char yes = 1, key[16] = { 3 }, blob[64];
+        struct { UL type; void *p; UL len; } t[] = {
+            { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x011, key, 16 },
+            { 0x162, &yes, 1 }, { 0x003, "u13", 3 },
+        }, ut[] = {
+            { 0x000, &cls, sizeof cls }, { 0x100, &kt, sizeof kt }, { 0x001, &yes, 1 },
+            { 0x003, "w13", 3 },
+        };
+        struct { UL m; void *p; UL len; } kw = { 0x2109, NULL, 0 };
+        off_t s0 = log_size();
+        want("create the key to wrap", CALL(C_CreateObject, hs, t, 5UL, &x), 0);
+        off_t rec = log_size() - s0;
+        want("wrap", CALL(C_WrapKey, hs, &kw, kek, x, blob, &out), 0);
+        off_t s1 = log_size();
+        fail_audit_after(rec);
+        want("unwrap a token key, its record failing",
+             CALL(C_UnwrapKey, hs, &kw, kek, blob, out, ut, 4UL, &o), 0x30);
+        want("its create was recorded, nothing after", log_size() == s1 + rec, 1);
         return;
     }
     if (which == 10 || which == 11) {
@@ -553,15 +600,16 @@ static void div_001_case(int which) {
 
 static void div_001(void) {
     const char *base = getenv("FHSM_TOKENS_DIR");
-    for (int i = 0; i < 13; ++i) {
+    for (int i = 0; i < 15; ++i) {
         char d[700];
-        snprintf(d, sizeof d, "%s/%d", base, i);
+        /* 14 is case 13's check, on case 13's tokens */
+        snprintf(d, sizeof d, "%s/%d", base, i == 14 ? 13 : i);
         mkdir(d, 0700);
         fflush(stdout);
         pid_t p = fork();
         if (p == 0) {
             setenv("FHSM_TOKENS_DIR", d, 1);
-            div_001_case(i);
+            if (i == 14) div_001_gone(); else div_001_case(i);
             fflush(stdout);
             _exit(bad ? 1 : 0);
         }

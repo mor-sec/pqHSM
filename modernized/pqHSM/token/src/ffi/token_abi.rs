@@ -438,7 +438,20 @@ pub unsafe extern "C" fn fhsm_token_object_publish(t: *mut fhsm_token_t, handle:
     let Some(t) = (unsafe { tok(t) }) else {
         return BAD;
     };
-    t.token.object_publish(handle).err().map_or(OK, |e| e.0)
+    t.token.object_publish(&[handle]).err().map_or(OK, |e| e.0)
+}
+
+/// `fhsm_token_object_publish` for a key pair: both halves in one write (DIV-071).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fhsm_token_object_publish_pair(
+    t: *mut fhsm_token_t,
+    a: u32,
+    b: u32,
+) -> u32 {
+    let Some(t) = (unsafe { tok(t) }) else {
+        return BAD;
+    };
+    t.token.object_publish(&[a, b]).err().map_or(OK, |e| e.0)
 }
 
 #[allow(clippy::too_many_arguments)]

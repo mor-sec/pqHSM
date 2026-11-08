@@ -1396,3 +1396,21 @@ Recorded at slice 6d (review L4): an object's history bits were written after th
 The same run caught a flaky probe: `p11_misc.c` `random 1` checks that a one-byte `C_GenerateRandom` changed a 0xAA byte, which fails one time in 256 (the C side drew 0xAA). It now draws up to four times.
 
 Evidence: cargo workspace 925 passed, 0 failed (repository root mounted, so the DIVERGENCES.md table tests run); harness `pend2`: 106/106, `nm -D` (63 symbols) and NEEDED identical, every PKCS#11 probe (steps 4f to 4n) and the all-mechanisms build identical less recorded DIVs, contract 10/10 both, audit optional C = hybrid, TSan 0 races, corpus 61 same / 7 expected DIFF, token files the known `envrsa` size pair only. Step 4c's new comparison line was checked against `pend2`'s outputs by hand (the expectation equals the hybrid's output), not by a further run.
+
+### Post-Phase-4 review (architecture critic, 2026-11-08: 1cfd1fc, e4eb56b, 69ace55)
+
+Nothing high: no path puts a pending object in a file image, publish and destroy keep memory and file in step, and each of the six create paths publishes once and drops on every error (all of a create runs under the shared API lock, which logout, close and destroy take exclusive). Applied:
+- **M1:** a failed publish records OBJECT_DESTROY for each object it drops (best effort), so a failed unwrap or derive no longer ends the log on a success record for a key that never existed.
+- **M2:** `object_find` skips pending objects, so another session cannot find, or copy, a key whose restrictions are not all set. A guessed handle still reaches it, from the same process only. shortcut: copy does not refuse a pending source by handle; add a getter if a guess ever matters.
+- **M3:** a key pair's halves are published in one write (`fhsm_token_object_publish_pair`), so a failure leaves neither. Step 4c's expectation: 96 → 12 bytes per pair.
+- **M4:** tests for the claims the first had not covered: pending objects in neither image nor a find while another object is written, a pending session object gone at logout, a failed publish dropping and recording (`token_props.rs`, the two `*_div071` tests).
+- **L1:** `p11_divs.c` DIV-001 case 13 reaches the EV_UNWRAP site (one record through the limit) and a second process finds no key.
+- **L2, N2, N3:** comments: a write can fail after its rename; the in-memory commit skips the lock; a pending destroy that fails still removes.
+- **L4:** logout drops pending objects.
+- **N1:** the failed-destroy drop keeps the find order (`remove`, not `swap_remove`).
+
+Recorded, not applied: **L3**, a failed create's handle can be handed out again after a logout and login (DIV-071's entry); **N4**, RSA n and e also come from the secure heap.
+
+Step 4c's DIV-071 line, checked by hand at e4eb56b, was confirmed by harness `pend3` ("less recorded DIVs same").
+
+Found by the harness run after the fixes (`rev1`), not the review: `p11_divs` and `p11_notinit` set RLIMIT_FSIZE for DIV-001 and DIV-053 with stdout redirected to a file, so on C (whose output is longer) a child's lines were cut at the limit and the parent's verdict joined the cut line: `pend3` read "  derive, aDIV-001: FAIL", and the summary's `^DIV-001: ` grep left DIV-001 out without a word. Both now write through a pipe, which the limit does not cover.

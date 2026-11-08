@@ -62,6 +62,8 @@ unsafe extern "C" {
     ) -> u32;
     /// Writes an object added pending, with what was set on it since (one file write per create).
     pub(super) fn fhsm_token_object_publish(t: *mut fhsm_token_t, h: u32) -> u32;
+    /// Both halves of a key pair in one write.
+    pub(super) fn fhsm_token_object_publish_pair(t: *mut fhsm_token_t, a: u32, b: u32) -> u32;
     pub(super) fn fhsm_token_object_set_usage(t: *mut fhsm_token_t, h: u32, v: u8) -> u32;
     pub(super) fn fhsm_token_object_mark_session(t: *mut fhsm_token_t, h: u32, owner: u32) -> u32;
     fn fhsm_token_object_set_allowed_mechs(
