@@ -1,6 +1,6 @@
 # Phase 5 plan: PKI CLI tools and desktop GUI
 
-Status: **DRAFT 2026-11-09**, for approval. Brief: `MODERNIZATION_BRIEF.md` Phase 5. Entry criteria: Phase 3 exit met; the Phase 5 decisions recorded (`DIVERGENCES.md` § Phase 5, DIV-072 to 075, 2026-11-09); the pilot is slice 1 below. Method: `/modernize-transform`, slice by slice, as in Phases 2 to 4: characterisation goldens from the C, the Rust behind the same C ABI, the C object dropped from `hybrid.mk`, a harness run clean apart from recorded divergences, an architecture-critic review per slice.
+Status: **APPROVED 2026-11-09** (user: "Approve the plan (Recommended)"). Brief: `MODERNIZATION_BRIEF.md` Phase 5. Entry criteria: Phase 3 exit met; the Phase 5 decisions recorded (`DIVERGENCES.md` § Phase 5, DIV-072 to 075, 2026-11-09); the pilot is slice 1 below. Method: `/modernize-transform`, slice by slice, as in Phases 2 to 4: characterisation goldens from the C, the Rust behind the same C ABI, the C object dropped from `hybrid.mk`, a harness run clean apart from recorded divergences, an architecture-critic review per slice.
 
 ## 1. Scope
 

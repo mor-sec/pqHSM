@@ -40,7 +40,9 @@ SIGN="${SIGN:-./tools/fhsm-sign}"
 for t in "$TOK" "$CSR" "$CA" "$SIGN"; do
     [ -x "$t" ] || { echo "pki_tools_characterize.sh: $t is not built -- make PROFILE=all-mechanisms all" >&2; exit 2; }
 done
-command -v openssl >/dev/null || { echo "pki_tools_characterize.sh: openssl is not on PATH" >&2; exit 2; }
+for c in openssl python3 flock; do
+    command -v $c >/dev/null || { echo "pki_tools_characterize.sh: $c is not on PATH" >&2; exit 2; }
+done
 
 export FHSM_INTEGRITY_ALLOW_UNSIGNED=1
 export OPENSSL_CONF=/dev/null
@@ -164,3 +166,31 @@ run "token, no arguments"                    "$TOK"
 run "csr, no arguments"                      "$CSR"
 run "ca, no arguments"                       "$CA"
 run "sign, no arguments"                     "$SIGN"
+
+# --- Phase 5 decisions (analysis/pqHSM/DIVERGENCES.md DIV-073 to 075) ---------
+# What C does today with the inputs each decision changes. Each row runs on a
+# copy of the database, so no row moves the ones above it.
+cp "$W/rev.db" "$W/days.db"
+for d in abc 10x 0 -1 2147483648; do       # DIV-073
+    run "issue --days $d"                    "$CA" issue --label ca --ca-cert "$W/ca.der" --csr "$W/ee.csr" --days "$d" --out "$W/days.der" --module "$LIB"
+    run "crl --days $d"                      "$CA" crl --label ca --ca-cert "$W/ca.der" --db "$W/days.db" --days "$d" --out "$W/days.crl" --module "$LIB"
+    run "ocsp-respond --days $d"             "$CA" ocsp-respond --label ca --ca-cert "$W/ca.der" --db "$W/days.db" --req "$W/req.der" --days "$d" --out "$W/days.ocsp" --module "$LIB"
+done
+# DIV-075. badsid.cms is data.cms with the last byte of the serial in its
+# SignerInfo flipped: the identifier names a certificate the CMS does not carry.
+openssl x509 -inform DER -in "$W/ee.der" -out "$W/ee.pem"
+python3 -c 'import sys; b = bytearray(open(sys.argv[1], "rb").read()); s = bytes.fromhex(sys.argv[2]); i = b.rfind(s); assert i > 0; b[i + len(s) - 1] ^= 1; open(sys.argv[3], "wb").write(b)' \
+    "$W/data.cms" "$serial" "$W/badsid.cms" || echo "   (could not build badsid.cms)"
+run "cms-verify --signer, its own cert"      "$SIGN" cms-verify --cms "$W/data.cms" --in "$W/data" --signer "$W/ee.der"
+run "cms-verify --signer, PEM"               "$SIGN" cms-verify --cms "$W/data.cms" --in "$W/data" --signer "$W/ee.pem"
+run "cms-verify --signer, another cert"      "$SIGN" cms-verify --cms "$W/data.cms" --in "$W/data" --signer "$W/resp.der"
+run "cms-verify, identifier names another"   "$SIGN" cms-verify --cms "$W/badsid.cms" --in "$W/data"
+# DIV-074. Two writers racing is not repeatable on C, which has no lock and only
+# sometimes loses an update. Holding the lock here is: C goes ahead, a tool that
+# locks waits its 10 seconds and refuses with the database unchanged.
+cp "$W/rev.db" "$W/lock.db"
+rserial=$(openssl x509 -inform DER -in "$W/resp.der" -noout -serial 2>/dev/null | cut -d= -f2)
+run "revoke while the db is locked"          flock -x "$W/lock.db" "$CA" revoke --db "$W/lock.db" --serial "$rserial" --reason superseded --date 20260102000000Z
+run "crl while the db is locked"             flock -x "$W/lock.db" "$CA" crl --label ca --ca-cert "$W/ca.der" --db "$W/lock.db" --days 30 --out "$W/lock.crl" --module "$LIB"
+run "ocsp-respond while the db is locked"    flock -x "$W/lock.db" "$CA" ocsp-respond --label ca --ca-cert "$W/ca.der" --db "$W/lock.db" --req "$W/req.der" --out "$W/lock.ocsp" --module "$LIB"
+echo "   lock.db"; mask < "$W/lock.db" | sed 's/^/    /'

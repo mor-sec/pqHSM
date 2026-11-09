@@ -1418,3 +1418,14 @@ Found by the harness run after the fixes (`rev1`), not the review: `p11_divs` an
 ### 6c L6: RSA PKCS#1 v1.5 and X.509 wrap bounds under the harness (2026-11-08)
 
 `p11_misc.c` gains a scenario, `rsa wrap`, so step 4p's all-mechanisms build of C and of the hybrid serves both mechanisms (step 4o's strict build refuses each, both sides). Over p11_keys.c's fixed RSA-2048 key: the size query and a short buffer; v1.5 wraps 245 bytes and refuses 246 (0x62), X.509 wraps 256 and refuses 257; a zero-led key comes back from X.509 one byte shorter (the strip), from v1.5 whole; blobs of 255 and 257 bytes are 0x112; either key in the other's place is 0x68; a junk blob unwraps to the same bytes on both (v1.5's implicit rejection). X.509 blobs and every unwrapped value print whole, v1.5 blobs by length. The 1024-byte cap needs an importable modulus past it: a made-up one is stored by C and refused by the hybrid's public check (DIV-065), so the scenario uses the product of 33 distinct 256-bit primes (8448 bits), which passes: X.509 is 0x114 at the cap, v1.5 wraps 1056 bytes, on both. Harness `l6b`: every row identical, both builds; the summary otherwise as `rev2`, less run-to-run counts.
+
+## Phase 5
+
+### Before slice 1: the characterisation script proved, and the decisions' rows (2026-11-09)
+
+`tests/pki_tools_characterize.sh`, run twice on the all-mechanisms C tree in the image (harness step 5a, run standalone from a worktree of 5d28034): identical, both before the new rows (981 lines) and after (1,231). New section at its end, rows 43 to 64, each on a copy of the database so the rows above keep their bytes:
+- **DIV-073:** `--days` abc, 10x, 0, -1, 2147483648 in `issue`, `crl`, `ocsp-respond`. C: `crl` and `ocsp` refuse all but 10x ("--days must be positive.", exit 2); `issue` refuses them at the encoder ("issuing the certificate failed (0x7)", exit 2; 2^31 wraps negative); 10x is 10 in all three (exit 0). Expected diff: the five `issue` refusals change message, the three 10x rows exit 2.
+- **DIV-075:** `cms-verify --signer` (its own cert DER and PEM, another cert) is usage, exit 1, on C. `badsid.cms` (the SignerInfo serial's last byte flipped, so the identifier names a certificate the CMS does not carry) verifies on C, exit 0: the composite path ignores the identifier, as the DIV says. Expected diff: 0, 0, 4, and 2.
+- **DIV-074:** the race itself is not repeatable on C (a lost update is intermittent), so it stays for slice 5's harness test, against the hybrid only. The transcript holds the lock instead (`flock -x` on the database around the tool): C revokes, numbers a CRL and answers OCSP, exit 0 each; the target waits 10 seconds and exits 2 with the database unchanged.
+
+The script now also needs `python3` (to build `badsid.cms`) and `flock`, and checks for both.
