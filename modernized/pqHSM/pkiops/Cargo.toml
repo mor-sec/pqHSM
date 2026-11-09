@@ -1,0 +1,22 @@
+[package]
+name = "pqhsm-pkiops"
+description = "pqHSM PKI operations: the library under the PKI tools (replaces tools/pkiops.c and tools/p11_util.h, Phase 5)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+# staticlib: linked into the C tools and test_pkiops* by hybrid.mk, with pqhsm-pki's C ABI
+# (their links took the composite and revocation code from pqhsm-module). rlib: pqhsm-cli.
+crate-type = ["staticlib", "rlib"]
+
+[features]
+# The C ABI of tools/pkiops.h, the hand-over to the C of tools/pkiops.c not ported yet, and
+# pqhsm-pki's C ABI. Off for `cargo test`, on for the hybrid build.
+ffi = ["pqhsm-pki/ffi"]
+
+[dependencies]
+libc.workspace = true
+pqhsm-pki = { path = "../pki" }

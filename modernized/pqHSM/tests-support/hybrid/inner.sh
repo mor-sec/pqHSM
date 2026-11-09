@@ -436,11 +436,37 @@ printf '; all-mechanisms: %s, C %s, hybrid %s, %s mechanisms, less recorded DIVs
 #     with Rust. The two runs must be identical.
 { (cd $AMC && make PROFILE=all-mechanisms tools/fhsm-token tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign); echo "build rc=$?"; } > /out/pki_char_build.log 2>&1
 for n in 1 2; do
-  (cd $AMC && sh tests/pki_tools_characterize.sh > /out/pki_char_c$n.txt 2>&1; echo "rc=$?" >> /out/pki_char_c$n.txt)
+  (cd $AMC && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_c$n.txt 2>&1; echo "rc=$?" >> /out/pki_char_c$n.txt)
 done
 printf 'pki tools characterise: %s, C run 1 %s, %s lines, run 2 vs run 1 %s' "$(tail -1 /out/pki_char_build.log)" \
   "$(tail -1 /out/pki_char_c1.txt)" "$(wc -l < /out/pki_char_c1.txt)" \
   "$(cmp -s /out/pki_char_c1.txt /out/pki_char_c2.txt && echo same || echo "DIFF ($(diff /out/pki_char_c1.txt /out/pki_char_c2.txt | grep -c '^[<>]') lines)")" > /out/pki_char.txt
+
+# 5b. Phase 5 slice 0 on: the hybrid tools (pqhsm-pkiops) on step 4p's all-mechanisms trees.
+#     Over the C module they must give C's transcript exactly, so a difference is the tools';
+#     over the hybrid module, C's less DIV-059's PIN-length rows. pkiops_calllog.c prints every
+#     call record and p11_err through tools/pkiops.c and through pqhsm-pkiops, both over the C
+#     module: the loader and the call log, which no transcript shows.
+{ (cd $AMH && $M PROFILE=all-mechanisms tools/fhsm-token tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign); echo "build rc=$?"; } > /out/pki_char_h_build.log 2>&1
+(cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
+(cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
+sed -E 's/(PIN length +|accepted length \()4\.\.64/\18..64/' /out/pki_char_c1.txt > /out/pki_char_c_expect.txt   # DIV-059
+PCL=modernized/pqHSM/tests-support/hybrid/pkiops_calllog.c
+PCF="-std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Iinclude -Itools -I/usr/local/ssl/include"
+PCL_L="-L/usr/local/ssl/lib64 -L/usr/local/ssl/lib"
+{ (cd $AMC && cc $PCF -o /tmp/pkiops_calllog_c /work/$PCL tools/pkiops.c tools/cms_env.c .obj/src/fhsm_composite.o \
+     .obj/src/fhsm_revocation.o $PCL_L -lcrypto -ldl -pthread) &&
+  (cd $AMH && cc $PCF -o /tmp/pkiops_calllog_hybrid $PCL modernized/pqHSM/pkiops/shim/pkiops_tu.c tools/cms_env.c \
+     modernized/pqHSM/target/release/libpqhsm_pkiops.a $PCL_L -lssl -lcrypto -lpthread -lm -ldl -lrt -lutil); echo "build rc=$?"; } > /out/pkiops_calllog_build.log 2>&1
+for t in c hybrid; do
+  FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/pkiops_calllog_$t $AMC/libfreehsm.so > /out/pkiops_calllog_$t.txt 2>&1
+  echo "rc=$?" >> /out/pkiops_calllog_$t.txt
+done
+printf '; hybrid tools: %s; on the C module vs C %s; on the hybrid module vs C less DIV-059 %s; call log: %s, C %s, hybrid %s, %s records, %s' \
+  "$(tail -1 /out/pki_char_h_build.log)" "$(pl_same /out/pki_char_c1.txt /out/pki_char_h_on_c.txt)" \
+  "$(pl_same /out/pki_char_c_expect.txt /out/pki_char_h.txt)" "$(tail -1 /out/pkiops_calllog_build.log)" \
+  "$(tail -1 /out/pkiops_calllog_c.txt)" "$(tail -1 /out/pkiops_calllog_hybrid.txt)" \
+  "$(grep -c '^  C_' /out/pkiops_calllog_c.txt)" "$(pl_same /out/pkiops_calllog_c.txt /out/pkiops_calllog_hybrid.txt)" >> /out/pki_char.txt
 
 # 4q. Slice 8c review M1: the audit switch's other side. `make audit-switch` recurses without
 #     -f, so under hybrid.mk it builds pure C; this is its second half, on fresh copies of each

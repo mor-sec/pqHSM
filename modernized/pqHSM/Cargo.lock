@@ -331,6 +331,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pqhsm-pkiops"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pqhsm-pki",
+]
+
+[[package]]
 name = "pqhsm-selftest"
 version = "0.1.0"
 dependencies = [
