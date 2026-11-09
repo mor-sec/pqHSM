@@ -390,7 +390,7 @@ Each of these is a token- or revocation-layer rule, but the defect lives in, or 
 | RULE-086, RULE-056 | Logout leaves decrypted objects usable (SEC-001) | 4 (Q12). Unloading at logout alone breaks public-object access in the C layer, and the role check is in `fhsm_pkcs11.c`. |
 | RULE-084 | `CKF_*_PIN_COUNT_LOW` and `FINAL_TRY` are never set | 4. They are set in `C_GetTokenInfo`. |
 | RULE-090, RULE-091, RULE-092 | `C_CloseAllSessions` slot filter, session-object marking, destroy checks | 4. All in `fhsm_pkcs11.c`. |
-| RULE-099, RULE-100 | No locking on the revocation DB, which loses one of two concurrent revokes | 5. The lock must span load, modify and save, and the tools drive that sequence. |
+| RULE-099, RULE-100 | No locking on the revocation DB, which loses one of two concurrent revokes | 5. The lock must span load, modify and save, and the tools drive that sequence. Decided: DIV-074. |
 | RULE-023 | OCSP answers "good" for unknown serials | 6 (Q20). |
 | RULE-003(1) | `FHSM_OBJ_BLOB_MAX` exceeds `INT_MAX` in the GCM call | 3. The cast is in `fhsm_crypto.c`. |
 | RULE-061 (slice 3 candidate 4) | `fhsm_token_mech_allowed` returns OK for an unknown handle (`src/fhsm_token.c:2354`) and when nothing is loaded (`:2334`) | 4 (2026-10-31, user: "defer 4,5"). The callers that rely on it are in `fhsm_pkcs11.c`. |
@@ -553,7 +553,7 @@ Drafted 2026-11-02 for the Phase 3 entry gate ("a decision for every suspected-d
 | RULE-001 (Phase 3 part) | `fhsm_pbkdf2`'s header comment says a 200,000 minimum; the code's floor is SP 800-132's 1,000, deliberately (`src/fhsm_crypto.c:542-561`). The token's 200,000 is DIV-011 (Phase 2). | Preserve; the stale comment is not carried over. |
 | RULE-006 | The primitive's bounds (≥ 1,000 iterations, 1–256 output bytes, any salt) are as intended. The `(uint32_t)` narrowing of the mechanism's iteration count is in `fhsm_pkcs11.c:2829`. | Preserve the primitive; the narrowing goes to Phase 4. |
 | RULE-010(3), (4) | `docs/RNG.md` says SHA-256 conditioning; the code uses SHA2-384. `RAND_add` with entropy 0 is additional input, not a reseed of OpenSSL's DRBG, which reseeds itself from its own seed source. | Preserve the code; describe it as additional input. |
-| RULE-021, RULE-069 (`fhsm_composite.c` part) | A certificate's notAfter is not clamped to the issuing CA's. Clamping changes certificate bytes, and Phase 3's exit compares PKI output. | Preserve in Phase 3; decide at Phase 5 with `tools/fhsm_ca.c`. That phase also owns the unchecked `memcpy` of the CA file into a 256 KiB buffer (RULE-069) and `--days` parsed with `atoi` (RULE-021). |
+| RULE-021, RULE-069 (`fhsm_composite.c` part) | A certificate's notAfter is not clamped to the issuing CA's. Clamping changes certificate bytes, and Phase 3's exit compares PKI output. | Preserve in Phase 3; decide at Phase 5 with `tools/fhsm_ca.c` (decided 2026-11-09: kept, with strict `--days`, DIV-073). That phase also owns the unchecked `memcpy` of the CA file into a 256 KiB buffer (RULE-069) and `--days` parsed with `atoi` (RULE-021). |
 | RULE-022 | The comment at `tools/fhsm_ca.c:398-402` is wrong (no number is consumed on a signing failure); thisUpdate is not backdated. | Preserve. |
 | RULE-073 (Phase 3 part) | The crypto primitives already refuse in ERROR (`src/fhsm_crypto.c:388`, `:432`, `:480`, `:508`, `:546`; `fhsm_drbg.c:373`). The calls that keep working in ERROR are in `fhsm_pkcs11.c`. | Preserve the Phase 3 checks; the rest is Phase 4 (Q13). |
 | RULE-076(a), (c) | `pReserved` is not checked; Finalize in POWER_OFF returns OK. Both are in `fhsm_pkcs11.c`. | Phase 4. |
@@ -793,3 +793,35 @@ The 45 `fhsm_pkcs11.c` and 2 `fhsm_state.c` audit call sites stop discarding the
 | RULE-091 | A session object's marking result is ignored (`:2554`), so a failed rewrite leaves it a token object; 128 sessions advertised, 127 possible | Fix: a failed marking destroys the object and returns the error; 128 sessions open. **DONE** (2026-11-05, slice 2): sessions `core::session::MAX` 129 and C's tables built with `-DFHSM_MAX_SESSIONS=129` (`hybrid.mk`; the flag removed in slice 8c, when no compiled C read it any more), test `p11_divs.c` RULE-091 (C opens 127); `core/tests/golden/session.tsv` regenerated from the legacy C at 129. The marking half is done for copy (`copy.rs`) and has no test: the marking fails only when the store rewrite does, which nothing can force without fault injection. Create, generate, unwrap and derive mark through C's `fhsm_apply_token_scope` until slice 6 | none |
 | RULE-092 | No ERROR check; no session ownership check; no visibility check; an unknown handle is 0x60 | ERROR: DIV-053. Visibility: DIV-050. Ownership: preserve (PKCS#11 shares session objects among the application's sessions). Unknown handle: Fix, `CKR_OBJECT_HANDLE_INVALID` (0x82). **DONE** (2026-11-05, slice 2, `objects.rs`; test `p11_divs.c` RULE-092; step 4i records three rows, `p11_objects_expect.sed`) | none (no test destroys an unknown handle) |
 | Slice 8b-ii review L1 | A certificate's CKA_SUBJECT is read from its DER (`extract_cert_attr`, `:7128`) even when the creating template supplied one, so the template's value is never answered | Preserve (2026-11-07, user: "keep going and select the recommended option"): a subject read from the certificate cannot disagree with it, and storing the template's would let a caller label a certificate with a false subject | none (step 4n "fixed cert subject given") |
+
+## Phase 5 — PKI CLI tools and desktop GUI (`tools/fhsm_{csr,ca,sign,token,crypt}.c`, `pkiops.c`, `cms_env.c`, `fhsm_gui.c`)
+
+The suspected-defect rules gated at Phase 5, decided before the phase starts (2026-11-09). RULE-067, 068, 097 and 098 were labelled Phase 5 in the brief's §5, but their code is `service/fhsm_service.c`, Phase 6's scope: their gate is Phase 6, and RULE-068's and RULE-098's decisions are due before it. RULE-022 is kept as C does it (Phase 3 table above); RULE-023 is Phase 6 (Q20).
+
+### DIV-072 · SEC-011 A tool without its PIN variable asks for it at a terminal
+
+- **Status:** DECIDED (2026-11-09; user: "Env + prompt fallback (Recommended)").
+- **Legacy:** every tool reads the user PIN from `FHSM_PIN` (`fhsm-token init` the SO PIN from `FHSM_SO_PIN` too) and exits 1 with "FHSM_PIN is not set." when it is unset or empty (`tools/fhsm_sign.c:122`, `fhsm_token.c:94-95`, `fhsm_csr.c:122`, `fhsm_crypt.c:167`, `fhsm_ca.c:228`, `:388`, `:473`). The environment is readable by the same user through `/proc/<pid>/environ` and inherited by children (CWE-526, Low).
+- **Target:** the variables are read exactly as C reads them. When one is unset or empty and stdin is a terminal, the tool prompts for that PIN on the terminal without echo; without a terminal it prints C's message and exits 1. The PIN is wiped once the login has used it.
+- **Expected harness diff:** none: the harness and `test_pkiops*` set the variables and run without a terminal.
+
+### DIV-073 · RULE-021 `--days` must be a positive whole number
+
+- **Status:** DECIDED (2026-11-09; user: "Preserve + strict --days (Recommended)").
+- **Legacy:** `fhsm-ca` parses `--days` with `atoi` in `issue`, `crl` and `ocsp` (`tools/fhsm_ca.c:191`, `:376`, `:462`): "abc" is 0, "10x" is 10, a value past `int` is undefined. `crl` and `ocsp` refuse a result ≤ 0 (exit 2); `issue` passes it to the encoder.
+- **Target:** in all three, `--days` must be a whole positive decimal that fits an `int`, else "--days must be positive." and exit 2, as `crl` and `ocsp` already say. A certificate's notAfter is still not clamped to its CA's (RULE-021/069, the Phase 3 table above): a leaf may claim to outlive its issuer, accepted, since path validation refuses the chain once the CA expires. The CA file read into 256 KiB is bounded (`fread` caps it); a larger file is truncated and then fails to parse, as in C.
+- **Expected harness diff:** none for valid input; new golden rows for "abc", "10x", 0, -1 and 2^31 in each subcommand.
+
+### DIV-074 · RULE-099, RULE-100 The revocation database is locked from load to save
+
+- **Status:** DECIDED (2026-11-09; user: "Lock like the token (Recommended)").
+- **Legacy:** `fhsm-ca revoke` and `crl` load the database, change it and save it (temp file and rename) with no lock (`tools/fhsm_ca.c:322-353`, `:396-413`): of two concurrent revokes one is lost, and two concurrent CRLs can both take number N+1 (against RULE-022's increasing numbers). `ocsp` only reads (`:518`).
+- **Target:** `revoke` and `crl` hold an exclusive `flock` on the database file from load to save, `ocsp` a shared one for its read, with DIV-012's inode re-check (the lock is taken again if a save renamed a new file over the one locked) and its 10-second wait. A tool that cannot take the lock prints so and exits 2 with nothing changed. No new file appears.
+- **Expected harness diff:** none sequentially; a concurrency test (two revokes at once both kept; two CRLs at once numbered N+1 and N+2).
+
+### DIV-075 · Phase 3 review H1 `cms-verify` says who signed, and can require a signer
+
+- **Status:** DECIDED (2026-11-09; user: "Report + optional pin (Recommended)").
+- **Legacy:** `fhsm-sign cms-verify` checks the signature against the certificate inside the CMS and prints "CMS verified." (`tools/fhsm_sign.c:325-361`); it never says whose certificate that was, so any key verifies its own file. On the composite path the SignerInfo's identifier is not compared with that certificate. Two Phase 3 golden rows pin this.
+- **Target:** on success it also prints the signer certificate's subject and SHA-256 fingerprint to stderr. A new optional `--signer CERT` (DER or PEM) makes a CMS signed under any other certificate exit 4. The composite path requires the SignerInfo identifier (issuer and serial, or subject key identifier) to name the embedded certificate, else the CMS is not one the tool can read (exit 2). Without `--signer`, verdicts and exit codes are C's.
+- **Expected harness diff:** the extra stderr lines; the two Phase 3 rows still verify (their identifiers match); new rows for `--signer` matching, not matching, and a composite CMS whose identifier names another certificate.

@@ -52,7 +52,7 @@ C4Container
   System_Boundary(pq, "pqHSM") {
     Container(mod, "libpqhsm.so", "Rust cdylib", "PKCS#11 v3.2 C ABI: C_GetFunctionList, C_GetInterface")
     Container(svc, "pqhsm-service", "Rust, axum/hyper", "Private: /sign /verify /token /health. Public: /ocsp /certificates")
-    Container(cli, "pqhsm-csr, -ca, -sign, -token, -crypt", "Rust CLI", "PKI operations; load the module through PKCS#11 (cryptoki)")
+    Container(cli, "pqhsm-csr, -ca, -sign, -token, -crypt", "Rust CLI", "PKI operations; load the module through PKCS#11 (own libc loader)")
     Container(gui, "pqhsm-gui", "Rust, gtk4-rs", "Desktop front end over the same PKI crate")
     Container(ver, "pqhsm-audit", "Rust CLI", "Standalone offline audit-chain verifier")
     ContainerDb(tok, "Token store", "slotN.tok, slotN.tok.tpm", "On-disk format v3 (compatibility per Q5)")
@@ -104,7 +104,7 @@ symbols therefore keep running unchanged. In Phase 4 the Rust `cdylib` takes ove
 | D1 PKCS#11 API and object model | `src/fhsm_pkcs11.c` (13.4k lines), `fhsm_create_attrs.c`, `fhsm_pq_params.c`, `fhsm_ecdsa_raw.c` | `pqhsm-core` (object model, policy, per-session operation state) plus `pqhsm-p11` cdylib (ABI shim, function list) | 4 |
 | D2 Lifecycle, sessions, API lock | `src/fhsm_state.c`, `fhsm_session.c`, `fhsm_apilock.c` | `pqhsm-core::{state, session, lock}` | 4 |
 | D5 Mechanism registry and dispatch | `src/gen/fhsm_dispatch.c` (advertisement only), `src/dispatch/*` and `src/fhsm_mode.c` (dead or inert) | the advertised mechanism table only, folded into `pqhsm-core`. **The dead dispatch handlers and runtime mode are not ported** (Q16) | 4 |
-| D10 CLI tools and GUI | `tools/fhsm_{csr,ca,sign,token,crypt}.c`, `pkiops.c`, `cms_env.c`, `fhsm_gui.c` | `pqhsm-cli` binaries and `pqhsm-gui` (gtk4-rs); both load the module through `cryptoki` | 5 |
+| D10 CLI tools and GUI | `tools/fhsm_{csr,ca,sign,token,crypt}.c`, `pkiops.c`, `cms_env.c`, `fhsm_gui.c` | `pqhsm-cli` binaries and `pqhsm-gui` (gtk4-rs); both load the module through their own `libc` loader (was `cryptoki`, changed 2026-11-09) | 5 |
 | D9 HTTP signing and OCSP service | `service/fhsm_service.c` (statically links all module objects) | `pqhsm-service` (axum/hyper). Links `pqhsm-core` as a crate, which replaces the non-exported `fhsm_audit_set_actor` workaround | 6 |
 | D11 Build, CI and release | `Makefile`, `scripts/*`, `.github/workflows/*`, `Dockerfile.build` | Cargo workspace; CI jobs moved over: sanitizers become Miri + ASan on FFI tests, fuzz becomes cargo-fuzz, reproducible-build and Wycheproof jobs kept. The C build stays as the oracle until Phase 6 | 1 (harness) to 6 (switch) |
 | Docs and evidence | `docs/` (FIPS 140-3 and CC-style evidence; not certified, none planned) | rewritten against the Rust module; brand assets dropped (Q19) | 6 |
@@ -253,11 +253,11 @@ About 2.6 KSLOC (the dead dispatch layer, `fhsm_mode.c` and `kat/fhsm_kat_rsp.c`
 
 ### Phase 5 — PKI CLI tools and desktop GUI (D10)
 
-- **Scope:** `tools/fhsm_{csr,ca,sign,token,crypt}.c`, `tools/pkiops.c`, `tools/cms_env.c` and `tools/fhsm_gui.c` → `pqhsm-cli` and `pqhsm-gui`. The tools load the module through the PKCS#11 ABI (the `cryptoki` crate), as the C tools do today through `p11_util.h`.
+- **Scope:** `tools/fhsm_{csr,ca,sign,token,crypt}.c`, `tools/pkiops.c`, `tools/cms_env.c` and `tools/fhsm_gui.c` → `pqhsm-cli` and `pqhsm-gui`. The tools load the module through the PKCS#11 ABI with their own small loader (`libc` dlopen and `C_GetFunctionList`), as the C tools do today through `p11_util.h` (2026-11-09, user: "Own loader, no new crates (Recommended)"; `cryptoki` is not in the offline cache).
 - **Entry criteria:**
-  - [ ] Phase 3 exit criteria are met, because the tools need `pqhsm-pki` and the revocation component.
-  - [ ] `DIVERGENCES.md` has a decision for every suspected-defect rule gated at Phase 5, including SEC-011 (PINs read from environment variables).
-  - [x] *(2026-11-04: slice 1)* **Pilot slice named and done first:** `fhsm-csr` → `pqhsm-csr`, the smallest tool at 157 lines. It runs the whole recipe end to end: `cryptoki` load, PKI crate, golden outputs. The other tools follow in this order: `token`, `crypt`, `sign`, `ca`, then the GUI.
+  - [x] *(2026-11-09: every Phase 3 exit criterion is ticked above)* Phase 3 exit criteria are met, because the tools need `pqhsm-pki` and the revocation component.
+  - [x] *(2026-11-09: DIVERGENCES § Phase 5, DIV-072 to 075; RULE-067, 068, 097 and 098 regated to Phase 6, their code being the service)* `DIVERGENCES.md` has a decision for every suspected-defect rule gated at Phase 5, including SEC-011 (PINs read from environment variables).
+  - [ ] **Pilot slice named and done first:** `fhsm-csr` → `pqhsm-csr`, the smallest tool at 157 lines. It runs the whole recipe end to end: module load, PKI crate, golden outputs. The other tools follow in this order: `token`, `crypt`, `sign`, `ca`, then the GUI.
 - **Exit criteria:**
   - [ ] For each tool, the outputs from the same inputs and token match the C tool. Randomised signatures are cross-verified instead of byte-compared.
   - [ ] `test_pkiops*` (including the envelope and RSA envelope tests) pass when re-pointed at the Rust tools.
@@ -409,8 +409,8 @@ is re-run at every one of them.
 | RULE-064 | C_DeriveKey output class and sensitivity | P4 | Medium | Cited | **BLOCKER — SME** (confidence Medium) |
 | RULE-065 | The NIST-approved-only build refuses non-approved mechanisms | P4 | High | Cited | Decide: preserve or fix |
 | RULE-066 | Object-store tag failure and zero-DEK fallback (SEC-002) | P2 | High | Code-read | Proposed **fix** (Q6) |
-| RULE-067 | Peer-credential gate on both listeners | P5 | High | Cited | Preserve |
-| RULE-068 | Client identity, signing policy, refusal budget and in-flight cap | P5 | High | Cited | Decide: preserve or fix |
+| RULE-067 | Peer-credential gate on both listeners | P6 | High | Cited | Preserve |
+| RULE-068 | Client identity, signing policy, refusal budget and in-flight cap | P6 | High | Cited | Decide: preserve or fix |
 | RULE-069 | CSR proof-of-possession and issuance constraints | P3, P5 | High | Cited | Decide: preserve or fix |
 | RULE-070 | Module state whitelist and the latched ERROR state | P4 | High | Cited | Decide: preserve or fix |
 | RULE-071 | C_Initialize sequence and double initialization | P4 | High | Cited | Decide: preserve or fix |
@@ -439,8 +439,8 @@ is re-run at every one of them.
 | RULE-094 | One audit file per opening | P1 | High | Cited | Decide: preserve or fix |
 | RULE-095 | The audit-off switch | P1, P4 | High | Cited | Preserve |
 | RULE-096 | Audit write failure | P1, P2, P4, P6 | High | Cited | **Fix: fail closed** (Q3) |
-| RULE-097 | Service startup order and one-shot PIN login | P5 | High | Cited | Preserve |
-| RULE-098 | Policy reload on SIGHUP keeps the old policy if the new one fails | P5 | High | Cited | Decide: preserve or fix |
+| RULE-097 | Service startup order and one-shot PIN login | P6 | High | Cited | Preserve |
+| RULE-098 | Policy reload on SIGHUP keeps the old policy if the new one fails | P6 | High | Cited | Decide: preserve or fix |
 | RULE-099 | Revocation is one-way, and duplicates are refused | P2, P5 | High | Cited | Decide: preserve or fix |
 | RULE-100 | Database save, load and CRL numbering | P2, P5 | High | Cited | Decide: preserve or fix |
 
