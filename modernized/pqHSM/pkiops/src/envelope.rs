@@ -33,6 +33,7 @@ use crate::ffi::{
 };
 use crate::keys::{CKK_AES, CKK_RSA};
 use crate::objects::{CKA_VALUE_LEN, CKM_RSA_PKCS_OAEP, ObjClass, objects};
+use crate::ops::Session;
 use crate::ops::{
     CKA_ALLOWED_MECHANISMS, CKA_KEY_TYPE, CKA_MODULUS, CKA_PUBLIC_EXPONENT, CKG_MGF1_SHA256,
     CKM_SHA256, CKO_PUBLIC_KEY, CKO_SECRET_KEY, Handle, err, find_one, get_attr, get_ulong, text,
@@ -492,7 +493,13 @@ fn env_write(in_path: &Path, out_path: &Path, cek: &[u8; 32], ri: &[u8]) -> Resu
 /// by the label); an RSA-OAEP pair's public half encrypts it (a key-transport recipient named
 /// by its subjectKeyIdentifier). Codes: 1 an output that exists, 2 the module or the file
 /// system, 3 no such key.
-pub fn encrypt_file(s: Handle, label: &[u8], in_path: &Path, out_path: &Path) -> Result<(), Error> {
+pub fn encrypt_file(
+    s: Session,
+    label: &[u8],
+    in_path: &Path,
+    out_path: &Path,
+) -> Result<(), Error> {
+    let s = s.0;
     refuse_existing(out_path)?;
     let mut cek = Zeroizing::new([0u8; 32]);
     if openssl::rand::rand_priv_bytes(&mut cek[..]).is_err() {
@@ -587,11 +594,12 @@ pub fn encrypt_file_for_cert(
 /// whatever follows. Codes as [`encrypt_file`], and 4 a file that does not open with the key:
 /// altered, or made for another.
 pub fn decrypt_file(
-    s: Handle,
+    s: Session,
     in_path: &Path,
     out_path: &Path,
     used: &mut Option<Vec<u8>>,
 ) -> Result<(), Error> {
+    let s = s.0;
     refuse_existing(out_path)?;
     let (mut inp, size) = open_regular(in_path)?;
     let mut head = vec![0u8; cms_env::HEAD_MAX];
@@ -662,7 +670,7 @@ pub fn decrypt_file(
     let openable = hd.ktri.iter().filter(|t| t.refused.is_none()).count();
     if found.is_none()
         && openable > 0
-        && let Ok(v) = objects(s, 1 << ObjClass::Private as u32)
+        && let Ok(v) = objects(Session(s), 1 << ObjClass::Private as u32)
     {
         // The token's RSA private keys, each with the identifier its public key would have:
         // Some(Some(ski)), Some(None) when it has no computable one, None when unreadable.
@@ -672,7 +680,7 @@ pub fn decrypt_file(
                 if o.key_type != CKK_RSA {
                     return Some(None);
                 }
-                rsa_pkey_of(s, o.handle).map(|k| ski_of(&k))
+                rsa_pkey_of(s, o.handle.0).map(|k| ski_of(&k))
             })
             .collect();
         // Pass 0: keys whose identifier the recipient names. Pass 1: the rest, for a recipient
@@ -688,7 +696,7 @@ pub fn decrypt_file(
                     if (pass == 0) != matches {
                         continue;
                     }
-                    if let Some(cek) = token_oaep_decrypt(s, o.handle, t.ekey, want) {
+                    if let Some(cek) = token_oaep_decrypt(s, o.handle.0, t.ekey, want) {
                         found = Some((cek, text(&o.label).to_vec()));
                         break 'passes;
                     }

@@ -20,6 +20,7 @@ use crate::ops::{
     CKA_VALUE, CKA_VERIFY, CKO_PRIVATE_KEY, CKO_PUBLIC_KEY, CKO_SECRET_KEY, Handle, alg_of, at,
     at_ul, get_attr, get_ulong, text,
 };
+use crate::ops::{ObjHandle, Session};
 
 const CKO_CERTIFICATE: CK_ULONG = 1;
 const CKA_PRIVATE: CK_ULONG = 0x002;
@@ -85,7 +86,7 @@ impl ObjClass {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Key {
-    pub handle: Handle,
+    pub handle: ObjHandle,
     pub is_private: c_int,
     /// CKA_KEY_TYPE.
     pub key_type: c_ulong,
@@ -100,7 +101,7 @@ pub struct Key {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Object {
-    pub handle: Handle,
+    pub handle: ObjHandle,
     pub cls: ObjClass,
     /// CKA_KEY_TYPE; 0 for a certificate.
     pub key_type: c_ulong,
@@ -200,12 +201,13 @@ fn search(s: Handle, cls: CK_ULONG, mut each: impl FnMut(Handle)) -> Result<(), 
 
 /// `pkiops_keys`: the key pairs' halves a session can see, public then private, each with the
 /// algorithm it signs with when that can be read.
-pub fn keys(s: Handle) -> Result<Vec<Key>, Error> {
+pub fn keys(s: Session) -> Result<Vec<Key>, Error> {
+    let s = s.0;
     let mut v = Vec::new();
     for cls in [CKO_PUBLIC_KEY, CKO_PRIVATE_KEY] {
         search(s, cls, |h| {
             let mut k = Key {
-                handle: h,
+                handle: ObjHandle(h),
                 is_private: c_int::from(cls == CKO_PRIVATE_KEY),
                 key_type: 0,
                 label: [0; 65],
@@ -239,7 +241,7 @@ pub fn keys(s: Handle) -> Result<Vec<Key>, Error> {
     for k in &mut v {
         let label = text(&k.label).to_vec();
         if !label.is_empty()
-            && let Ok(a) = alg_of(s, &label, k.handle)
+            && let Ok(a) = alg_of(s, &label, k.handle.0)
         {
             k.alg = fill(a.info().name.to_bytes());
         }
@@ -254,7 +256,7 @@ pub fn keys(s: Handle) -> Result<Vec<Key>, Error> {
 fn objects_of_class(s: Handle, oc: ObjClass, v: &mut Vec<Object>) -> Result<(), Error> {
     search(s, oc.cko(), |h| {
         let mut o = Object {
-            handle: h,
+            handle: ObjHandle(h),
             cls: oc,
             key_type: 0,
             label: [0; 65],
@@ -309,7 +311,8 @@ fn objects_of_class(s: Handle, oc: ObjClass, v: &mut Vec<Object>) -> Result<(), 
 
 /// `pkiops_objects`: the objects of the classes in `classes` (a mask of `OBJS_*`) a session can
 /// see, certificates first.
-pub fn objects(s: Handle, classes: u32) -> Result<Vec<Object>, Error> {
+pub fn objects(s: Session, classes: u32) -> Result<Vec<Object>, Error> {
+    let s = s.0;
     let mut v = Vec::new();
     for oc in ObjClass::ALL {
         if classes & (1 << oc as u32) != 0 {
@@ -320,7 +323,16 @@ pub fn objects(s: Handle, classes: u32) -> Result<Vec<Object>, Error> {
 }
 
 /// `pkiops_destroy`: cannot be undone, so the caller asks first.
-pub fn destroy(s: Handle, object: Handle) -> Result<(), Error> {
+///
+/// A session and an object handle are different types, so they cannot be swapped:
+///
+/// ```compile_fail
+/// use pqhsm_pkiops::ops::{ObjHandle, Session};
+/// let (s, o) = (Session(1), ObjHandle(2));
+/// let _ = pqhsm_pkiops::objects::destroy(o, s);
+/// ```
+pub fn destroy(s: Session, object: ObjHandle) -> Result<(), Error> {
+    let (s, object) = (s.0, object.0);
     if !has("DestroyObject") {
         return Err(Error::new(
             2,
@@ -617,7 +629,8 @@ fn key_attrs(o: &mut Lines, s: Handle, h: Handle, oc: ObjClass) {
 
 /// `pkiops_object_attrs`: one object's attributes as name/value lines, each read on its own;
 /// one the module does not keep is left out.
-pub fn object_attrs(s: Handle, h: Handle) -> Result<Vec<Attr>, Error> {
+pub fn object_attrs(s: Session, h: ObjHandle) -> Result<Vec<Attr>, Error> {
+    let (s, h) = (s.0, h.0);
     // The class is asked, not taken from the list: a handle gone stale since says so here.
     let Some(c) = attr_ul(s, h, CKA_CLASS) else {
         return Err(Error::new(
@@ -717,9 +730,10 @@ fn keygen_oaep(s: Handle, label: &[u8]) -> Result<Handle, Error> {
 /// `pkiops_keygen_secret`: a secret key on the token, sensitive, not extractable, private.
 /// AES keys encrypt, decrypt, wrap and unwrap; the HMAC key signs and verifies. For rsa-oaep,
 /// the private half of an OAEP-only RSA pair.
-pub fn keygen_secret(s: Handle, label: &[u8], k: Skey) -> Result<Handle, Error> {
+pub fn keygen_secret(s: Session, label: &[u8], k: Skey) -> Result<ObjHandle, Error> {
+    let s = s.0;
     if k == Skey::RsaOaep {
-        return keygen_oaep(s, label);
+        return keygen_oaep(s, label).map(ObjHandle);
     }
     if !has("GenerateKey") {
         return Err(Error::new(
@@ -761,7 +775,7 @@ pub fn keygen_secret(s: Handle, label: &[u8], k: Skey) -> Result<Handle, Error> 
     if rv != 0 {
         return Err(Error::new(2, format!("C_GenerateKey failed (0x{rv:x})\n")));
     }
-    Ok(h)
+    Ok(ObjHandle(h))
 }
 
 #[cfg(test)]

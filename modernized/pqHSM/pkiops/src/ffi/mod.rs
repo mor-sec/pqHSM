@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::time::Instant;
 
 use crate::calllog::{ARGS_CAP, attr_types, mech_name, user_name};
+use crate::ops::Slot;
 use crate::{Error, FUNCTIONS, Intent, Need, SlotId, Slots};
 
 pub(crate) type CK_ULONG = c_ulong;
@@ -714,9 +715,11 @@ pub fn load(module: Option<&CStr>) -> Result<(), Error> {
 }
 
 /// `pkiops_open`: [`load`], then the slot: `want` is the one the caller named, or -1.
-pub fn open(module: Option<&CStr>, want: c_long, intent: Intent) -> Result<SlotId, Error> {
+pub fn open(module: Option<&CStr>, want: c_long, intent: Intent) -> Result<Slot, Error> {
     load(module)?;
-    crate::resolve(&mut Module, want, intent).inspect_err(|_| close())
+    crate::resolve(&mut Module, want, intent)
+        .map(Slot)
+        .inspect_err(|_| close())
 }
 
 /// `pkiops_close`: C_Finalize, if initialised.
@@ -772,7 +775,7 @@ pub unsafe extern "C" fn pkiops_open(
         Ok(s) => {
             // SAFETY: the caller's output, null or writable.
             if let Some(slot) = unsafe { slot.as_mut() } {
-                *slot = s;
+                *slot = s.0;
             }
             0
         }

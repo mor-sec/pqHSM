@@ -11,16 +11,44 @@ use pqhsm_pki::ffi::{
     fhsm_pki_signer_t,
 };
 
+use crate::Error;
 use crate::ffi::{
     CK_ATTRIBUTE, CK_MECHANISM, CK_ULONG, w_close_session, w_find_objects, w_find_objects_final,
     w_find_objects_init, w_generate_key_pair, w_get_attribute_value, w_get_token_info, w_init_pin,
     w_init_token, w_login, w_open_session, w_sign, w_sign_init,
 };
 use crate::keys::{self, Alg};
-use crate::{Error, SlotId};
 
-/// `pkiops_handle`: a slot, session or object.
+/// `pkiops_handle`: a slot, session or object, as the module and the C ABI pass it. The safe
+/// API takes [`Slot`], [`Session`] and [`ObjHandle`], so one cannot stand in for another.
 pub type Handle = c_ulong;
+
+macro_rules! handle {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[repr(transparent)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct $name(pub Handle);
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+    };
+}
+handle!(
+    /// A slot (`CK_SLOT_ID`), as [`crate::open`] resolves it.
+    Slot
+);
+handle!(
+    /// A session (`CK_SESSION_HANDLE`).
+    Session
+);
+handle!(
+    /// An object on the token (`CK_OBJECT_HANDLE`).
+    ObjHandle
+);
 
 pub(crate) const CKF_RW: CK_ULONG = 6;
 pub(crate) const CKU_USER: CK_ULONG = 1;
@@ -124,7 +152,8 @@ fn field<const N: usize>(f: &[u8]) -> [u8; N] {
 }
 
 /// `pkiops_token_info`.
-pub fn token_info(slot: SlotId) -> Result<TokenInfo, Error> {
+pub fn token_info(slot: Slot) -> Result<TokenInfo, Error> {
+    let slot = slot.0;
     // SAFETY: CkTokenInfo is plain bytes and integers, valid all zero.
     let mut ti: CkTokenInfo = unsafe { std::mem::zeroed() };
     // SAFETY: ti has CK_TOKEN_INFO's layout and is writable.
@@ -149,7 +178,8 @@ pub fn token_info(slot: SlotId) -> Result<TokenInfo, Error> {
 
 /// `pkiops_token_init`: C_InitToken, then C_InitPIN as the Security Officer. Destroys every
 /// object on the token; whether to ask first is the caller's decision.
-pub fn token_init(slot: SlotId, so: &[u8], user: &[u8], label: &[u8]) -> Result<(), Error> {
+pub fn token_init(slot: Slot, so: &[u8], user: &[u8], label: &[u8]) -> Result<(), Error> {
+    let slot = slot.0;
     // Space-padded to exactly 32 bytes: a short C string once made C_InitToken read past it.
     if label.len() > 32 {
         return Err(Error::new(1, "the token label is at most 32 bytes\n"));
@@ -177,12 +207,12 @@ pub fn token_init(slot: SlotId, so: &[u8], user: &[u8], label: &[u8]) -> Result<
     // SAFETY: as C_InitToken's PIN.
     let rv = unsafe { w_login(s, CKU_SO, so.as_ptr().cast_mut(), so.len() as CK_ULONG) };
     if rv != 0 {
-        session_close(s);
+        session_close(Session(s));
         return Err(Error::new(2, format!("C_Login (SO) failed (0x{rv:x})\n")));
     }
     // SAFETY: user.len() readable bytes, not written.
     let rv = unsafe { w_init_pin(s, user.as_ptr().cast_mut(), user.len() as CK_ULONG) };
-    session_close(s);
+    session_close(Session(s));
     if rv != 0 {
         return Err(Error::new(2, format!("C_InitPIN failed (0x{rv:x})\n")));
     }
@@ -192,7 +222,8 @@ pub fn token_init(slot: SlotId, so: &[u8], user: &[u8], label: &[u8]) -> Result<
 // --- sessions ---------------------------------------------------------------------------------
 
 /// `pkiops_session_user`: a read-write session, logged in as the user.
-pub fn session_user(slot: SlotId, pin: &[u8]) -> Result<Handle, Error> {
+pub fn session_user(slot: Slot, pin: &[u8]) -> Result<Session, Error> {
+    let slot = slot.0;
     let mut s: Handle = 0;
     // SAFETY: s is writable; no application callback.
     let rv = unsafe { w_open_session(slot, CKF_RW, null_mut(), null_mut(), &mut s) };
@@ -202,16 +233,16 @@ pub fn session_user(slot: SlotId, pin: &[u8]) -> Result<Handle, Error> {
     // SAFETY: pin.len() readable bytes; the module does not write through it.
     let rv = unsafe { w_login(s, CKU_USER, pin.as_ptr().cast_mut(), pin.len() as CK_ULONG) };
     if rv != 0 {
-        session_close(s);
+        session_close(Session(s));
         return Err(Error::new(2, format!("C_Login failed (0x{rv:x})\n")));
     }
-    Ok(s)
+    Ok(Session(s))
 }
 
 /// `pkiops_session_close`.
-pub fn session_close(s: Handle) {
+pub fn session_close(s: Session) {
     // SAFETY: a plain handle.
-    unsafe { w_close_session(s) };
+    unsafe { w_close_session(s.0) };
 }
 
 // --- objects ------------------------------------------------------------------------------------
@@ -374,7 +405,8 @@ pub(crate) fn alg_of(s: Handle, label: &[u8], h: Handle) -> Result<Alg, Error> {
 }
 
 /// `pkiops_key_alg`: from the public half, which a session not logged in can see.
-pub fn key_alg(s: Handle, label: &[u8]) -> Result<Alg, Error> {
+pub fn key_alg(s: Session, label: &[u8]) -> Result<Alg, Error> {
+    let s = s.0;
     let h = find_one(s, CKO_PUBLIC_KEY, label)?;
     alg_of(s, label, h)
 }
@@ -383,7 +415,8 @@ pub fn key_alg(s: Handle, label: &[u8]) -> Result<Alg, Error> {
 
 /// `pkiops_keygen_alg`: both halves on the token, the private one sensitive and for signing
 /// only; RSA 3072 bits. The composite's templates are what they always were: label and token.
-pub fn keygen_alg(s: Handle, label: &[u8], a: Alg) -> Result<(Handle, Handle), Error> {
+pub fn keygen_alg(s: Session, label: &[u8], a: Alg) -> Result<(ObjHandle, ObjHandle), Error> {
+    let s = s.0;
     let i = a.info();
     let yes = [1u8];
     let f4 = [0x01u8, 0x00, 0x01];
@@ -442,7 +475,7 @@ pub fn keygen_alg(s: Handle, label: &[u8], a: Alg) -> Result<(Handle, Handle), E
             format!("C_GenerateKeyPair failed (0x{rv:x})\n"),
         ));
     }
-    Ok((hp, hk))
+    Ok((ObjHandle(hp), ObjHandle(hk)))
 }
 
 /// OpenSSL's own encoding of the key `der` describes, as C's `i2d_PUBKEY` of the key it
@@ -715,21 +748,21 @@ pub(crate) unsafe fn root_into(
 }
 
 /// `pkiops_csr`: a PKCS#10 request signed by the key `label` with its own algorithm.
-pub fn csr(s: Handle, label: &[u8], subject: &CStr) -> Result<Vec<u8>, Error> {
+pub fn csr(s: Session, label: &[u8], subject: &CStr) -> Result<Vec<u8>, Error> {
     // SAFETY: to_vec hands n writable bytes.
-    to_vec(|out, n| unsafe { csr_into(s, label, subject, out, n) })
+    to_vec(|out, n| unsafe { csr_into(s.0, label, subject, out, n) })
 }
 
 /// `pkiops_root`: a self-signed root, CA:TRUE, keyCertSign and cRLSign.
 pub fn root(
-    s: Handle,
+    s: Session,
     label: &[u8],
     subject: &CStr,
     serial: c_long,
     days: c_int,
 ) -> Result<Vec<u8>, Error> {
     // SAFETY: as csr.
-    to_vec(|out, n| unsafe { root_into(s, label, subject, serial, days, out, n) })
+    to_vec(|out, n| unsafe { root_into(s.0, label, subject, serial, days, out, n) })
 }
 
 #[cfg(test)]

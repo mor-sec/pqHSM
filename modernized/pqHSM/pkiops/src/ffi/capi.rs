@@ -62,7 +62,7 @@ pub unsafe extern "C" fn pkiops_token_info(
     out: *mut TokenInfo,
     e: *mut p11_err,
 ) -> c_int {
-    status(token_info(slot), e, |v| put(out, v))
+    status(token_info(Slot(slot)), e, |v| put(out, v))
 }
 
 /// A PIN from C: `n` bytes at `p`, which may be NULL when `n` is 0.
@@ -96,7 +96,7 @@ pub unsafe extern "C" fn pkiops_token_init(
 ) -> c_int {
     let (so, user) = unsafe { (pin_arg(so_pin, so_len), pin_arg(user_pin, user_len)) };
     let label = unsafe { arg(label) }.to_bytes();
-    status(token_init(slot, so, user, label), e, |()| ())
+    status(token_init(Slot(slot), so, user, label), e, |()| ())
 }
 
 /// `pkiops_alg_name`: NULL out of range.
@@ -142,9 +142,11 @@ pub unsafe extern "C" fn pkiops_key_alg(
     out: *mut c_uint,
     e: *mut p11_err,
 ) -> c_int {
-    status(key_alg(session, unsafe { arg(label) }.to_bytes()), e, |a| {
-        put(out, a as c_uint)
-    })
+    status(
+        key_alg(Session(session), unsafe { arg(label) }.to_bytes()),
+        e,
+        |a| put(out, a as c_uint),
+    )
 }
 
 /// `pkiops_session_user`.
@@ -160,13 +162,13 @@ pub unsafe extern "C" fn pkiops_session_user(
     e: *mut p11_err,
 ) -> c_int {
     let pin = unsafe { pin_arg(pin, pin_len) };
-    status(session_user(slot, pin), e, |s| put(session, s))
+    status(session_user(Slot(slot), pin), e, |s| put(session, s.0))
 }
 
 /// `pkiops_session_close`.
 #[unsafe(no_mangle)]
 pub extern "C" fn pkiops_session_close(session: Handle) {
-    session_close(session)
+    session_close(Session(session))
 }
 
 /// `pkiops_keygen`: the composite.
@@ -201,11 +203,11 @@ pub unsafe extern "C" fn pkiops_keygen_alg(
         return fail(e, Error::new(1, "no such algorithm\n"));
     };
     status(
-        keygen_alg(session, unsafe { arg(label) }.to_bytes(), a),
+        keygen_alg(Session(session), unsafe { arg(label) }.to_bytes(), a),
         e,
         |(p, k)| {
-            put(pub_, p);
-            put(priv_, k);
+            put(pub_, p.0);
+            put(priv_, k.0);
         },
     )
 }
@@ -319,7 +321,7 @@ pub unsafe extern "C" fn pkiops_keys(
     n: *mut usize,
     e: *mut p11_err,
 ) -> c_int {
-    list_out(objects::keys(session), 0, true, out, n, e)
+    list_out(objects::keys(Session(session)), 0, true, out, n, e)
 }
 
 /// `pkiops_obj_class_name`: NULL out of range.
@@ -340,7 +342,14 @@ pub unsafe extern "C" fn pkiops_objects(
     n: *mut usize,
     e: *mut p11_err,
 ) -> c_int {
-    list_out(objects::objects(session, classes), 0, true, out, n, e)
+    list_out(
+        objects::objects(Session(session), classes),
+        0,
+        true,
+        out,
+        n,
+        e,
+    )
 }
 
 /// `pkiops_object_attrs`: malloc'd room for C's 40 lines.
@@ -355,7 +364,14 @@ pub unsafe extern "C" fn pkiops_object_attrs(
     n: *mut usize,
     e: *mut p11_err,
 ) -> c_int {
-    list_out(objects::object_attrs(session, object), 40, false, out, n, e)
+    list_out(
+        objects::object_attrs(Session(session), ObjHandle(object)),
+        40,
+        false,
+        out,
+        n,
+        e,
+    )
 }
 
 /// `pkiops_destroy`.
@@ -364,7 +380,11 @@ pub unsafe extern "C" fn pkiops_object_attrs(
 /// `e` null or writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pkiops_destroy(session: Handle, object: Handle, e: *mut p11_err) -> c_int {
-    status(objects::destroy(session, object), e, |()| ())
+    status(
+        objects::destroy(Session(session), ObjHandle(object)),
+        e,
+        |()| (),
+    )
 }
 
 /// `pkiops_skey_name`: NULL out of range.
@@ -409,8 +429,8 @@ pub unsafe extern "C" fn pkiops_keygen_secret(
         return fail(e, Error::new(1, "no such key type\n"));
     };
     let label = unsafe { arg(label) }.to_bytes();
-    status(objects::keygen_secret(session, label, k), e, |h| {
-        put(key, h)
+    status(objects::keygen_secret(Session(session), label, k), e, |h| {
+        put(key, h.0)
     })
 }
 
@@ -433,7 +453,7 @@ pub unsafe extern "C" fn pkiops_encrypt_file(
 ) -> c_int {
     let r = unsafe {
         envelope::encrypt_file(
-            session,
+            Session(session),
             arg(label).to_bytes(),
             path_arg(in_path),
             path_arg(out_path),
@@ -474,7 +494,12 @@ pub unsafe extern "C" fn pkiops_decrypt_file(
 ) -> c_int {
     let mut label = None;
     let r = unsafe {
-        envelope::decrypt_file(session, path_arg(in_path), path_arg(out_path), &mut label)
+        envelope::decrypt_file(
+            Session(session),
+            path_arg(in_path),
+            path_arg(out_path),
+            &mut label,
+        )
     };
     if let Some(label) = label
         && !used.is_null()
