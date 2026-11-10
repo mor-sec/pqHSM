@@ -21,6 +21,7 @@
 # the module (tests/test_conf alone links fhsm_mode.c). Phase 5 slice 0: the PKI tools' module
 # loader and pkiops_load, _open, _close, _unload and _set_call_log (pqhsm-pkiops, below).
 # Slice 1: tools/fhsm-csr is pqhsm-cli's binary, and fhsm-csr's twelve pkiops_* are Rust.
+# Slice 2: tools/fhsm-token likewise, with pkiops_token_info and pkiops_token_init.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -128,7 +129,7 @@ tests/test_tpm: $(PQHSM_HOOKS_LIB)
 # From slice 1 a ported tool is pqhsm-cli's binary instead (PQHSM_CLI_BINS, below).
 PQHSM_PKIOPS_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_pkiops.a
 PQHSM_PKIOPS_TU   := $(PQHSM_DIR)/pkiops/shim/pkiops_tu.c
-PQHSM_CLI_BINS    := tools/fhsm-csr
+PQHSM_CLI_BINS    := tools/fhsm-csr tools/fhsm-token
 PQHSM_PKIOPS_BINS := $(filter-out $(PQHSM_CLI_BINS),$(TOOLS)) tests/test_pkiops tests/test_pkiops_algs \
                      tests/test_pkiops_objects tests/test_pkiops_secret tests/test_pkiops_envelope \
                      tests/test_pkiops_envelope_rsa

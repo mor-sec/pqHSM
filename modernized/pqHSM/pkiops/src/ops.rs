@@ -1,19 +1,20 @@
-//! The `tools/pkiops.h` operations ported past the loader, as safe functions for `pqhsm-cli`
-//! and under their C names for the C callers. Slice 1: what `fhsm-csr` calls. Each is
-//! `tools/pkiops.c`'s, call for call (the call log shows the order) and message for message.
+//! The `tools/pkiops.h` operations ported past the loader, as safe functions (`ffi::capi`
+//! exports them under their C names). Slice 1: what `fhsm-csr` calls; slice 2: `fhsm-token`'s.
+//! Each is `tools/pkiops.c`'s, call for call (the call log shows the order) and message for
+//! message.
 
-use std::ffi::{CStr, c_char, c_int, c_long, c_uint, c_ulong, c_void};
-use std::ptr::{null, null_mut};
+use std::ffi::{CStr, c_int, c_long, c_ulong, c_void};
+use std::ptr::null_mut;
 
 use pqhsm_pki::ffi::{
     fhsm_composite_spki, fhsm_pki_csr, fhsm_pki_ecdsa_raw_to_der, fhsm_pki_selfsigned,
     fhsm_pki_signer_t,
 };
 
-use super::{
-    CK_ATTRIBUTE, CK_MECHANISM, CK_ULONG, fail, p11_err, w_close_session, w_find_objects,
-    w_find_objects_final, w_find_objects_init, w_generate_key_pair, w_get_attribute_value, w_login,
-    w_open_session, w_sign, w_sign_init,
+use crate::ffi::{
+    CK_ATTRIBUTE, CK_MECHANISM, CK_ULONG, w_close_session, w_find_objects, w_find_objects_final,
+    w_find_objects_init, w_generate_key_pair, w_get_attribute_value, w_get_token_info, w_init_pin,
+    w_init_token, w_login, w_open_session, w_sign, w_sign_init,
 };
 use crate::keys::{self, Alg};
 use crate::{Error, SlotId};
@@ -67,6 +68,127 @@ fn at_ul(type_: CK_ULONG, v: &CK_ULONG) -> CK_ATTRIBUTE {
         p_value: (v as *const CK_ULONG).cast_mut().cast(),
         value_len: size_of::<CK_ULONG>() as CK_ULONG,
     }
+}
+
+// --- token state ------------------------------------------------------------------------------
+
+const CKU_SO: CK_ULONG = 0;
+const CKF_USER_PIN_INITIALIZED: CK_ULONG = 0x0000_0008;
+const CKF_TOKEN_INITIALIZED: CK_ULONG = 0x0000_0400;
+const CKF_USER_PIN_LOCKED: CK_ULONG = 0x0004_0000;
+const CKF_SO_PIN_LOCKED: CK_ULONG = 0x0040_0000;
+
+/// CK_TOKEN_INFO, PKCS#11 v3.2 §C.6.3 (`struct tok_info`).
+#[repr(C)]
+struct CkTokenInfo {
+    label: [u8; 32],
+    manufacturer: [u8; 32],
+    model: [u8; 16],
+    serial: [u8; 16],
+    flags: CK_ULONG,
+    counts: [CK_ULONG; 4],
+    max_pin: CK_ULONG,
+    min_pin: CK_ULONG,
+    memory: [CK_ULONG; 4],
+    versions: [u8; 4],
+    utc_time: [u8; 16],
+}
+
+/// `struct pkiops_token_info`: the text fields trimmed and NUL-terminated, as C's.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TokenInfo {
+    pub label: [u8; 33],
+    pub manufacturer: [u8; 33],
+    pub model: [u8; 17],
+    pub serial: [u8; 17],
+    pub initialised: c_int,
+    pub user_pin_set: c_int,
+    pub so_pin_locked: c_int,
+    pub user_pin_locked: c_int,
+    pub min_pin: c_ulong,
+    pub max_pin: c_ulong,
+}
+
+impl TokenInfo {
+    /// A text field up to its NUL.
+    pub fn text(f: &[u8]) -> &[u8] {
+        f.split(|&b| b == 0).next().unwrap_or_default()
+    }
+}
+
+/// `field`: a space-padded PKCS#11 field, trailing spaces and NULs dropped.
+fn field<const N: usize>(f: &[u8]) -> [u8; N] {
+    let n = f.len() - f.iter().rev().take_while(|&&b| b == b' ' || b == 0).count();
+    let mut out = [0u8; N];
+    out[..n].copy_from_slice(&f[..n]);
+    out
+}
+
+/// `pkiops_token_info`.
+pub fn token_info(slot: SlotId) -> Result<TokenInfo, Error> {
+    // SAFETY: CkTokenInfo is plain bytes and integers, valid all zero.
+    let mut ti: CkTokenInfo = unsafe { std::mem::zeroed() };
+    // SAFETY: ti has CK_TOKEN_INFO's layout and is writable.
+    let rv = unsafe { w_get_token_info(slot, (&raw mut ti).cast()) };
+    if rv != 0 {
+        return Err(Error::new(2, format!("C_GetTokenInfo failed (0x{rv:x})\n")));
+    }
+    let flag = |f| c_int::from(ti.flags & f != 0);
+    Ok(TokenInfo {
+        label: field(&ti.label),
+        manufacturer: field(&ti.manufacturer),
+        model: field(&ti.model),
+        serial: field(&ti.serial),
+        initialised: flag(CKF_TOKEN_INITIALIZED),
+        user_pin_set: flag(CKF_USER_PIN_INITIALIZED),
+        so_pin_locked: flag(CKF_SO_PIN_LOCKED),
+        user_pin_locked: flag(CKF_USER_PIN_LOCKED),
+        min_pin: ti.min_pin,
+        max_pin: ti.max_pin,
+    })
+}
+
+/// `pkiops_token_init`: C_InitToken, then C_InitPIN as the Security Officer. Destroys every
+/// object on the token; whether to ask first is the caller's decision.
+pub fn token_init(slot: SlotId, so: &[u8], user: &[u8], label: &[u8]) -> Result<(), Error> {
+    // Space-padded to exactly 32 bytes: a short C string once made C_InitToken read past it.
+    if label.len() > 32 {
+        return Err(Error::new(1, "the token label is at most 32 bytes\n"));
+    }
+    let mut lbl = [b' '; 32];
+    lbl[..label.len()].copy_from_slice(label);
+    // SAFETY: so.len() readable bytes and 32 of label; the module writes through neither.
+    let rv = unsafe {
+        w_init_token(
+            slot,
+            so.as_ptr().cast_mut(),
+            so.len() as CK_ULONG,
+            lbl.as_mut_ptr(),
+        )
+    };
+    if rv != 0 {
+        return Err(Error::new(2, format!("C_InitToken failed (0x{rv:x})\n")));
+    }
+    let mut s: Handle = 0;
+    // SAFETY: s is writable; no application callback.
+    let rv = unsafe { w_open_session(slot, CKF_RW, null_mut(), null_mut(), &mut s) };
+    if rv != 0 {
+        return Err(Error::new(2, format!("C_OpenSession failed (0x{rv:x})\n")));
+    }
+    // SAFETY: as C_InitToken's PIN.
+    let rv = unsafe { w_login(s, CKU_SO, so.as_ptr().cast_mut(), so.len() as CK_ULONG) };
+    if rv != 0 {
+        session_close(s);
+        return Err(Error::new(2, format!("C_Login (SO) failed (0x{rv:x})\n")));
+    }
+    // SAFETY: user.len() readable bytes, not written.
+    let rv = unsafe { w_init_pin(s, user.as_ptr().cast_mut(), user.len() as CK_ULONG) };
+    session_close(s);
+    if rv != 0 {
+        return Err(Error::new(2, format!("C_InitPIN failed (0x{rv:x})\n")));
+    }
+    Ok(())
 }
 
 // --- sessions ---------------------------------------------------------------------------------
@@ -515,10 +637,11 @@ fn token_signer(s: Handle, label: &[u8]) -> Result<(TokenSigner, &'static [u8], 
 
 /// The builder `build` over the key `label`, into `der`: `*len` its room on entry, the length
 /// on return, whatever the result, as fhsm_pki writes it.
-fn signed_by(
+/// `out`: `*len` writable bytes, set to the length written.
+unsafe fn signed_by(
     s: Handle,
     label: &[u8],
-    der: &mut [u8],
+    out: *mut u8,
     len: &mut usize,
     what: &str,
     build: impl FnOnce(&fhsm_pki_signer_t, *mut u8, &mut usize) -> u32,
@@ -532,8 +655,7 @@ fn signed_by(
         sign: Some(tok_sign),
         sign_ctx: (&raw mut ts).cast(),
     };
-    *len = (*len).min(der.len());
-    match build(&ps, der.as_mut_ptr(), len) {
+    match build(&ps, out, len) {
         0 => Ok(()),
         r => Err(Error::new(
             2,
@@ -542,18 +664,62 @@ fn signed_by(
     }
 }
 
-/// `pkiops_csr`: a PKCS#10 request signed by the key `label` with its own algorithm.
-pub fn csr(
+/// The DER room the tools give a request or certificate (`tools/fhsm_csr.c`'s buffer).
+const DER_MAX: usize = 32768;
+
+/// Into a fresh `DER_MAX` buffer, trimmed to what was written.
+fn to_vec(f: impl FnOnce(*mut u8, &mut usize) -> Result<(), Error>) -> Result<Vec<u8>, Error> {
+    let mut der = vec![0u8; DER_MAX];
+    let mut n = der.len();
+    f(der.as_mut_ptr(), &mut n)?;
+    der.truncate(n);
+    Ok(der)
+}
+
+/// `pkiops_csr` into the caller's buffer.
+///
+/// # Safety
+/// `out` has `*len` writable bytes.
+pub(crate) unsafe fn csr_into(
     s: Handle,
     label: &[u8],
     subject: &CStr,
-    der: &mut [u8],
+    out: *mut u8,
     len: &mut usize,
 ) -> Result<(), Error> {
     // SAFETY: ps and its buffers live for the call; *n writable bytes at out.
-    signed_by(s, label, der, len, "request", |ps, out, n| unsafe {
-        fhsm_pki_csr(ps, subject.as_ptr(), out, n)
-    })
+    unsafe {
+        signed_by(s, label, out, len, "request", |ps, out, n| {
+            fhsm_pki_csr(ps, subject.as_ptr(), out, n)
+        })
+    }
+}
+
+/// `pkiops_root` into the caller's buffer.
+///
+/// # Safety
+/// As [`csr_into`].
+pub(crate) unsafe fn root_into(
+    s: Handle,
+    label: &[u8],
+    subject: &CStr,
+    serial: c_long,
+    days: c_int,
+    out: *mut u8,
+    len: &mut usize,
+) -> Result<(), Error> {
+    // SAFETY: as csr_into.
+    unsafe {
+        signed_by(s, label, out, len, "certificate", |ps, out, n| {
+            fhsm_pki_selfsigned(ps, subject.as_ptr(), serial, days, out, n)
+        })
+    }
+}
+
+/// `pkiops_csr`: a PKCS#10 request signed by the key `label` with its own algorithm.
+pub fn csr(s: Handle, label: &[u8], subject: &CStr) -> Result<Vec<u8>, Error> {
+    // SAFETY: to_vec hands n writable bytes.
+    to_vec(|out, n| unsafe { csr_into(s, label, subject, out, n) })
 }
 
 /// `pkiops_root`: a self-signed root, CA:TRUE, keyCertSign and cRLSign.
@@ -563,220 +729,24 @@ pub fn root(
     subject: &CStr,
     serial: c_long,
     days: c_int,
-    der: &mut [u8],
-    len: &mut usize,
-) -> Result<(), Error> {
+) -> Result<Vec<u8>, Error> {
     // SAFETY: as csr.
-    signed_by(s, label, der, len, "certificate", |ps, out, n| unsafe {
-        fhsm_pki_selfsigned(ps, subject.as_ptr(), serial, days, out, n)
-    })
+    to_vec(|out, n| unsafe { root_into(s, label, subject, serial, days, out, n) })
 }
 
-// --- tools/pkiops.h ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// A C string argument; C's strlen of NULL crashes, this aborts instead.
-unsafe fn arg<'a>(p: *const c_char) -> &'a CStr {
-    assert!(!p.is_null(), "a NULL string where tools/pkiops.h takes one");
-    // SAFETY: the caller's C string.
-    unsafe { CStr::from_ptr(p) }
-}
-
-fn put<T>(out: *mut T, v: T) {
-    // SAFETY: the caller's output, null or writable.
-    if let Some(o) = unsafe { out.as_mut() } {
-        *o = v;
+    #[test]
+    fn token_info_as_c() {
+        // struct tok_info on LP64: 96 bytes of text, 11 CK_ULONGs, 20 bytes, padded to 8.
+        assert_eq!(size_of::<CkTokenInfo>(), 208);
+        assert_eq!(std::mem::offset_of!(CkTokenInfo, max_pin), 96 + 5 * 8);
+        let f: [u8; 33] = field(b"freehsm \0  \0                    ");
+        assert_eq!(TokenInfo::text(&f), b"freehsm");
+        let full: [u8; 17] = field(&[b'x'; 16]);
+        assert_eq!(TokenInfo::text(&full), &[b'x'; 16]);
+        assert_eq!(TokenInfo::text(&field::<17>(&[b' '; 16])), b"");
     }
-}
-
-fn status<T>(r: Result<T, Error>, e: *mut p11_err, ok: impl FnOnce(T)) -> c_int {
-    match r {
-        Ok(v) => {
-            ok(v);
-            0
-        }
-        Err(x) => fail(e, x),
-    }
-}
-
-/// `pkiops_parse_slot`.
-///
-/// # Safety
-/// `text` is a C string; `out` and `e` null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pkiops_parse_slot(
-    text: *const c_char,
-    out: *mut c_long,
-    e: *mut p11_err,
-) -> c_int {
-    status(crate::parse_slot(unsafe { arg(text) }.to_bytes()), e, |v| {
-        put(out, v)
-    })
-}
-
-/// `pkiops_alg_name`: NULL out of range.
-#[unsafe(no_mangle)]
-pub extern "C" fn pkiops_alg_name(a: c_uint) -> *const c_char {
-    Alg::from_index(a).map_or(null(), |a| a.info().name.as_ptr())
-}
-
-/// `pkiops_alg_digest`: NULL out of range.
-#[unsafe(no_mangle)]
-pub extern "C" fn pkiops_alg_digest(a: c_uint) -> *const c_char {
-    Alg::from_index(a).map_or(null(), |a| a.info().digest.as_ptr())
-}
-
-/// `pkiops_alg_list`.
-#[unsafe(no_mangle)]
-pub extern "C" fn pkiops_alg_list() -> *const c_char {
-    keys::ALG_LIST.as_ptr()
-}
-
-/// `pkiops_alg_parse`.
-///
-/// # Safety
-/// `name` is null or a C string; `out` and `e` null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pkiops_alg_parse(
-    name: *const c_char,
-    out: *mut c_uint,
-    e: *mut p11_err,
-) -> c_int {
-    let name = (!name.is_null()).then(|| unsafe { arg(name) }.to_bytes());
-    status(Alg::parse(name), e, |a| put(out, a as c_uint))
-}
-
-/// `pkiops_key_alg`.
-///
-/// # Safety
-/// `label` is a C string; `out` and `e` null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pkiops_key_alg(
-    session: Handle,
-    label: *const c_char,
-    out: *mut c_uint,
-    e: *mut p11_err,
-) -> c_int {
-    status(key_alg(session, unsafe { arg(label) }.to_bytes()), e, |a| {
-        put(out, a as c_uint)
-    })
-}
-
-/// `pkiops_session_user`.
-///
-/// # Safety
-/// `pin` has `pin_len` readable bytes; `session` and `e` null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pkiops_session_user(
-    slot: Handle,
-    pin: *const u8,
-    pin_len: usize,
-    session: *mut Handle,
-    e: *mut p11_err,
-) -> c_int {
-    let pin = if pin_len == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(pin, pin_len) }
-    };
-    status(session_user(slot, pin), e, |s| put(session, s))
-}
-
-/// `pkiops_session_close`.
-#[unsafe(no_mangle)]
-pub extern "C" fn pkiops_session_close(session: Handle) {
-    session_close(session)
-}
-
-/// `pkiops_keygen`: the composite.
-///
-/// # Safety
-/// As [`pkiops_keygen_alg`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pkiops_keygen(
-    session: Handle,
-    label: *const c_char,
-    pub_: *mut Handle,
-    priv_: *mut Handle,
-    e: *mut p11_err,
-) -> c_int {
-    unsafe { pkiops_keygen_alg(session, label, Alg::Composite as c_uint, pub_, priv_, e) }
-}
-
-/// `pkiops_keygen_alg`.
-///
-/// # Safety
-/// `label` is a C string; `pub_`, `priv_` and `e` null or writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pkiops_keygen_alg(
-    session: Handle,
-    label: *const c_char,
-    a: c_uint,
-    pub_: *mut Handle,
-    priv_: *mut Handle,
-    e: *mut p11_err,
-) -> c_int {
-    let Some(a) = Alg::from_index(a) else {
-        return fail(e, Error::new(1, "no such algorithm\n"));
-    };
-    status(
-        keygen_alg(session, unsafe { arg(label) }.to_bytes(), a),
-        e,
-        |(p, k)| {
-            put(pub_, p);
-            put(priv_, k);
-        },
-    )
-}
-
-/// The DER buffer of `pkiops_csr` and `pkiops_root`: `*der_len` bytes at `der`.
-unsafe fn der_buf<'a>(der: *mut u8, der_len: *mut usize) -> (&'a mut [u8], &'a mut usize) {
-    assert!(
-        !der.is_null() && !der_len.is_null(),
-        "pkiops_csr and pkiops_root write a DER buffer"
-    );
-    // SAFETY: the caller's contract.
-    unsafe { (std::slice::from_raw_parts_mut(der, *der_len), &mut *der_len) }
-}
-
-/// `pkiops_csr`.
-///
-/// # Safety
-/// `label` and `subject` are C strings; `der` has `*der_len` writable bytes; `e` null or
-/// writable.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pkiops_csr(
-    session: Handle,
-    label: *const c_char,
-    subject: *const c_char,
-    der: *mut u8,
-    der_len: *mut usize,
-    e: *mut p11_err,
-) -> c_int {
-    let (label, subject) = unsafe { (arg(label).to_bytes(), arg(subject)) };
-    let (buf, len) = unsafe { der_buf(der, der_len) };
-    status(csr(session, label, subject, buf, len), e, |()| ())
-}
-
-/// `pkiops_root`.
-///
-/// # Safety
-/// As [`pkiops_csr`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pkiops_root(
-    session: Handle,
-    label: *const c_char,
-    subject: *const c_char,
-    serial: c_long,
-    days: c_int,
-    der: *mut u8,
-    der_len: *mut usize,
-    e: *mut p11_err,
-) -> c_int {
-    let (label, subject) = unsafe { (arg(label).to_bytes(), arg(subject)) };
-    let (buf, len) = unsafe { der_buf(der, der_len) };
-    status(
-        root(session, label, subject, serial, days, buf, len),
-        e,
-        |()| (),
-    )
 }

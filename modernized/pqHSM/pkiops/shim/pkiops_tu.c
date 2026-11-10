@@ -23,6 +23,9 @@
 #define pkiops_keygen_alg    pqhsm_c_pkiops_keygen_alg
 #define pkiops_csr           pqhsm_c_pkiops_csr
 #define pkiops_root          pqhsm_c_pkiops_root
+/* Slice 2, fhsm-token's (no C here calls them). */
+#define pkiops_token_info    pqhsm_c_pkiops_token_info
+#define pkiops_token_init    pqhsm_c_pkiops_token_init
 
 #include "../../../../tools/pkiops.c"
 

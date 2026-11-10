@@ -14,6 +14,9 @@ use std::io::Write;
 
 pub mod ffi;
 pub mod keys;
+pub mod ops;
+
+pub use ffi::{close, load, open, unload};
 
 /// `strtol(t, &end, 10)`: the value, clamped as strtol clamps it, how many bytes it read (0
 /// when no digits), and whether it overflowed (strtol's ERANGE).
@@ -333,7 +336,34 @@ pub mod calllog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
+
+    /// Every `pkiops_*` the Rust exports is renamed away in the shim, and nothing else is: a
+    /// missing rename links C's copy beside the Rust one, and which wins is the linker's pick.
+    #[test]
+    fn exports_match_shim_renames() {
+        let dir = env!("CARGO_MANIFEST_DIR");
+        let names = |text: &str, key: &str| -> BTreeSet<String> {
+            text.lines()
+                .filter_map(|l| Some(l.split_once(key)?.1))
+                .map(|r| {
+                    r.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                        .next()
+                        .unwrap()
+                })
+                .map(|n| format!("pkiops_{n}"))
+                .collect()
+        };
+        let rust: BTreeSet<String> = ["mod.rs", "capi.rs"]
+            .iter()
+            .flat_map(|f| {
+                let t = std::fs::read_to_string(format!("{dir}/src/ffi/{f}")).expect("ffi source");
+                names(&t, "extern \"C\" fn pkiops_")
+            })
+            .collect();
+        let shim = std::fs::read_to_string(format!("{dir}/shim/pkiops_tu.c")).expect("shim");
+        assert_eq!(rust, names(&shim, "#define pkiops_"));
+    }
 
     #[test]
     fn strtol_and_slots_as_c() {

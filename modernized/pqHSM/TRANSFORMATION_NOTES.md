@@ -1472,3 +1472,37 @@ The script now also needs `python3` (to build `badsid.cms`) and `flock`, and che
 - The prompt, on a pseudo-terminal (`tests-support/hybrid/pin_prompt.py`, harness step 5b): asked, PIN not echoed, exit 0 with the right PIN, 2 (`C_Login failed`) with a wrong one; without a terminal, C's message and exit 1 (the script's "csr without FHSM_PIN" row).
 - Cargo: workspace 937 passed, 0 failed (6 new: `strtol` and `parse_slot` against C's edge cases, the table against `tools/pkiops.c`, `point_of`, the DER, PEM and glibc's `atoi`); clippy `-D warnings` clean for the workspace and for `pqhsm-pkiops --features shim`.
 - Harness `p5s1` (working tree on 76da657): the summary is `p5s0`'s line for line but three. Step 5b gains "PIN prompt (DIV-072): asked, PIN not echoed, rc=0". "C reading Rust-written vs C-written" lists 4 lines, not 2: two size-only pairs (1 and 5 bytes; every other field equal) on tokens holding freshly generated RSA and ECDSA keys, whose DER length varies run to run; `p5s0` had one such pair. The corpus has 9893 records, not 9803, on the C side as on the hybrid, from `test_cbc_pad_oracle` and `test_concurrency_store`, whose record counts follow timing; both were already among the 7 expected DIFFs. `make tests` 106/106 ran `tests/fhsm_crypt_cli.sh` on the Rust `fhsm-csr` (`ocsp_delegated.sh`, its `ocsp-delegated` target, is not in the harness).
+
+### Slices 0-1 review (architecture-critic, 2026-11-10)
+
+Range `84b9e52..a2accb4`. Three HIGH, three MEDIUM, two LOW, nits; each checked against the code. Fixed in slice 2's change unless the row says otherwise.
+
+| # | Finding | Done |
+|---|---|---|
+| H1 | DIV-072's "wiped" was false: the prompt read through `io::stdin()`, whose process-wide 8 KiB buffer kept the PIN | Fixed: `read_line_unbuffered` reads fd 0 a byte at a time into a `Zeroizing` buffer reserved up front (1024 bytes; a longer line is cut, and fails the module's length check). DIV-072 gains an "As built" line: the environment PIN stays in the environment, as in C. |
+| H2 | The safe API lived in `ffi` and copied C's out-parameters (`csr(.., der, len)`, a 32 KiB buffer in the CLI) | Fixed: the safe operations are `pkiops/src/ops.rs` at the crate root (`load`, `open`, `close`, `unload` re-exported there); `ffi/capi.rs` holds only the C-ABI shims. `ops::csr` and `ops::root` return `Vec<u8>`; the C exports call `csr_into`/`root_into` with the caller's buffer. Newtype handles (slot, session, object) wait for slice 3, as the review allows. |
+| H3 | Signing goes Rust → `pqhsm-pki`'s C ABI → C callback → Rust | Slice 4: make `pqhsm_pki`'s safe `x509::csr` and friends public, pass a closure signer, delete `tok_sign`; the serial and days checks move into the Rust. |
+| M1 | Nothing checked the shim's rename list | Fixed: test `exports_match_shim_renames` (the `extern "C" fn pkiops_*` in `src/ffi/` against the shim's `#define`s). |
+| M2 | Raw-pointer hygiene | `der_buf`'s slice over a possibly uninitialised caller buffer: fixed, the pointer goes to the encoder untouched. `pkiops_set_call_log`: now `unsafe`. The PIN arguments share `pin_arg`, which aborts on NULL with a length where C passed NULL to the module (`CKR_ARGUMENTS_BAD`): a caller contract violation; none of the callers does it, kept and recorded here. `put`, `fail`, `out`, `any`, `mech`, `types` as `unsafe fn`: with H3 in slice 4, when the boundary shrinks. |
+| M3 | `token_signer` always fetches the SPKI; C's CMS-sign path (`want_spki=0`) does not | Slice 4, with CMS sign. |
+| L1 | `pin_prompt.py` could hang | Fixed: `signal.alarm(30)`. |
+| L2 | Unrecorded benign differences | Recorded: the prompt goes to stderr (DIV-072 "As built"); `fhsm-csr` exits 2 on a DER write error (ENOSPC) where C's unchecked buffered `fwrite`/`fclose` exit 0; the composite `CKA_VALUE` read is clamped to its buffer where C read past it. |
+| nits | `pki_algid(alg as i32)` relies on `Alg`'s order; `real!` looks names up at run time; one `unsafe` without SAFETY | With slice 3, which adds to `keys.rs` and the wrappers. |
+
+### Slice 2: `fhsm-token` (2026-11-10)
+
+**What moved.** `pkiops_token_info` and `pkiops_token_init` (`pkiops/src/ops.rs`; the plan's count of 6 included `parse_slot` and the slot resolution, which moved earlier). `tools/fhsm-token` is `pqhsm-cli`'s binary (`cli/src/bin/fhsm-token.rs`): C's usage, flags, messages and exit codes (1, 2, 5), and C's calls in C's order, including the second `pkiops_token_info` before the `--force` refusal. The review's H2 reshaping (above) lands in the same change, so `fhsm-csr` now calls `ops::csr`/`ops::root` for a `Vec`.
+
+**How.**
+- `CK_TOKEN_INFO` is a `#[repr(C)]` struct (test: 208 bytes, `ulMaxPinLen` at 136, as `struct tok_info` on LP64); `struct pkiops_token_info` is the same `TokenInfo` the safe function returns, so the C export copies it out whole. `field` trims trailing spaces and NULs as C's does.
+- `token_init` pads the label to 32 spaces, then `C_InitToken`, `C_OpenSession`, `C_Login` as SO, `C_InitPIN`, `C_CloseSession`, each failure C's message and code.
+- DIV-072 for both PINs: `pqhsm_cli::pin` now takes C's whole "not set" message (`fhsm-token`'s are three lines). SO PIN first, then the new user PIN, each asked only if its variable is unset; both wiped after `C_InitPIN`.
+
+**Evidence.**
+- `pki_tools_characterize.sh` (info on an empty slot, init without `FHSM_SO_PIN`, a short PIN, `--pin` refused, init, init again without `--force`, info), hybrid against C: identical on the C module, identical less DIV-059 on the hybrid module.
+- `pkiops_calllog.c` drives `pkiops_token_init` on two slots and `pkiops_token_info` through the C ABI: C and Rust 227 records, identical.
+- New harness check (step 5b): `fhsm-token init` on a terminal with neither PIN set, then a login with the PIN it set: "asked 2 times, PIN not echoed, rc=0 login with it rc=0".
+- Cargo: workspace 939 passed, 0 failed (new: `exports_match_shim_renames`, `token_info_as_c`); clippy `-D warnings` clean for the workspace and for `pqhsm-pkiops --features shim`. `cargo fmt --check` flags only `token/tests/token_props.rs`, untouched since `2e6653b`.
+- Harness `p5s2` (`run3`, working tree on a2accb4): `p5s1`'s summary but the new check, and the run-to-run lines: "C reading Rust-written" 2 lines (as `p5s0`; `p5s1` had 4), corpus 9630 records (`p5s1` 9893; timing-dependent `test_cbc_pad_oracle` and `test_concurrency_store`, among the 7 expected DIFFs). `make tests` 106/106.
+
+**Not covered by a golden row:** `init --force`, a `--label` over 32, `--so-pin` refused, init without `FHSM_PIN`. Each is C's code path line for line; rows can go into the characterisation script when it is next regenerated.

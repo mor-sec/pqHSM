@@ -3,7 +3,7 @@
 //! the tools share is here: the PIN (DIV-072), C's number parsing, error exits, PEM.
 
 use std::ffi::{c_int, c_long};
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, IsTerminal, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::process::exit;
 
@@ -47,9 +47,9 @@ pub fn atol(t: &[u8]) -> c_long {
 }
 
 /// The PIN in `var` (DIV-072): read as C reads it; when unset or empty and stdin is a
-/// terminal, asked for there without echo; otherwise C's message and exit 1. Wiped when
-/// dropped, which the caller does once the login has used it.
-pub fn pin(prog: &str, var: &str, what: &str) -> Zeroizing<Vec<u8>> {
+/// terminal, asked for there without echo; otherwise `missing` (C's message, whole) on stderr
+/// and exit 1. Wiped when dropped, which the caller does once the login has used it.
+pub fn pin(prog: &str, var: &str, what: &str, missing: &str) -> Zeroizing<Vec<u8>> {
     if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
         return Zeroizing::new(v.into_vec());
     }
@@ -59,7 +59,7 @@ pub fn pin(prog: &str, var: &str, what: &str) -> Zeroizing<Vec<u8>> {
     {
         return p;
     }
-    eprintln!("{prog}: {var} is not set.");
+    eprint!("{missing}");
     exit(1)
 }
 
@@ -82,13 +82,34 @@ fn read_hidden(prompt: &str) -> io::Result<Zeroizing<Vec<u8>>> {
         return Err(io::Error::last_os_error());
     }
     eprint!("{prompt}");
-    let mut line = Zeroizing::new(Vec::new());
-    let r = io::stdin().lock().read_until(b'\n', &mut line);
+    let r = read_line_unbuffered();
     // SAFETY: as above, the settings found.
     unsafe { libc::tcsetattr(0, libc::TCSAFLUSH, &old) };
-    r?;
-    if line.last() == Some(&b'\n') {
-        line.pop();
+    r
+}
+
+/// The longest line kept; the rest of a longer one is read and dropped.
+const LINE_MAX: usize = 1024;
+
+/// A line from fd 0 a byte at a time, so no copy of it stays in std's stdin buffer, into room
+/// reserved up front, so no reallocation leaves one behind either.
+// shortcut: a line past LINE_MAX is cut there; a PIN that long fails the module's length
+// check, so nothing logs in with a truncated one.
+fn read_line_unbuffered() -> io::Result<Zeroizing<Vec<u8>>> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: fd 0 is open; ManuallyDrop leaves it open.
+    let mut fd0 = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(0) });
+    let mut line = Zeroizing::new(Vec::with_capacity(LINE_MAX));
+    let mut b = Zeroizing::new([0u8; 1]);
+    loop {
+        match io::Read::read(&mut *fd0, &mut b[..]) {
+            Ok(0) => break,
+            Ok(_) if b[0] == b'\n' => break,
+            Ok(_) if line.len() < LINE_MAX => line.push(b[0]),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
     }
     Ok(line)
 }

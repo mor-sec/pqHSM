@@ -7,7 +7,7 @@
 //! `pkiops_unload` only; the GUI calls those from one thread, as it did C's.
 #![allow(non_camel_case_types)]
 
-pub mod ops;
+mod capi;
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_uchar, c_ulong, c_void};
 use std::ptr::{null, null_mut};
@@ -18,7 +18,7 @@ use std::time::Instant;
 use crate::calllog::{ARGS_CAP, attr_types, mech_name, user_name};
 use crate::{Error, FUNCTIONS, Intent, Need, SlotId, Slots};
 
-type CK_ULONG = c_ulong;
+pub(crate) type CK_ULONG = c_ulong;
 type CK_RV = c_ulong;
 type CK_BYTE = c_uchar;
 
@@ -174,19 +174,19 @@ type B = *mut CK_BYTE;
 type P = *mut CK_ULONG;
 type V = *mut c_void;
 
-unsafe extern "C" fn w_initialize(a: V) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_initialize(a: V) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("Initialize" as unsafe extern "C" fn(V) -> CK_RV)(a) };
     logcall(c"C_Initialize", rv, t, String::new);
     rv
 }
-unsafe extern "C" fn w_finalize(a: V) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_finalize(a: V) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("Finalize" as unsafe extern "C" fn(V) -> CK_RV)(a) };
     logcall(c"C_Finalize", rv, t, String::new);
     rv
 }
-unsafe extern "C" fn w_open_session(sl: S, f: S, app: V, nfy: V, s: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_open_session(sl: S, f: S, app: V, nfy: V, s: P) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe {
         real!("OpenSession" as unsafe extern "C" fn(S, S, V, V, P) -> CK_RV)(sl, f, app, nfy, s)
@@ -196,13 +196,13 @@ unsafe extern "C" fn w_open_session(sl: S, f: S, app: V, nfy: V, s: P) -> CK_RV 
     });
     rv
 }
-unsafe extern "C" fn w_close_session(s: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_close_session(s: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("CloseSession" as unsafe extern "C" fn(S) -> CK_RV)(s) };
     logcall(c"C_CloseSession", rv, t, || format!("session {s}"));
     rv
 }
-unsafe extern "C" fn w_login(s: S, u: S, pin: B, n: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_login(s: S, u: S, pin: B, n: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("Login" as unsafe extern "C" fn(S, S, B, S) -> CK_RV)(s, u, pin, n) };
     logcall(c"C_Login", rv, t, || {
@@ -211,7 +211,7 @@ unsafe extern "C" fn w_login(s: S, u: S, pin: B, n: S) -> CK_RV {
     rv
 }
 #[allow(clippy::too_many_arguments)] // C_GenerateKeyPair's
-unsafe extern "C" fn w_generate_key_pair(
+pub(crate) unsafe extern "C" fn w_generate_key_pair(
     s: S,
     m: M,
     pt: A,
@@ -237,7 +237,7 @@ unsafe extern "C" fn w_generate_key_pair(
     });
     rv
 }
-unsafe extern "C" fn w_find_objects_init(s: S, tp: A, n: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_find_objects_init(s: S, tp: A, n: S) -> CK_RV {
     let t = Instant::now();
     let rv =
         unsafe { real!("FindObjectsInit" as unsafe extern "C" fn(S, A, S) -> CK_RV)(s, tp, n) };
@@ -253,7 +253,7 @@ unsafe extern "C" fn w_find_objects_init(s: S, tp: A, n: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_find_objects(s: S, h: P, max: S, n: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_find_objects(s: S, h: P, max: S, n: P) -> CK_RV {
     let t = Instant::now();
     let rv =
         unsafe { real!("FindObjects" as unsafe extern "C" fn(S, P, S, P) -> CK_RV)(s, h, max, n) };
@@ -262,13 +262,13 @@ unsafe extern "C" fn w_find_objects(s: S, h: P, max: S, n: P) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_find_objects_final(s: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_find_objects_final(s: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("FindObjectsFinal" as unsafe extern "C" fn(S) -> CK_RV)(s) };
     logcall(c"C_FindObjectsFinal", rv, t, || format!("session {s}"));
     rv
 }
-unsafe extern "C" fn w_get_attribute_value(s: S, o: S, tp: A, n: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_get_attribute_value(s: S, o: S, tp: A, n: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe {
         real!("GetAttributeValue" as unsafe extern "C" fn(S, S, A, S) -> CK_RV)(s, o, tp, n)
@@ -281,7 +281,7 @@ unsafe extern "C" fn w_get_attribute_value(s: S, o: S, tp: A, n: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_digest_init(s: S, m: M) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_digest_init(s: S, m: M) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DigestInit" as unsafe extern "C" fn(S, M) -> CK_RV)(s, m) };
     logcall(c"C_DigestInit", rv, t, || {
@@ -289,7 +289,7 @@ unsafe extern "C" fn w_digest_init(s: S, m: M) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_sign_init(s: S, m: M, k: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_sign_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("SignInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
     logcall(c"C_SignInit", rv, t, || {
@@ -297,7 +297,7 @@ unsafe extern "C" fn w_sign_init(s: S, m: M, k: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_sign(s: S, d: B, dn: S, sig: B, sn: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_sign(s: S, d: B, dn: S, sig: B, sn: P) -> CK_RV {
     let t = Instant::now();
     let rv =
         unsafe { real!("Sign" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, d, dn, sig, sn) };
@@ -310,7 +310,7 @@ unsafe extern "C" fn w_sign(s: S, d: B, dn: S, sig: B, sn: P) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_sign_update(s: S, d: B, dn: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_sign_update(s: S, d: B, dn: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("SignUpdate" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, d, dn) };
     logcall(c"C_SignUpdate", rv, t, || {
@@ -318,7 +318,7 @@ unsafe extern "C" fn w_sign_update(s: S, d: B, dn: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_sign_final(s: S, sig: B, sn: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_sign_final(s: S, sig: B, sn: P) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("SignFinal" as unsafe extern "C" fn(S, B, P) -> CK_RV)(s, sig, sn) };
     logcall(c"C_SignFinal", rv, t, || {
@@ -330,7 +330,7 @@ unsafe extern "C" fn w_sign_final(s: S, sig: B, sn: P) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_verify_init(s: S, m: M, k: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_verify_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("VerifyInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
     logcall(c"C_VerifyInit", rv, t, || {
@@ -338,7 +338,7 @@ unsafe extern "C" fn w_verify_init(s: S, m: M, k: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_verify_update(s: S, d: B, dn: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_verify_update(s: S, d: B, dn: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("VerifyUpdate" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, d, dn) };
     logcall(c"C_VerifyUpdate", rv, t, || {
@@ -346,7 +346,7 @@ unsafe extern "C" fn w_verify_update(s: S, d: B, dn: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_verify_final(s: S, sig: B, sn: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_verify_final(s: S, sig: B, sn: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("VerifyFinal" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, sig, sn) };
     logcall(c"C_VerifyFinal", rv, t, || {
@@ -354,7 +354,7 @@ unsafe extern "C" fn w_verify_final(s: S, sig: B, sn: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_init_token(sl: S, pin: B, n: S, label: B) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_init_token(sl: S, pin: B, n: S, label: B) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe {
         real!("InitToken" as unsafe extern "C" fn(S, B, S, B) -> CK_RV)(sl, pin, n, label)
@@ -364,7 +364,7 @@ unsafe extern "C" fn w_init_token(sl: S, pin: B, n: S, label: B) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_init_pin(s: S, pin: B, n: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_init_pin(s: S, pin: B, n: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("InitPIN" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, pin, n) };
     logcall(c"C_InitPIN", rv, t, || {
@@ -372,13 +372,13 @@ unsafe extern "C" fn w_init_pin(s: S, pin: B, n: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_get_token_info(sl: S, ti: V) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_get_token_info(sl: S, ti: V) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("GetTokenInfo" as unsafe extern "C" fn(S, V) -> CK_RV)(sl, ti) };
     logcall(c"C_GetTokenInfo", rv, t, || format!("slot {sl}"));
     rv
 }
-unsafe extern "C" fn w_generate_random(s: S, o: B, n: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_generate_random(s: S, o: B, n: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("GenerateRandom" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, o, n) };
     logcall(c"C_GenerateRandom", rv, t, || {
@@ -386,7 +386,7 @@ unsafe extern "C" fn w_generate_random(s: S, o: B, n: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_get_slot_list(present: c_uchar, ids: P, n: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_get_slot_list(present: c_uchar, ids: P, n: P) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe {
         real!("GetSlotList" as unsafe extern "C" fn(c_uchar, P, P) -> CK_RV)(present, ids, n)
@@ -405,7 +405,7 @@ unsafe extern "C" fn w_get_slot_list(present: c_uchar, ids: P, n: P) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_get_mechanism_list(sl: S, list: P, n: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_get_mechanism_list(sl: S, list: P, n: P) -> CK_RV {
     let t = Instant::now();
     let rv =
         unsafe { real!("GetMechanismList" as unsafe extern "C" fn(S, P, P) -> CK_RV)(sl, list, n) };
@@ -418,7 +418,7 @@ unsafe extern "C" fn w_get_mechanism_list(sl: S, list: P, n: P) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_get_mechanism_info(sl: S, m: S, info: V) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_get_mechanism_info(sl: S, m: S, info: V) -> CK_RV {
     let t = Instant::now();
     let rv =
         unsafe { real!("GetMechanismInfo" as unsafe extern "C" fn(S, S, V) -> CK_RV)(sl, m, info) };
@@ -427,7 +427,7 @@ unsafe extern "C" fn w_get_mechanism_info(sl: S, m: S, info: V) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_destroy_object(s: S, o: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_destroy_object(s: S, o: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DestroyObject" as unsafe extern "C" fn(S, S) -> CK_RV)(s, o) };
     logcall(c"C_DestroyObject", rv, t, || {
@@ -435,7 +435,7 @@ unsafe extern "C" fn w_destroy_object(s: S, o: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_generate_key(s: S, m: M, tp: A, n: S, k: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_generate_key(s: S, m: M, tp: A, n: S, k: P) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe {
         real!("GenerateKey" as unsafe extern "C" fn(S, M, A, S, P) -> CK_RV)(s, m, tp, n, k)
@@ -451,7 +451,7 @@ unsafe extern "C" fn w_generate_key(s: S, m: M, tp: A, n: S, k: P) -> CK_RV {
     rv
 }
 // The cipher calls: mechanism and key, byte counts in and out. Never a byte of data.
-unsafe extern "C" fn w_encrypt_init(s: S, m: M, k: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_encrypt_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("EncryptInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
     logcall(c"C_EncryptInit", rv, t, || {
@@ -459,7 +459,7 @@ unsafe extern "C" fn w_encrypt_init(s: S, m: M, k: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_encrypt(s: S, i: B, n: S, o: B, on: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_encrypt(s: S, i: B, n: S, o: B, on: P) -> CK_RV {
     let t = Instant::now();
     let rv =
         unsafe { real!("Encrypt" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, i, n, o, on) };
@@ -472,7 +472,7 @@ unsafe extern "C" fn w_encrypt(s: S, i: B, n: S, o: B, on: P) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_decrypt_init(s: S, m: M, k: S) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_decrypt_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DecryptInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
     logcall(c"C_DecryptInit", rv, t, || {
@@ -480,7 +480,7 @@ unsafe extern "C" fn w_decrypt_init(s: S, m: M, k: S) -> CK_RV {
     });
     rv
 }
-unsafe extern "C" fn w_decrypt(s: S, i: B, n: S, o: B, on: P) -> CK_RV {
+pub(crate) unsafe extern "C" fn w_decrypt(s: S, i: B, n: S, o: B, on: P) -> CK_RV {
     let t = Instant::now();
     let rv =
         unsafe { real!("Decrypt" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, i, n, o, on) };
@@ -684,8 +684,12 @@ impl Slots for Module {
 // --- tools/pkiops.h -------------------------------------------------------------------------
 
 /// `pkiops_set_call_log`.
+///
+/// # Safety
+/// `cb`, when set, must be callable with `ctx` for as long as it stays installed: every
+/// wrapper calls it.
 #[unsafe(no_mangle)]
-pub extern "C" fn pkiops_set_call_log(cb: Option<pkiops_call_cb>, ctx: *mut c_void) {
+pub unsafe extern "C" fn pkiops_set_call_log(cb: Option<pkiops_call_cb>, ctx: *mut c_void) {
     *LOG.lock().unwrap_or_else(|p| p.into_inner()) = Log(cb, ctx);
 }
 

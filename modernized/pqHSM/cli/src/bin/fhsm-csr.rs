@@ -10,9 +10,8 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::exit;
 
 use pqhsm_cli::{atoi, atol, fail, init, pem, perror_exit, pin};
-use pqhsm_pkiops::ffi::{self, ops};
 use pqhsm_pkiops::keys::Alg;
-use pqhsm_pkiops::{Error, Intent, parse_slot};
+use pqhsm_pkiops::{Error, Intent, close, open, ops, parse_slot};
 
 const PROG: &str = "fhsm-csr";
 
@@ -126,10 +125,15 @@ fn main() {
         alg = Alg::parse(Some(n)).unwrap_or_else(|e| die(e));
     }
 
-    let pin = pin(PROG, "FHSM_PIN", "user PIN");
+    let pin = pin(
+        PROG,
+        "FHSM_PIN",
+        "user PIN",
+        "fhsm-csr: FHSM_PIN is not set.\n",
+    );
     // An argument holds no NUL.
     let module = CString::new(module).expect("no NUL in an argument");
-    let sid = ffi::open(Some(&module), slot, Intent::WithToken).unwrap_or_else(|e| die(e));
+    let sid = open(Some(&module), slot, Intent::WithToken).unwrap_or_else(|e| die(e));
     let s = ops::session_user(sid, &pin).unwrap_or_else(|e| die(e));
     drop(pin);
 
@@ -147,16 +151,14 @@ fn main() {
         let _ = w.write_all(format!("\" created (public {hp}, private {hk})\n").as_bytes());
     } else if signs {
         let subject = CString::new(subject.expect("checked above")).expect("no NUL in an argument");
-        let mut der = vec![0u8; 32768];
-        let mut n = der.len();
-        if cmd == b"csr" {
-            ops::csr(s, label, &subject, &mut der, &mut n).unwrap_or_else(|e| die(e));
+        let der = if cmd == b"csr" {
+            ops::csr(s, label, &subject)
         } else {
-            ops::root(s, label, &subject, serial, days, &mut der, &mut n)
-                .unwrap_or_else(|e| die(e));
+            ops::root(s, label, &subject, serial, days)
         }
+        .unwrap_or_else(|e| die(e));
         emit(
-            &der[..n],
+            &der,
             out,
             as_pem,
             if cmd == b"csr" {
@@ -170,5 +172,5 @@ fn main() {
         usage();
     }
     ops::session_close(s);
-    ffi::close();
+    close();
 }

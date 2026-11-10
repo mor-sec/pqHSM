@@ -454,6 +454,12 @@ printf 'pki tools characterise: %s, C run 1 %s, %s lines, run 2 vs run 1 %s' "$(
   FHSM_SO_PIN=sopin1234 FHSM_PIN=userpin1234 tools/fhsm-token init --label prompt > /dev/null 2>&1 &&
   python3 /work/modernized/pqHSM/tests-support/hybrid/pin_prompt.py userpin1234 \
     tools/fhsm-csr keygen --label p --alg ecdsa-p256) > /out/pin_prompt.txt 2>&1
+# Slice 2 on: fhsm-token init with neither PIN set asks for both, and the user PIN it set logs in.
+(cd $AMH && export FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 &&
+  env -u FHSM_SO_PIN python3 /work/modernized/pqHSM/tests-support/hybrid/pin_prompt.py userpin1234 \
+    tools/fhsm-token init --label prompt &&
+  FHSM_PIN=userpin1234 tools/fhsm-csr keygen --label p --alg ecdsa-p256 > /dev/null 2>&1 &&
+  echo "login with it rc=0") > /out/pin_prompt_token.txt 2>&1
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
 sed -E 's/(PIN length +|accepted length \()4\.\.64/\18..64/' /out/pki_char_c1.txt > /out/pki_char_c_expect.txt   # DIV-059
@@ -474,6 +480,7 @@ printf '; hybrid tools: %s; on the C module vs C %s; on the hybrid module vs C l
   "$(tail -1 /out/pkiops_calllog_c.txt)" "$(tail -1 /out/pkiops_calllog_hybrid.txt)" \
   "$(grep -c '^  C_' /out/pkiops_calllog_c.txt)" "$(pl_same /out/pkiops_calllog_c.txt /out/pkiops_calllog_hybrid.txt)" >> /out/pki_char.txt
 printf '; PIN prompt (DIV-072): %s' "$(tail -1 /out/pin_prompt.txt)" >> /out/pki_char.txt
+printf '; fhsm-token init: %s' "$(tr '\n' ' ' < /out/pin_prompt_token.txt | sed 's/ $//')" >> /out/pki_char.txt
 
 # 4q. Slice 8c review M1: the audit switch's other side. `make audit-switch` recurses without
 #     -f, so under hybrid.mk it builds pure C; this is its second half, on fresh copies of each
