@@ -1668,3 +1668,15 @@ No HIGH, four MEDIUM, four LOW, three nits; each checked against the code.
 7. The pure-C build (`make gui`): the same steps show no waiting.
 
 **Evidence (slice 6).** Harness `run12` (the final tree): step 12 "install rc=0, 0 unconfigured; c build rc=0 smoke rc=0 (PASS); hybrid build rc=0 smoke rc=0 (PASS); hybrid link names pkiops.c/cms_env.c: 0, rust pkiops symbols 288, fhsm_rev_db_lock 1". The rest as `run10` but run-to-run noise (corpus 9426 records), and the module's `fhsm_rev_*/OCSP_*` count 28 (was 26): the two lock functions, which `pqhsm-module` carries with the rest of `pqhsm-pki`'s C ABI, local under `--exclude-libs,ALL` as those are. Transcripts identical to C less DIV-059/073-075; call log 940 records identical; `make tests` 106/106; `pki_artifacts` 0 differ. Cargo: workspace 955 passed, 0 failed (new: `div074_lock_c_abi`); clippy `-D warnings` clean. The window's own behaviour under the lock is the manual UAT above, not yet run.
+
+## Phase 5 exit criteria: status (2026-11-11)
+
+Open: the GUI's manual UAT. Last commits: slice 5 `a0cafbb`, slice 6 `14a363d`. Evidence run `run12` (slice 6's final tree).
+
+| Brief exit criterion | Evidence | Status |
+|---|---|---|
+| Each tool's output matches C's for the same inputs and token; random signatures cross-verified | `pki_tools_characterize.sh` (1998 lines, two C runs identical) on the five Rust tools: identical to C less DIV-059, 072-075, on the C and the hybrid module; `fhsm_crypt_cli.sh` in `make tests`; `pki_artifacts` 21 DER files 0 differ, openssl CLI 18/18 each way; signatures verified across, not compared (slices 1-5) | ✅ |
+| `test_pkiops*` pass re-pointed at the Rust | All six link `pqhsm-pkiops` alone, no `tools/pkiops.c` or `tools/cms_env.c` (slice 5); 106/106; the call log drives every `pkiops.h` function C vs Rust, 940 records identical | ✅ |
+| Flags and exit codes equivalent, or renamed under Q18 | Same binary names and hand-parsed flags; every usage and refusal row of the golden; the Q18 rename is Phase 6 | ✅ |
+| GUI manual UAT | `tools/fhsm-gui` on `pqhsm-pkiops`, pure C and hybrid each through `gui_smoke.sh` (step 12); the walkthrough of `docs/FHSM_GUI.md` and the seven DIV-074 steps under slice 6 | ⏳ the user's |
+| Every P0 rule gated at Phase 5 | RULE-021 (serial, validity, the 365/30 defaults and the >90 NOTE: golden rows; the date arithmetic under a pinned clock is Phase 3's `x509_golden.rs`, the builder unchanged since); RULE-022 (crlNumber + 1: golden `crl` rows, `race_ca` numbers 1-4; the order is now reserve-then-sign, DIV-074); RULE-069 (proof of possession: golden and call-log rows, a tampered request refused, nothing written); RULE-099, 100 (duplicates refused, save and load: golden `revoke` rows, `revocation_db` step, DIV-074's lock tests) | ✅ (RULE-021/022 not re-run under a pinned clock at Phase 5: see the row) |
