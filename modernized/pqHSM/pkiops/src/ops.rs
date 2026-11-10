@@ -73,10 +73,10 @@ pub(crate) const CKG_MGF1_SHA256: CK_ULONG = 2;
 /// `FHSM_COMPOSITE_PUB_MAX`.
 const COMPOSITE_PUB_MAX: usize = 4096;
 /// `FHSM_PKI_SIG_MAX`.
-const SIG_MAX: usize = 8192;
+pub(crate) const SIG_MAX: usize = 8192;
 pub(crate) const RV_FUNCTION_FAILED: u32 = 0x06;
 pub(crate) const RV_ARGUMENTS_BAD: u32 = 0x07;
-const RV_BUFFER_TOO_SMALL: u32 = 0x150;
+pub(crate) const RV_BUFFER_TOO_SMALL: u32 = 0x150;
 
 pub(crate) fn err(code: c_int, parts: &[&[u8]]) -> Error {
     Error::new(code, parts.concat())
@@ -136,6 +136,16 @@ pub struct TokenInfo {
     pub user_pin_locked: c_int,
     pub min_pin: c_ulong,
     pub max_pin: c_ulong,
+}
+
+/// `struct pkiops_slot`: a slot, whether it holds a token, and the token's label as
+/// [`TokenInfo`]'s (empty without one, or when the module will not say).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SlotInfo {
+    pub id: Slot,
+    pub has_token: c_int,
+    pub label: [u8; 33],
 }
 
 /// A C text field (`TokenInfo`'s, [`crate::objects`]'s) up to its NUL, as `%s` prints it.
@@ -688,9 +698,50 @@ pub(crate) fn with_mechanism<T>(a: Alg, f: impl FnOnce(&mut CK_MECHANISM) -> T) 
 }
 
 /// fhsm_pki's builder `build`, signing with the key `label`, given the key's algorithm and,
-/// with `want_spki`, its SubjectPublicKeyInfo (else empty); into `out` as fhsm_pki's `emit`
-/// writes: `*len` the room on entry, the length on return once built, too little room
-/// BUFFER_TOO_SMALL.
+/// with `want_spki`, its SubjectPublicKeyInfo (else empty).
+pub(crate) fn with_signer<T>(
+    s: Handle,
+    label: &[u8],
+    want_spki: bool,
+    build: impl FnOnce(&mut Signer, Alg, &[u8]) -> T,
+) -> Result<T, Error> {
+    let (ts, algid, spki) = token_signer(s, label, want_spki)?;
+    let mut sign = |tbs: &[u8], sig: &mut [u8]| ts.sign(tbs, sig);
+    let mut signer = Signer {
+        algid,
+        sign: &mut sign,
+    };
+    Ok(build(
+        &mut signer,
+        ts.alg,
+        spki.as_deref().unwrap_or_default(),
+    ))
+}
+
+/// A builder's result into `out` as fhsm_pki's `emit` writes it: `*len` the room on entry, the
+/// length on return once built, too little room BUFFER_TOO_SMALL; a failure "`doing` failed".
+///
+/// # Safety
+/// `out` has `*len` writable bytes.
+pub(crate) unsafe fn emit_into(
+    der: Result<Vec<u8>, u32>,
+    out: *mut u8,
+    len: &mut usize,
+    doing: &str,
+) -> Result<(), Error> {
+    der.and_then(|der| {
+        let room = std::mem::replace(len, der.len());
+        if room < der.len() {
+            return Err(RV_BUFFER_TOO_SMALL);
+        }
+        // SAFETY: the caller's room, at least der.len() bytes.
+        unsafe { std::ptr::copy_nonoverlapping(der.as_ptr(), out, der.len()) };
+        Ok(())
+    })
+    .map_err(|r| Error::new(2, format!("{doing} failed (0x{r:x})\n")))
+}
+
+/// [`with_signer`], then [`emit_into`] as "building the `what`".
 ///
 /// # Safety
 /// `out` has `*len` writable bytes.
@@ -703,27 +754,13 @@ pub(crate) unsafe fn signed_by(
     what: &str,
     build: impl FnOnce(&mut Signer, Alg, &[u8]) -> Result<Vec<u8>, u32>,
 ) -> Result<(), Error> {
-    let (ts, algid, spki) = token_signer(s, label, want_spki)?;
-    let mut sign = |tbs: &[u8], sig: &mut [u8]| ts.sign(tbs, sig);
-    let mut signer = Signer {
-        algid,
-        sign: &mut sign,
-    };
-    build(&mut signer, ts.alg, spki.as_deref().unwrap_or_default())
-        .and_then(|der| {
-            let room = std::mem::replace(len, der.len());
-            if room < der.len() {
-                return Err(RV_BUFFER_TOO_SMALL);
-            }
-            // SAFETY: the caller's room, at least der.len() bytes.
-            unsafe { std::ptr::copy_nonoverlapping(der.as_ptr(), out, der.len()) };
-            Ok(())
-        })
-        .map_err(|r| Error::new(2, format!("building the {what} failed (0x{r:x})\n")))
+    let der = with_signer(s, label, want_spki, build)?;
+    // SAFETY: the caller's room.
+    unsafe { emit_into(der, out, len, &format!("building the {what}")) }
 }
 
 /// The DER room the tools give a request or certificate (`tools/fhsm_csr.c`'s buffer).
-const DER_MAX: usize = 32768;
+pub(crate) const DER_MAX: usize = 32768;
 
 /// Into a fresh buffer of `room` bytes, trimmed to what was written.
 pub(crate) fn to_vec(

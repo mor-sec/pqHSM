@@ -168,9 +168,11 @@ unsafe fn entries(d: &fhsm_rev_db_t) -> &[fhsm_rev_entry_t] {
     }
 }
 
+/// A C `fhsm_rev_db_t` as a [`rev::Db`]: serials past 64 bytes cut there, dates up to their NUL.
+///
 /// # Safety
-/// As [`entries`].
-unsafe fn to_db(d: &fhsm_rev_db_t) -> rev::Db {
+/// `d` holds `n` initialised entries at `e` (or `n` is 0), as this ABI and C callers build it.
+pub unsafe fn to_db(d: &fhsm_rev_db_t) -> rev::Db {
     // SAFETY: the caller's contract
     let entries = unsafe { entries(d) }.iter().map(|e| rev::Entry {
         serial: e.serial[..e.serial_len.min(64)].to_vec(),
@@ -564,50 +566,17 @@ pub unsafe extern "C" fn fhsm_ocsp_answer_ex(
         sign_ctx,
     };
     let mut encode = |t: &rev::Tbs<'_>| -> Result<Vec<u8>, u32> {
-        let singles: Vec<fhsm_composite_ocsp_single_t> = t
-            .singles
-            .iter()
-            .map(|s| fhsm_composite_ocsp_single_t {
-                cert_id: s.cert_id.as_ptr(),
-                cert_id_len: s.cert_id.len(),
-                status: s.status,
-                revoked_at: s.revoked_at.as_ref().map_or(null(), |r| r.as_ptr()),
-                revoked_at_len: s.revoked_at.as_ref().map_or(0, Vec::len),
-                reason: s.reason,
-                this_upd: t.this_update.as_ptr(),
-                this_upd_len: t.this_update.len(),
-                next_upd: t.next_update.as_ptr(),
-                next_upd_len: t.next_update.len(),
-            })
-            .collect();
-        let exts = if t.exts.is_empty() {
-            null()
-        } else {
-            t.exts.as_ptr()
+        // SAFETY: the caller's contract: algid covers algid_len, sign takes sign_ctx
+        let Some(s) = (unsafe { signer_ok(&signer) }) else {
+            return Err(crv::ARGUMENTS_BAD);
         };
-        let mut buf = vec![0u8; t.cap];
-        let mut n = t.cap;
-        // SAFETY: every pointer is to a live slice of the stated length; buf has n bytes
-        let r = unsafe {
-            fhsm_pki_ocsp(
-                &signer,
-                t.responder.as_ptr(),
-                t.responder.len(),
-                t.produced_at.as_ptr(),
-                t.produced_at.len(),
-                singles.as_ptr(),
-                singles.len(),
-                exts,
-                t.exts.len(),
-                buf.as_mut_ptr(),
-                &mut n,
-            )
+        let mut sign = c_sign(s);
+        let mut signer = Signer {
+            // SAFETY: as above
+            algid: unsafe { bytes(s.algid, s.algid_len) },
+            sign: &mut sign,
         };
-        if r != 0 {
-            return Err(r);
-        }
-        buf.truncate(n);
-        Ok(buf)
+        x509::ocsp_for(&mut signer, t)
     };
     match rev::answer(&q, &mut encode) {
         // SAFETY: the caller's contract; malloc's result is checked

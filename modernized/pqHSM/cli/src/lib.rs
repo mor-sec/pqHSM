@@ -3,8 +3,8 @@
 //! the tools share is here: the PIN (DIV-072), C's number parsing, error exits, PEM.
 
 use std::ffi::{c_int, c_long};
-use std::io::{self, IsTerminal, Write};
-use std::os::unix::ffi::OsStringExt;
+use std::io::{self, IsTerminal, Read, Write};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::process::exit;
 
 use pqhsm_pkiops::Error;
@@ -34,6 +34,38 @@ pub fn perror_exit(what: &str, e: &io::Error) -> ! {
     let text = text.rsplit_once(" (os error ").map_or(&text[..], |t| t.0);
     eprintln!("{what}: {text}");
     exit(2)
+}
+
+/// fread's: until `buf` is full, the end, or an error, with what was read before it.
+pub fn fill(r: &mut dyn Read, buf: &mut [u8]) -> (usize, Option<io::Error>) {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return (n, Some(e)),
+        }
+    }
+    (n, None)
+}
+
+/// `emit` of fhsm-csr and fhsm-ca: DER, or PEM under `label`, to `path` or standard output.
+/// A failed open is perror's "`prog`: open", a failed DER write "`prog`: write", each exit 2;
+/// C ignores what PEM_write_bio and fclose return.
+pub fn write_der(prog: &str, der: &[u8], path: Option<&[u8]>, as_pem: bool, label: &str) {
+    let mut f: Box<dyn Write> = match path {
+        Some(p) => match std::fs::File::create(std::ffi::OsStr::from_bytes(p)) {
+            Ok(f) => Box::new(f),
+            Err(e) => perror_exit(&format!("{prog}: open"), &e),
+        },
+        None => Box::new(io::stdout().lock()),
+    };
+    if as_pem {
+        let _ = f.write_all(&pem(label, der)).and_then(|()| f.flush());
+    } else if let Err(e) = f.write_all(der).and_then(|()| f.flush()) {
+        perror_exit(&format!("{prog}: write"), &e);
+    }
 }
 
 /// glibc's `atoi`: `(int)strtol(t, NULL, 10)`.

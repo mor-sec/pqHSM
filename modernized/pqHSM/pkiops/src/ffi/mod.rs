@@ -1,7 +1,5 @@
-//! Every `unsafe` in the crate: the module opened with dlopen, its functions behind the
-//! call-log wrappers, the `tools/pkiops.h` functions ported so far, and the hand-over of the
-//! wrapped table to the C of `tools/pkiops.c` not ported yet (`shim/pkiops_tu.c`, with
-//! feature `shim`). `ops` holds the operations ported past the loader.
+//! The module opened with dlopen, its functions behind the call-log wrappers, and
+//! `tools/pkiops.h` under its C names (`capi`). `ops` holds the operations past the loader.
 //!
 //! One module at a time, process-wide, as in C. The table is written by `pkiops_load` and
 //! `pkiops_unload` only; the GUI calls those from one thread, as it did C's.
@@ -16,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::time::Instant;
 
 use crate::calllog::{ARGS_CAP, attr_types, mech_name, user_name};
-use crate::ops::Slot;
+use crate::ops::{self, Slot};
 use crate::{Error, FUNCTIONS, Intent, Need, SlotId, Slots};
 
 pub(crate) type CK_ULONG = c_ulong;
@@ -76,13 +74,6 @@ struct Log(Option<pkiops_call_cb>, *mut c_void);
 // SAFETY: the context pointer is the caller's, handed back to its callback untouched, as C did.
 unsafe impl Send for Log {}
 static LOG: Mutex<Log> = Mutex::new(Log(None, null_mut()));
-
-#[cfg(feature = "shim")]
-unsafe extern "C" {
-    /// `shim/pkiops_tu.c`: fills C's `p11` table with `fns` (N pointers in [`FUNCTIONS`]
-    /// order), or clears it when `fns` is null.
-    fn pqhsm_c_pkiops_install(fns: *const *const c_void);
-}
 
 fn index(name: &str) -> usize {
     FUNCTIONS
@@ -301,14 +292,6 @@ pub(crate) unsafe extern "C" fn w_get_attribute_value(s: S, o: S, tp: A, n: S) -
     });
     rv
 }
-pub(crate) unsafe extern "C" fn w_digest_init(s: S, m: M) -> CK_RV {
-    let t = Instant::now();
-    let rv = unsafe { real!("DigestInit" as unsafe extern "C" fn(S, M) -> CK_RV)(s, m) };
-    logcall(c"C_DigestInit", rv, t, || {
-        format!("session {s}, {}", unsafe { mech(m) })
-    });
-    rv
-}
 pub(crate) unsafe extern "C" fn w_sign_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("SignInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
@@ -425,28 +408,6 @@ pub(crate) unsafe extern "C" fn w_get_slot_list(present: c_uchar, ids: P, n: P) 
     });
     rv
 }
-pub(crate) unsafe extern "C" fn w_get_mechanism_list(sl: S, list: P, n: P) -> CK_RV {
-    let t = Instant::now();
-    let rv =
-        unsafe { real!("GetMechanismList" as unsafe extern "C" fn(S, P, P) -> CK_RV)(sl, list, n) };
-    logcall(c"C_GetMechanismList", rv, t, || {
-        format!(
-            "slot {sl} -> {}{}",
-            unsafe { out(rv, n) },
-            none_if(list.cast(), " (count)")
-        )
-    });
-    rv
-}
-pub(crate) unsafe extern "C" fn w_get_mechanism_info(sl: S, m: S, info: V) -> CK_RV {
-    let t = Instant::now();
-    let rv =
-        unsafe { real!("GetMechanismInfo" as unsafe extern "C" fn(S, S, V) -> CK_RV)(sl, m, info) };
-    logcall(c"C_GetMechanismInfo", rv, t, || {
-        format!("slot {sl}, {}", mech_name(m))
-    });
-    rv
-}
 pub(crate) unsafe extern "C" fn w_destroy_object(s: S, o: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DestroyObject" as unsafe extern "C" fn(S, S) -> CK_RV)(s, o) };
@@ -512,43 +473,6 @@ pub(crate) unsafe extern "C" fn w_decrypt(s: S, i: B, n: S, o: B, on: P) -> CK_R
         )
     });
     rv
-}
-
-/// The wrappers, in [`FUNCTIONS`] order.
-fn wrappers() -> [*const c_void; N] {
-    [
-        w_initialize as *const c_void,
-        w_finalize as *const c_void,
-        w_open_session as *const c_void,
-        w_close_session as *const c_void,
-        w_login as *const c_void,
-        w_generate_key_pair as *const c_void,
-        w_find_objects_init as *const c_void,
-        w_find_objects as *const c_void,
-        w_find_objects_final as *const c_void,
-        w_get_attribute_value as *const c_void,
-        w_digest_init as *const c_void,
-        w_sign_init as *const c_void,
-        w_sign as *const c_void,
-        w_sign_update as *const c_void,
-        w_sign_final as *const c_void,
-        w_verify_init as *const c_void,
-        w_verify_update as *const c_void,
-        w_verify_final as *const c_void,
-        w_init_token as *const c_void,
-        w_init_pin as *const c_void,
-        w_get_token_info as *const c_void,
-        w_generate_random as *const c_void,
-        w_get_slot_list as *const c_void,
-        w_get_mechanism_list as *const c_void,
-        w_get_mechanism_info as *const c_void,
-        w_destroy_object as *const c_void,
-        w_generate_key as *const c_void,
-        w_encrypt_init as *const c_void,
-        w_encrypt as *const c_void,
-        w_decrypt_init as *const c_void,
-        w_decrypt as *const c_void,
-    ]
 }
 
 // --- the loader: p11_load_module_e ----------------------------------------------------------
@@ -624,23 +548,11 @@ fn load_module(path: *const c_char) -> Result<[*mut c_void; N], Error> {
     Ok(fns)
 }
 
-/// Install `fns` (or nothing) as the module, here and in C's table, wrapped.
+/// Install `fns` (or nothing) as the module.
 fn install(fns: Option<&[*mut c_void; N]>) {
-    let w = wrappers();
-    let mut c = [null(); N];
-    for i in 0..N {
-        let p = fns.map_or(null_mut(), |f| f[i]);
-        REAL[i].store(p, Ordering::Release);
-        // A function the module left unset stays unset, not a wrapper around NULL.
-        c[i] = if p.is_null() { null() } else { w[i] };
+    for (i, r) in REAL.iter().enumerate() {
+        r.store(fns.map_or(null_mut(), |f| f[i]), Ordering::Release);
     }
-    // SAFETY: N pointers in FUNCTIONS order, the shim's contract; null clears.
-    #[cfg(feature = "shim")]
-    unsafe {
-        pqhsm_c_pkiops_install(if fns.is_some() { c.as_ptr() } else { null() })
-    };
-    #[cfg(not(feature = "shim"))]
-    let _ = c;
 }
 
 /// # Safety
@@ -727,6 +639,24 @@ pub fn load(module: Option<&CStr>) -> Result<(), Error> {
     }
     INITIALISED.store(true, Ordering::Release);
     Ok(())
+}
+
+/// `pkiops_slots`: every slot the loaded module reports, in its order.
+pub fn slots() -> Result<Vec<ops::SlotInfo>, Error> {
+    let all = Module.list(false)?;
+    let tok = Module.list(true)?;
+    Ok(all
+        .into_iter()
+        .map(|id| {
+            let has = tok.contains(&id);
+            let info = has.then(|| ops::token_info(Slot(id)).ok()).flatten();
+            ops::SlotInfo {
+                id: Slot(id),
+                has_token: has.into(),
+                label: info.map_or([0; 33], |t| t.label),
+            }
+        })
+        .collect())
 }
 
 /// `pkiops_open`: [`load`], then the slot: `want` is the one the caller named, or -1.

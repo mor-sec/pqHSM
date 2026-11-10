@@ -11,3 +11,4 @@ publish = false
 libc.workspace = true
 zeroize.workspace = true
 pqhsm-pkiops = { path = "../pkiops" }
+pqhsm-pki = { path = "../pki" }

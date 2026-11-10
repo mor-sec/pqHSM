@@ -23,6 +23,8 @@
 # Slice 1: tools/fhsm-csr is pqhsm-cli's binary, and fhsm-csr's twelve pkiops_* are Rust.
 # Slice 2: tools/fhsm-token likewise, with pkiops_token_info and pkiops_token_init.
 # Slice 3: tools/fhsm-crypt likewise, with the objects, secret keys and CMS envelopes.
+# Slice 4: tools/fhsm-sign likewise. Slice 5: tools/fhsm-ca likewise, and the rest of pkiops.h:
+# test_pkiops* link no C of tools/pkiops.c or tools/cms_env.c.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -122,21 +124,20 @@ tests/test_tpm: $(PQHSM_HOOKS_LIB)
 
 # Phase 5 slice 0: the PKI tools and test_pkiops* link pqhsm-pkiops in place of pqhsm-module.
 # Its staticlib bundles pqhsm-pki, the composite and revocation code those links took from the
-# module's (their $(OBJDIR) objects are the empty ones above). They compile
-# pkiops/shim/pkiops_tu.c in place of tools/pkiops.c, which it includes. The legacy recipes name
+# module's (their $(OBJDIR) objects are the empty ones above). Slice 5: it holds all of
+# pkiops.h, so they compile no tools/pkiops.c or tools/cms_env.c. The legacy recipes name
 # tools/pkiops.c literally, so each is overridden here: make warns "overriding recipe" once per
 # target. Not a target-specific PQHSM_LIB, as test_tpm's: it would reach $(LIB), a prerequisite
 # of test_pkiops*, if make built the module for them. tools/fhsm-gui stays pure C (slice 6).
 # From slice 1 a ported tool is pqhsm-cli's binary instead (PQHSM_CLI_BINS, below).
 PQHSM_PKIOPS_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_pkiops.a
-PQHSM_PKIOPS_TU   := $(PQHSM_DIR)/pkiops/shim/pkiops_tu.c
-PQHSM_CLI_BINS    := tools/fhsm-csr tools/fhsm-token tools/fhsm-crypt tools/fhsm-sign
+PQHSM_CLI_BINS    := tools/fhsm-csr tools/fhsm-token tools/fhsm-crypt tools/fhsm-sign tools/fhsm-ca
 PQHSM_PKIOPS_BINS := $(filter-out $(PQHSM_CLI_BINS),$(TOOLS)) tests/test_pkiops tests/test_pkiops_algs \
                      tests/test_pkiops_objects tests/test_pkiops_secret tests/test_pkiops_envelope \
                      tests/test_pkiops_envelope_rsa
 
 $(PQHSM_PKIOPS_LIB): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-pkiops --features shim --manifest-path $(PQHSM_DIR)/Cargo.toml
+	cargo build --release --locked -p pqhsm-pkiops --manifest-path $(PQHSM_DIR)/Cargo.toml
 
 # The Rust tools, built by cargo and copied to the C names; they keep the legacy prerequisites.
 $(PQHSM_CLI_BINS): $(PQHSM_SRC)
@@ -144,8 +145,8 @@ $(PQHSM_CLI_BINS): $(PQHSM_SRC)
 	cp $(PQHSM_DIR)/target/release/$(notdir $@) $@
 
 # The main source is the target's name with _ for -: tools/fhsm-csr is tools/fhsm_csr.c.
-$(PQHSM_PKIOPS_BINS): $(PQHSM_PKIOPS_TU) $(PQHSM_PKIOPS_LIB)
-	$(CC) $(CFLAGS) -Itools -o $@ $(subst -,_,$@).c $(PQHSM_PKIOPS_TU) tools/cms_env.c \
+$(PQHSM_PKIOPS_BINS): $(PQHSM_PKIOPS_LIB)
+	$(CC) $(CFLAGS) -Itools -o $@ $(subst -,_,$@).c \
 	    $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(subst $(PQHSM_LIB),$(PQHSM_PKIOPS_LIB),$(LDFLAGS)) -ldl
 
 # REVOCATION_OBJ cannot be reassigned here: the legacy prerequisite lists are already expanded

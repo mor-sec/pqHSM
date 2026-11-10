@@ -6,15 +6,16 @@
 //! calls (sessions, the algorithms, key pairs, requests and roots). Slice 2: `fhsm-token`'s
 //! token state and init. Slice 3: `fhsm-crypt`'s objects, secret keys and CMS envelopes
 //! (`objects`, `cms_env`, `envelope`). Slice 4: `fhsm-sign`'s digests, streamed signatures
-//! and CMS SignedData (`sign`). The rest of `pkiops.h` is
-//! still `tools/pkiops.c`, reached through `shim/pkiops_tu.c`. All `unsafe` is in `ffi`,
-//! which `pqhsm-cli` calls through its safe functions (`ffi::ops`).
+//! and CMS SignedData (`sign`). Slice 5: `fhsm-ca`'s issuing, CRL and OCSP (`ca`) and the slot
+//! list, the last of `pkiops.h`: no C of `tools/pkiops.c` or `tools/cms_env.c` is linked.
+//! The raw pointers are in `ffi`; `pqhsm-cli` calls the safe functions.
 //!
 //! Every message is C's, byte for byte: `tests/pki_tools_characterize.sh` is the golden.
 
 use std::ffi::{c_long, c_ulong};
 use std::io::Write;
 
+pub mod ca;
 pub mod cms_env;
 pub mod envelope;
 pub mod ffi;
@@ -115,7 +116,7 @@ pub enum Need {
 }
 
 /// The module functions the tools call, in the field order of `tools/p11_util.h`'s `p11`
-/// table (the order `shim/pkiops_tu.c` receives them in), with their PKCS#11 v2.40 §C.6
+/// table, with their PKCS#11 v2.40 §C.6
 /// slot numbers. A test compares both with the header.
 pub const FUNCTIONS: [(&str, usize, Need); 31] = [
     ("Initialize", 0, Need::Both),
@@ -355,14 +356,15 @@ mod tests {
     use super::*;
     use std::collections::{BTreeSet, HashMap};
 
-    /// Every `pkiops_*` the Rust exports is renamed away in the shim, and nothing else is: a
-    /// missing rename links C's copy beside the Rust one, and which wins is the linker's pick.
+    /// Every function `tools/pkiops.h` declares is exported, and nothing else under its
+    /// prefix: the C callers link no C copy.
     #[test]
-    fn exports_match_shim_renames() {
+    fn exports_are_pkiops_h() {
         let dir = env!("CARGO_MANIFEST_DIR");
         let names = |text: &str, key: &str| -> BTreeSet<String> {
             text.lines()
                 .filter_map(|l| Some(l.split_once(key)?.1))
+                .filter(|r| r.contains('('))
                 .map(|r| {
                     r.split(|c: char| !(c.is_alphanumeric() || c == '_'))
                         .next()
@@ -378,8 +380,19 @@ mod tests {
                 names(&t, "extern \"C\" fn pkiops_")
             })
             .collect();
-        let shim = std::fs::read_to_string(format!("{dir}/shim/pkiops_tu.c")).expect("shim");
-        assert_eq!(rust, names(&shim, "#define pkiops_"));
+        let h =
+            std::fs::read_to_string(format!("{dir}/../../../tools/pkiops.h")).expect("pkiops.h");
+        // a declaration starts in column 0 and names the function just before its '('
+        let decl: BTreeSet<String> = h
+            .lines()
+            .filter(|l| l.starts_with(|c: char| c.is_ascii_alphabetic()))
+            .filter_map(|l| {
+                let head = &l[..l.find('(')?];
+                let name = &head[head.rfind(|c: char| !(c.is_alphanumeric() || c == '_'))? + 1..];
+                name.starts_with("pkiops_").then(|| name.to_owned())
+            })
+            .collect();
+        assert_eq!(rust, decl);
     }
 
     #[test]

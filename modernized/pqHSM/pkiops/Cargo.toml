@@ -12,11 +12,6 @@ publish = false
 # (their links took the composite and revocation code from pqhsm-module). rlib: pqhsm-cli.
 crate-type = ["staticlib", "rlib"]
 
-[features]
-# The hand-over of the module to the C of tools/pkiops.c not ported yet (shim/pkiops_tu.c,
-# which must then be linked): on for the hybrid build, off for cargo test and pqhsm-cli.
-shim = []
-
 [dependencies]
 libc.workspace = true
 openssl.workspace = true

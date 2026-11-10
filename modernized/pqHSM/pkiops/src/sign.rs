@@ -378,8 +378,8 @@ pub fn read_der(path: &Path) -> Result<Vec<u8>, Error> {
     Ok(buf)
 }
 
-/// `PEM_read_bio`'s first block, when it parses and is not empty.
-fn pem_body(text: &[u8]) -> Option<Vec<u8>> {
+/// `PEM_read_bio`'s first block, when it parses and is not empty and fits [`CMS_MAX`].
+pub fn pem_body(text: &[u8]) -> Option<Vec<u8>> {
     // SAFETY: a read-only memory BIO over text, freed below with what PEM_read_bio allocated.
     unsafe {
         let b = openssl_sys::BIO_new_mem_buf(text.as_ptr().cast(), text.len() as c_int);

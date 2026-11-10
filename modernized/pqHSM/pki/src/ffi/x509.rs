@@ -991,6 +991,47 @@ pub fn ocsp<'a>(
     })
 }
 
+/// The BasicOCSPResponse [`crate::revocation::answer`] asks for, as `fhsm_ocsp_answer_ex`
+/// builds it through `fhsm_pki_ocsp`: its parts agreed as that checks them (an empty one,
+/// where one is required, ARGUMENTS_BAD), and no longer than `t.cap`.
+pub fn ocsp_for(s: &mut Signer, t: &crate::revocation::Tbs) -> Result<Vec<u8>, u32> {
+    let req = |b: &'_ [u8]| {
+        if b.is_empty() {
+            Err(rv::ARGUMENTS_BAD)
+        } else {
+            Ok(())
+        }
+    };
+    req(s.algid)?;
+    req(t.responder)?;
+    req(t.produced_at)?;
+    if t.singles.is_empty() {
+        return Err(rv::ARGUMENTS_BAD);
+    }
+    let all = t.singles.iter().map(|one| {
+        req(&one.cert_id)?;
+        req(t.this_update)?;
+        req(t.next_update)?;
+        if let Some(r) = &one.revoked_at {
+            req(r)?;
+        }
+        Ok(Single {
+            cert_id: &one.cert_id,
+            status: one.status,
+            revoked_at: one.revoked_at.as_deref(),
+            reason: one.reason,
+            this_upd: t.this_update,
+            next_upd: Some(t.next_update),
+        })
+    });
+    let exts = (!t.exts.is_empty()).then_some(t.exts);
+    let der = ocsp(s, t.responder, t.produced_at, all, exts)?;
+    if der.len() > t.cap {
+        return Err(rv::BUFFER_TOO_SMALL);
+    }
+    Ok(der)
+}
+
 // --- CMS SignedData (Phase 3 slice 5d, src/fhsm_composite.c:2129-2917) ---------------------
 
 const NID_PKCS9_MESSAGE_DIGEST: c_int = 51;

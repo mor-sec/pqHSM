@@ -13,7 +13,9 @@ use crate::Error;
 use crate::keys::{self, Alg};
 use crate::ops::*;
 use crate::sign::{self, Hash, Signing, Verdict, Verifying};
-use crate::{envelope, objects};
+use crate::{ca, envelope, objects};
+use pqhsm_pki::ffi::{fhsm_ocsp_stats_t, fhsm_rev_db_t, to_db};
+use pqhsm_pki::revocation::Query;
 
 /// A C string argument; C's strlen of NULL crashes, this aborts instead.
 unsafe fn arg<'a>(p: *const c_char) -> &'a CStr {
@@ -225,7 +227,7 @@ pub unsafe extern "C" fn pkiops_keygen_alg(
 unsafe fn der_room<'a>(der: *mut u8, len: *mut usize) -> &'a mut usize {
     assert!(
         !der.is_null() && !len.is_null(),
-        "pkiops_csr, pkiops_root and pkiops_cms_sign write a DER buffer"
+        "pkiops_csr, pkiops_root, pkiops_cms_sign and pkiops_issue write a DER buffer"
     );
     // SAFETY: the caller's contract.
     unsafe { &mut *len }
@@ -722,6 +724,38 @@ pub unsafe extern "C" fn pkiops_hash_end(
     })
 }
 
+/// `pkiops_sha512_begin`: [`pkiops_hash_begin`] for SHA-512, which C kept beside it.
+///
+/// # Safety
+/// `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_sha512_begin(e: *mut p11_err) -> *mut Hash {
+    unsafe { pkiops_hash_begin(c"SHA512".as_ptr(), e) }
+}
+
+/// `pkiops_sha512_update`.
+///
+/// # Safety
+/// As [`pkiops_hash_update`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_sha512_update(
+    h: *mut Hash,
+    data: *const u8,
+    len: usize,
+    e: *mut p11_err,
+) -> c_int {
+    unsafe { pkiops_hash_update(h, data, len, e) }
+}
+
+/// `pkiops_sha512_end`: the 64 bytes into `out`; frees `h` whatever happens.
+///
+/// # Safety
+/// As [`pkiops_hash_end`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_sha512_end(h: *mut Hash, out: *mut u8, e: *mut p11_err) -> c_int {
+    unsafe { pkiops_hash_end(h, out, std::ptr::null_mut(), e) }
+}
+
 /// `pkiops_cms_sign`.
 ///
 /// # Safety
@@ -791,4 +825,172 @@ pub unsafe extern "C" fn pkiops_cms_verify(
             },
         )
     })
+}
+
+// --- slice 5: fhsm-ca's, and the slot list ---------------------------------------------------
+
+/// `pkiops_slots`: malloc'd, NULL when there are none; `*out` and `*n` cleared first, as C's.
+///
+/// # Safety
+/// `out`, `n` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_slots(
+    out: *mut *mut SlotInfo,
+    n: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    unsafe { put(out, std::ptr::null_mut()) };
+    unsafe { put(n, 0) };
+    list_out(super::slots(), 0, true, out, n, e)
+}
+
+/// A C string that may be NULL.
+unsafe fn opt_arg<'a>(p: *const c_char) -> Option<&'a [u8]> {
+    // SAFETY: the caller's C string, when not NULL.
+    (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_bytes())
+}
+
+/// `pkiops_issue`: `*pop_valid` 0 when the request's signature does not match its key, 1 once
+/// issued, untouched on a failure.
+///
+/// # Safety
+/// `label` is a C string, `subject` and `san` C strings or NULL; `ca` and `csr` cover their
+/// lengths; `crl_urls` NULL or `n_crl_urls` C strings or NULLs; `der` has `*der_len` writable
+/// bytes; `pop_valid` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_issue(
+    session: Handle,
+    label: *const c_char,
+    ca: *const u8,
+    ca_len: usize,
+    csr: *const u8,
+    csr_len: usize,
+    subject: *const c_char,
+    san: *const c_char,
+    crl_urls: *const *const c_char,
+    n_crl_urls: usize,
+    profile: c_int,
+    days: c_int,
+    der: *mut u8,
+    der_len: *mut usize,
+    pop_valid: *mut c_int,
+    e: *mut p11_err,
+) -> c_int {
+    let label = unsafe { arg(label) }.to_bytes();
+    let urls: Vec<Option<&[u8]>> = if crl_urls.is_null() {
+        Vec::new()
+    } else {
+        // SAFETY: n_crl_urls pointers, each a C string or NULL.
+        unsafe { std::slice::from_raw_parts(crl_urls, n_crl_urls) }
+            .iter()
+            .map(|&u| unsafe { opt_arg(u) })
+            .collect()
+    };
+    let i = ca::Issue {
+        ca: unsafe { bytes(ca, ca_len) },
+        csr: unsafe { bytes(csr, csr_len) },
+        subject: unsafe { opt_arg(subject) },
+        san: unsafe { opt_arg(san) },
+        crl_urls: &urls,
+        profile,
+        days,
+    };
+    let len = unsafe { der_room(der, der_len) };
+    status(
+        unsafe { ca::issue_into(session, label, &i, der, len) },
+        e,
+        |v| unsafe { put(pop_valid, c_int::from(v)) },
+    )
+}
+
+/// `pkiops_crl`: the CRL in a malloc'd buffer the caller frees.
+///
+/// # Safety
+/// `label` is a C string; `ca` covers `ca_len`; `db` a database as `fhsm_rev_db_load` builds
+/// it; `der`, `der_len` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_crl(
+    session: Handle,
+    label: *const c_char,
+    ca: *const u8,
+    ca_len: usize,
+    db: *const fhsm_rev_db_t,
+    days: c_int,
+    der: *mut *mut u8,
+    der_len: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    let label = unsafe { arg(label) }.to_bytes();
+    assert!(!db.is_null(), "pkiops_crl reads a database");
+    let db = unsafe { to_db(&*db) };
+    let ca = unsafe { bytes(ca, ca_len) };
+    malloc_out(
+        ca::crl(Session(session), label, ca, &db, days),
+        der,
+        der_len,
+        e,
+    )
+}
+
+/// `pkiops_ocsp`: the response in a malloc'd buffer the caller frees. `*resp`, `*resp_len` and
+/// `*stats` are cleared first.
+///
+/// # Safety
+/// `label` is a C string, `req_name` one or NULL; `req`, `ca` and `responder` cover their
+/// lengths; `db` as [`pkiops_crl`]'s; `resp`, `resp_len`, `stats` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_ocsp(
+    session: Handle,
+    label: *const c_char,
+    req: *const u8,
+    req_len: usize,
+    ca: *const u8,
+    ca_len: usize,
+    responder: *const u8,
+    responder_len: usize,
+    db: *const fhsm_rev_db_t,
+    days: c_int,
+    req_name: *const c_char,
+    resp: *mut *mut u8,
+    resp_len: *mut usize,
+    stats: *mut fhsm_ocsp_stats_t,
+    e: *mut p11_err,
+) -> c_int {
+    unsafe { put(resp, std::ptr::null_mut()) };
+    unsafe { put(resp_len, 0) };
+    unsafe { put(stats, fhsm_ocsp_stats_t::default()) };
+    let label = unsafe { arg(label) }.to_bytes();
+    assert!(!db.is_null(), "pkiops_ocsp reads a database");
+    let db = unsafe { to_db(&*db) };
+    let q = Query {
+        req: unsafe { bytes(req, req_len) },
+        ca: unsafe { bytes(ca, ca_len) },
+        responder: unsafe { bytes(responder, responder_len) },
+        db: &db,
+        days,
+        // fhsm_ocsp_answer_ex's: a name that is not UTF-8 is "the request"
+        label: unsafe { opt_arg(req_name) }.and_then(|b| std::str::from_utf8(b).ok()),
+        now: unsafe { libc::time(std::ptr::null_mut()) },
+    };
+    let mut st = None;
+    let r = ca::ocsp(Session(session), label, &q).map(|(der, s)| {
+        st = Some(s);
+        der
+    });
+    let rc = malloc_out(r, resp, resp_len, e);
+    if let Some(s) = st.filter(|_| rc == 0) {
+        unsafe {
+            put(
+                stats,
+                fhsm_ocsp_stats_t {
+                    asked: s.asked,
+                    ours: s.ours,
+                    revoked: s.revoked,
+                    unknown: s.unknown,
+                    nonce_echoed: s.nonce_echoed.into(),
+                },
+            )
+        };
+    }
+    rc
 }

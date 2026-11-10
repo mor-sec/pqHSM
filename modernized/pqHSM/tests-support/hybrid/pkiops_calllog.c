@@ -5,11 +5,15 @@
  * a reload, and the operations that reach each wrapper pkiops.c calls (all but
  * C_GetMechanismList, C_GetMechanismInfo and C_DigestInit, which nothing in it calls); from
  * slice 3, every key fhsm-crypt makes, both kinds of recipient, and every object's attributes;
- * from slice 4, streamed signatures, the digests and CMS SignedData.
+ * from slice 4, streamed signatures, the digests and CMS SignedData; from slice 5, issuing
+ * (and its refusals), CRLs, an OCSP answer and SHA-512.
  *
  *   pkiops_calllog MODULE        (FHSM_TOKENS_DIR: an empty directory)
  */
 #include "pkiops.h"
+
+#include <openssl/ocsp.h>
+#include <openssl/x509.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -224,6 +228,89 @@ int main(int argc, char **argv) {
     show("object attrs, destroyed", pkiops_object_attrs(s, key, &attrs, &na, &e));
     free(attrs);
     free(objs);
+    /* Slice 5: issuing with every option and with each refusal (a request whose signature
+     * does not match, days 0, no such key, too little room), the CRL over an entry and over
+     * none, an OCSP answer about the certificate issued and a request that is not one, and
+     * SHA-512. Serials and times vary, so lengths are not printed. */
+    {
+        static uint8_t c2[65536], bad[65536];
+        size_t c2_len = sizeof c2;
+        const char *urls[] = { "http://example.org/ca.crl" };
+        pop = -1;
+        show("issue responder, every option",
+             pkiops_issue(s, "ca", ca, ca_len, csr, csr_len, "/CN=other", "DNS:a.example",
+                          urls, 1, FHSM_CERT_OCSP_RESPONDER, 10, c2, &c2_len, &pop, &e));
+        printf("  pop %d\n", pop);
+        memcpy(bad, csr, csr_len);
+        bad[csr_len - 1] ^= 1;
+        c2_len = sizeof c2; pop = -1;
+        show("issue, signature does not match",
+             pkiops_issue(s, "ca", ca, ca_len, bad, csr_len, NULL, NULL, NULL, 0,
+                          FHSM_CERT_END_ENTITY, 30, c2, &c2_len, &pop, &e));
+        printf("  pop %d\n", pop);
+        c2_len = sizeof c2;
+        show("issue, days 0", pkiops_issue(s, "ca", ca, ca_len, csr, csr_len, NULL, NULL, NULL, 0,
+                                           FHSM_CERT_END_ENTITY, 0, c2, &c2_len, &pop, &e));
+        show("issue, no such key", pkiops_issue(s, "nope", ca, ca_len, csr, csr_len, NULL, NULL,
+                                                NULL, 0, FHSM_CERT_END_ENTITY, 30, c2, &c2_len,
+                                                &pop, &e));
+        c2_len = 16;
+        show("issue, 16 bytes of room", pkiops_issue(s, "ca", ca, ca_len, csr, csr_len, NULL, NULL,
+                                                     NULL, 0, FHSM_CERT_END_ENTITY, 30, c2,
+                                                     &c2_len, &pop, &e));
+        printf("  room asked for: %s\n", c2_len > 16 ? "more" : "none");
+
+        fhsm_rev_entry_t en;
+        memset(&en, 0, sizeof en);
+        en.serial[0] = 0x4A; en.serial_len = 1;
+        memcpy(en.date, "20260101000000Z", 16);
+        en.reason = 1;
+        fhsm_rev_db_t db = { 3, &en, 1, 1 }, none = { 0, NULL, 0, 0 };
+        uint8_t *crl = NULL; size_t cl = 0;
+        show("crl, one entry", pkiops_crl(s, "ca", ca, ca_len, &db, 30, &crl, &cl, &e));
+        free(crl); crl = NULL;
+        show("crl, none", pkiops_crl(s, "ca", ca, ca_len, &none, 30, &crl, &cl, &e));
+        free(crl); crl = NULL;
+        show("crl, days 0", pkiops_crl(s, "ca", ca, ca_len, &db, 0, &crl, &cl, &e));
+        show("crl, no such key", pkiops_crl(s, "nope", ca, ca_len, &db, 30, &crl, &cl, &e));
+        show("crl, not a CA certificate", pkiops_crl(s, "ca", csr, csr_len, &db, 30, &crl, &cl, &e));
+
+        const uint8_t *p = ca, *q = cert;
+        X509 *cx = d2i_X509(NULL, &p, (long)ca_len), *ex = d2i_X509(NULL, &q, (long)cert_len);
+        OCSP_REQUEST *rq = OCSP_REQUEST_new();
+        OCSP_CERTID *id = cx && ex ? OCSP_cert_to_id(NULL, ex, cx) : NULL;
+        uint8_t *req = NULL;
+        int reql = id && rq && OCSP_request_add0_id(rq, id) ? i2d_OCSP_REQUEST(rq, &req) : -1;
+        uint8_t *resp = NULL; size_t rl = 0;
+        fhsm_ocsp_stats_t st;
+        memset(&st, 0, sizeof st);
+        if (reql > 0) {
+            show("ocsp", pkiops_ocsp(s, "ca", req, (size_t)reql, ca, ca_len, ca, ca_len, &db, 7,
+                                     "probe.req", &resp, &rl, &st, &e));
+            printf("  asked %zu ours %zu revoked %zu unknown %zu nonce %d\n", st.asked, st.ours,
+                   st.revoked, st.unknown, st.nonce_echoed);
+            free(resp); resp = NULL;
+            show("ocsp, days 0", pkiops_ocsp(s, "ca", req, (size_t)reql, ca, ca_len, ca, ca_len,
+                                             &db, 0, "probe.req", &resp, &rl, &st, &e));
+        } else {
+            printf("  (could not build the OCSP request)\n");
+        }
+        show("ocsp, not a request", pkiops_ocsp(s, "ca", ca, ca_len, ca, ca_len, ca, ca_len, &db, 7,
+                                                "the CA", &resp, &rl, &st, &e));
+        show("ocsp, no such key", pkiops_ocsp(s, "nope", ca, ca_len, ca, ca_len, ca, ca_len, &db, 7,
+                                              NULL, &resp, &rl, &st, &e));
+        OPENSSL_free(req); OCSP_REQUEST_free(rq); X509_free(cx); X509_free(ex);
+
+        uint8_t md[64];
+        struct pkiops_sha512 *h = pkiops_sha512_begin(&e);
+        show("sha512 begin", h ? 0 : 1);
+        if (h) {
+            show("sha512 update", pkiops_sha512_update(h, data, sizeof data, &e));
+            show("sha512 end", pkiops_sha512_end(h, md, &e));
+            printf("  %02x%02x%02x%02x\n", md[0], md[1], md[2], md[3]);
+        }
+    }
+
     struct pkiops_slot *sl = NULL; size_t ns = 0;
     show("slots", pkiops_slots(&sl, &ns, &e));
     for (size_t i = 0; i < ns; i++) printf("  slot %lu token %d \"%s\"\n", sl[i].id, sl[i].has_token, sl[i].label);

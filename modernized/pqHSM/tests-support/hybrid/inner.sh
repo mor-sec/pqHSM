@@ -50,7 +50,8 @@ nm libfreehsm.so | grep -cE ' [tT] pqhsm_audit_event_v$' > /out/rust_linked.txt
 # neither carries nor imports it (PHASE2_PLAN.md §3(c)).
 { printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_revocation.o | grep -c ' [TtDdBb] ')"
   printf 'module fhsm_rev_*/OCSP_*: %s; ' "$(nm libfreehsm.so | grep -cE ' (fhsm_rev_|fhsm_ocsp_|OCSP_)')"
-  printf 'fhsm-ca rust db_load: %s' "$(nm tools/fhsm-ca | grep -c ' [Tt] fhsm_rev_db_load$')"
+  # Phase 5 slice 5: fhsm-ca is Rust, and calls pqhsm-pki's Db::load without the C ABI.
+  printf 'fhsm-ca rust db_load: %s' "$(nm tools/fhsm-ca | grep -c ' [Tt] .*9pqhsm_pki10revocationNtB2_2Db4load$')"
 } > /out/rev_swap.txt
 # Phase 2 slice 3: the C token store object is empty and the module's fhsm_token_* are Rust.
 { printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_token.o | grep -c ' [TtDdBb] ')"
@@ -82,7 +83,7 @@ nm libfreehsm.so | grep -cE ' [tT] pqhsm_audit_event_v$' > /out/rust_linked.txt
 } > /out/pairwise_swap.txt
 # Phase 3 slice 5: the PKI encoders, in the module and in the tools.
 { printf 'C object with code: %s; ' "$(nm --defined-only .obj/src/fhsm_composite.o | grep -c ' [TtDdBbRr] ')"
-  printf 'module fhsm_composite_sign: %s; fhsm-ca rust fhsm_pki_issue: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_composite_sign$')" "$(nm tools/fhsm-ca | grep -c ' [Tt] fhsm_pki_issue$')"
+  printf 'module fhsm_composite_sign: %s; fhsm-ca rust fhsm_pki_issue: %s' "$(nm libfreehsm.so | grep -c ' [Tt] fhsm_composite_sign$')" "$(nm tools/fhsm-ca | grep -c ' [Tt] .*9pqhsm_pki3ffi4x5095issue$')"
 } > /out/composite_swap.txt
 # fhsm-ca end to end over the revocation DB (not in `make tests`). ocsp-delegated is left out:
 # it runs `make clean` and rebuilds the tree under another PROFILE.
@@ -472,23 +473,44 @@ printf 'pki tools characterise: %s, C run 1 %s, %s lines, run 2 vs run 1 %s' "$(
   printf 'data' > $FHSM_TOKENS_DIR/d &&
   python3 /work/modernized/pqHSM/tests-support/hybrid/pin_prompt.py userpin1234 \
     tools/fhsm-sign sign --label p --in $FHSM_TOKENS_DIR/d --out $FHSM_TOKENS_DIR/d.sig) > /out/pin_prompt_sign.txt 2>&1
+# Slice 5 on: fhsm-ca likewise (crl, once its CA certificate is read). Then DIV-074, which no
+# transcript reaches: twelve revokes at once on a database that does not exist yet all land,
+# and four CRLs at once take crlNumber 1 to 4, each once.
+(cd $AMH && export FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_PIN=userpin1234 &&
+  FHSM_SO_PIN=sopin1234 tools/fhsm-token init --label prompt > /dev/null 2>&1 &&
+  tools/fhsm-csr keygen --label p --alg ecdsa-p256 > /dev/null 2>&1 &&
+  tools/fhsm-csr root --label p --subject /CN=p --out $FHSM_TOKENS_DIR/ca.der > /dev/null 2>&1 &&
+  python3 /work/modernized/pqHSM/tests-support/hybrid/pin_prompt.py userpin1234 \
+    tools/fhsm-ca crl --label p --ca-cert $FHSM_TOKENS_DIR/ca.der --db $FHSM_TOKENS_DIR/p.db --out $FHSM_TOKENS_DIR/p.crl) > /out/pin_prompt_ca.txt 2>&1
+(cd $AMH && export FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_PIN=userpin1234 &&
+  FHSM_SO_PIN=sopin1234 tools/fhsm-token init --label lock > /dev/null 2>&1 &&
+  tools/fhsm-csr keygen --label p --alg ecdsa-p256 > /dev/null 2>&1 &&
+  tools/fhsm-csr root --label p --subject /CN=p --out $FHSM_TOKENS_DIR/ca.der > /dev/null 2>&1 &&
+  D=$FHSM_TOKENS_DIR/race.db && for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    tools/fhsm-ca revoke --db $D --serial $(printf '%02X' $i) --date 20260101000000Z 2>/dev/null & done; wait
+  revoked=$(grep -c '^[0-9A-F][0-9A-F] ' $D)
+  for i in 1 2 3 4; do tools/fhsm-ca crl --label p --ca-cert $FHSM_TOKENS_DIR/ca.der --db $D \
+    --out $FHSM_TOKENS_DIR/$i.crl 2> $FHSM_TOKENS_DIR/$i.err & done; wait
+  numbers=$(cat $FHSM_TOKENS_DIR/[1-4].err | sed -n 's/^fhsm-ca: CRL number \([0-9]*\),.*/\1/p' | sort -n | tr '\n' ' ')
+  echo "12 revokes at once: $revoked kept; 4 CRLs at once: numbers ${numbers% }, database $(sed -n 's/^crlNumber //p' $D)") > /out/race_ca.txt 2>&1
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
 # Slice 4 on: the Rust fhsm-sign on either module, DIV-075 (cms-verify names its signer, --signer).
-python3 -I /work/modernized/pqHSM/tests-support/hybrid/div075_expect.py < /out/pki_char_c1.txt > /out/pki_char_c_expect_on_c.txt
+# Slice 5 on: the Rust fhsm-ca, DIV-073 (strict --days) and DIV-074 (the locked database refused).
+python3 -I /work/modernized/pqHSM/tests-support/hybrid/phase5_expect.py < /out/pki_char_c1.txt > /out/pki_char_c_expect_on_c.txt
 sed -E 's/(PIN length +|accepted length \()4\.\.64/\18..64/' /out/pki_char_c_expect_on_c.txt > /out/pki_char_c_expect.txt   # DIV-059
 PCL=modernized/pqHSM/tests-support/hybrid/pkiops_calllog.c
 PCF="-std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Iinclude -Itools -I/usr/local/ssl/include"
 PCL_L="-L/usr/local/ssl/lib64 -L/usr/local/ssl/lib"
 { (cd $AMC && cc $PCF -o /tmp/pkiops_calllog_c /work/$PCL tools/pkiops.c tools/cms_env.c .obj/src/fhsm_composite.o \
      .obj/src/fhsm_revocation.o $PCL_L -lcrypto -ldl -pthread) &&
-  (cd $AMH && cc $PCF -o /tmp/pkiops_calllog_hybrid $PCL modernized/pqHSM/pkiops/shim/pkiops_tu.c tools/cms_env.c \
+  (cd $AMH && cc $PCF -o /tmp/pkiops_calllog_hybrid $PCL \
      modernized/pqHSM/target/release/libpqhsm_pkiops.a $PCL_L -lssl -lcrypto -lpthread -lm -ldl -lrt -lutil); echo "build rc=$?"; } > /out/pkiops_calllog_build.log 2>&1
 for t in c hybrid; do
   FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/pkiops_calllog_$t $AMC/libfreehsm.so > /out/pkiops_calllog_$t.txt 2>&1
   echo "rc=$?" >> /out/pkiops_calllog_$t.txt
 done
-printf '; hybrid tools: %s; on the C module vs C less DIV-075 %s; on the hybrid module vs C less DIV-059, DIV-075 %s; call log: %s, C %s, hybrid %s, %s records, %s' \
+printf '; hybrid tools: %s; on the C module vs C less DIV-073 to 075 %s; on the hybrid module vs C less DIV-059, DIV-073 to 075 %s; call log: %s, C %s, hybrid %s, %s records, %s' \
   "$(tail -1 /out/pki_char_h_build.log)" "$(pl_same /out/pki_char_c_expect_on_c.txt /out/pki_char_h_on_c.txt)" \
   "$(pl_same /out/pki_char_c_expect.txt /out/pki_char_h.txt)" "$(tail -1 /out/pkiops_calllog_build.log)" \
   "$(tail -1 /out/pkiops_calllog_c.txt)" "$(tail -1 /out/pkiops_calllog_hybrid.txt)" \
@@ -497,6 +519,9 @@ printf '; PIN prompt (DIV-072): %s' "$(tail -1 /out/pin_prompt.txt)" >> /out/pki
 printf '; fhsm-token init: %s' "$(tr '\n' ' ' < /out/pin_prompt_token.txt | sed 's/ $//')" >> /out/pki_char.txt
 printf '; fhsm-crypt: %s' "$(tail -1 /out/pin_prompt_crypt.txt)" >> /out/pki_char.txt
 printf '; fhsm-sign: %s' "$(tail -1 /out/pin_prompt_sign.txt)" >> /out/pki_char.txt
+RACE_OK="12 revokes at once: 12 kept; 4 CRLs at once: numbers 1 2 3 4, database 4"
+printf '; fhsm-ca: %s; DIV-074: %s' "$(tail -1 /out/pin_prompt_ca.txt)" \
+  "$([ "$(tail -1 /out/race_ca.txt)" = "$RACE_OK" ] && echo "same ($RACE_OK)" || echo "DIFF ($(tail -1 /out/race_ca.txt))")" >> /out/pki_char.txt
 
 # 4q. Slice 8c review M1: the audit switch's other side. `make audit-switch` recurses without
 #     -f, so under hybrid.mk it builds pure C; this is its second half, on fresh copies of each

@@ -10,8 +10,10 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use crate::ffi::libcrypto::{AskedError, Cert, Request, generalized_time};
 
@@ -350,7 +352,7 @@ impl Db {
         Ok(d)
     }
 
-    /// RULE-100: `<path>.tmp`, flush, fsync, rename. No locking (RULE-099/100, deferred).
+    /// RULE-100: `<path>.tmp`, flush, fsync, rename. The lock is the caller's ([`DbLock`], DIV-074).
     /// DIV-022: whatever is at `<path>.tmp` is removed and the tmp created O_EXCL|O_NOFOLLOW,
     /// so a planted link is never written through. A failure leaves the tmp (candidate 7b).
     pub fn save(&self, path: &Path) -> Result<(), RevError> {
@@ -431,6 +433,100 @@ pub(crate) fn too_many() -> String {
 // ---------------------------------------------------------------------------------------
 // OCSP
 // ---------------------------------------------------------------------------------------
+
+/// How long [`DbLock::take`] waits for another holder, as the token's flock (DIV-012).
+pub const LOCK_WAIT: Duration = Duration::from_secs(10);
+
+/// DIV-074: `flock` on the database, held from load to save (exclusive) or for a read
+/// (shared), as the token file's (DIV-012): a lock on a file a save has since renamed over is
+/// taken again on the new one. An exclusive lock on a missing database creates it empty
+/// (O_EXCL, so a planted link is not followed), which loads as a missing one, so that two
+/// first writers exclude each other too; a reader of a missing one locks nothing. Released
+/// when dropped.
+pub struct DbLock(Option<File>);
+
+impl DbLock {
+    /// Waits up to `wait` for another holder; then [`EIO`], nothing read or changed.
+    pub fn take(path: &Path, exclusive: bool, wait: Duration) -> Result<DbLock, RevError> {
+        let op = if exclusive {
+            libc::LOCK_EX
+        } else {
+            libc::LOCK_SH
+        };
+        // one deadline for the whole wait, however often a save replaces the file
+        let end = Instant::now() + wait;
+        loop {
+            // Any other failure to open stops the load too, which says why.
+            let f = match File::open(path) {
+                Ok(f) => f,
+                Err(e) if exclusive && e.kind() == io::ErrorKind::NotFound => {
+                    // A writer that lost the race to create it opens the winner's. A path that
+                    // is neither (a dangling link) would load as empty, unlocked: refused.
+                    match OpenOptions::new().write(true).create_new(true).open(path) {
+                        Ok(f) => f,
+                        Err(_) => match File::open(path) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                return fail(
+                                    EIO,
+                                    format!("cannot lock {}: {}\n", shown(path), reason(&e)),
+                                );
+                            }
+                        },
+                    }
+                }
+                Err(_) => return Ok(DbLock(None)),
+            };
+            loop {
+                // SAFETY: f's descriptor, open for the call.
+                if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&f), op | libc::LOCK_NB) }
+                    == 0
+                {
+                    break;
+                }
+                let e = io::Error::last_os_error();
+                match e.kind() {
+                    io::ErrorKind::Interrupted => {}
+                    io::ErrorKind::WouldBlock if Instant::now() < end => {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    io::ErrorKind::WouldBlock => {
+                        return fail(
+                            EIO,
+                            format!(
+                                "{} is locked by another process; gave up after {} seconds.\n  Nothing was changed.\n",
+                                shown(path),
+                                wait.as_secs()
+                            ),
+                        );
+                    }
+                    _ => {
+                        return fail(
+                            EIO,
+                            format!("cannot lock {}: {}\n", shown(path), reason(&e)),
+                        );
+                    }
+                }
+            }
+            let same = match (f.metadata(), fs::metadata(path)) {
+                (Ok(a), Ok(b)) => a.ino() == b.ino() && a.dev() == b.dev(),
+                _ => false,
+            };
+            if same {
+                return Ok(DbLock(Some(f)));
+            }
+        }
+    }
+}
+
+impl Drop for DbLock {
+    fn drop(&mut self) {
+        if let Some(f) = &self.0 {
+            // SAFETY: f's descriptor, still open.
+            unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(f), libc::LOCK_UN) };
+        }
+    }
+}
 
 /// The five-byte unsigned OCSPResponse for malformedRequest(1), internalError(2) or
 /// tryLater(3); `None` for anything else, successful(0) included.

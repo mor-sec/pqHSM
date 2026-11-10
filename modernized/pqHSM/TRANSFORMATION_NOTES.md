@@ -1434,7 +1434,7 @@ The script now also needs `python3` (to build `badsid.cms`) and `flock`, and che
 
 **What moved.** New crate `pqhsm-pkiops` (`pkiops/`, staticlib + rlib). Safe (`src/lib.rs`): the table of the 31 module functions the tools call, in `p11_util.h`'s field order with their slot numbers (`FUNCTIONS`); `p11_resolve_slot_e` and `p11_label_of` (`resolve`, `label_of`); the call log's summaries (`calllog`); `struct p11_err` (`Error`, cut at 4,095 bytes as vsnprintf cuts it). `src/ffi/`: `p11_load_module_e` (dlopen, `C_GetFunctionList` or the per-symbol fallback), the 31 `w_*` wrappers, and `pkiops_load`, `_open`, `_close`, `_unload`, `_set_call_log`.
 
-**How the C not yet ported reaches the module.** It calls through `p11_util.h`'s `static` table `p11`, which no other file can reach. `pkiops/shim/pkiops_tu.c` includes `tools/pkiops.c` unchanged, renames C's five copies (`#define pkiops_load pqhsm_c_pkiops_load`, ...; nothing in `pkiops.c` calls them, checked by grep) and adds `pqhsm_c_pkiops_install`, through which the Rust loader fills `p11` with its wrappers, or clears it. So every call, from Rust or C, goes through one wrapper and one log, as C's did. A `_Static_assert` on the table's size and a unit test against `p11_util.h` (field order and every `P11_SLOT_*`) keep the copy honest, as `tests/test_p11_loader.c` does for the header's.
+**How the C not yet ported reaches the module** (until slice 5, which deletes the shim). It calls through `p11_util.h`'s `static` table `p11`, which no other file can reach. `pkiops/shim/pkiops_tu.c` includes `tools/pkiops.c` unchanged, renames C's five copies (`#define pkiops_load pqhsm_c_pkiops_load`, ...; nothing in `pkiops.c` calls them, checked by grep) and adds `pqhsm_c_pkiops_install`, through which the Rust loader fills `p11` with its wrappers, or clears it. So every call, from Rust or C, goes through one wrapper and one log, as C's did. A `_Static_assert` on the table's size and a unit test against `p11_util.h` (field order and every `P11_SLOT_*`) keep the copy honest, as `tests/test_p11_loader.c` does for the header's.
 
 **Build.** `hybrid.mk` links the five tools and the six `test_pkiops*` against `libpqhsm_pkiops.a`, which carries `pqhsm-pki`'s C ABI too (the composite and revocation code their links took from `pqhsm-module`), compiling the shim in place of `tools/pkiops.c`. The legacy recipes name `tools/pkiops.c` literally, so the eleven are overridden (make prints "overriding recipe" for each). `tools/fhsm-gui` stays pure C until slice 6.
 
@@ -1597,3 +1597,43 @@ No HIGH, one MEDIUM, four LOW, nits; each checked against the code. Fixed before
 - `test_pkiops_algs` and `pki_tools_algs.sh` against the Rust in `make tests`, 106/106; `pki_artifacts` 21 DER files, 0 differ; openssl CLI 18 ok each.
 - Cargo: workspace 952 passed, 0 failed (new: digests, ECDSA DER parsed whole, `read_der` as `slurp_der`, CMS verdicts on garbage, a certificate with trailing bytes). Clippy `-D warnings` clean for the workspace and for `pqhsm-pkiops --features shim`.
 - Harness `p5s4` (`run8`, the final tree; `run6` before the review fixes and H3 the same): `p5s3`'s summary but the new prompt line, the call log's 875 records, and run-to-run noise (corpus 9628 records, `run6` 10265; "C reading Rust-written" 2 lines, RSA-keyed token sizes differing by 1-3 bytes either way, `algs` and `envrsa`).
+
+### Slice 5: `fhsm-ca`, and the last of `pkiops.h` (2026-11-11)
+
+**What moved.** `pkiops_issue`, `_crl`, `_ocsp` (`pkiops/src/ca.rs`, over the closure signer), `pkiops_slots` (`ffi::slots`), and `pkiops_sha512_begin`, `_update`, `_end`, which no tool or test calls but `pkiops.h` declares (found by the new export test; thin wrappers over `Hash`). `tools/fhsm-ca` is `pqhsm-cli`'s `fhsm-ca` (`cli/src/bin/fhsm-ca.rs`), over `pqhsm_pki::revocation` for the database and `check_responder`. With every `pkiops.h` function Rust, `pkiops/shim/pkiops_tu.c`, the `shim` feature, the C `p11` table hand-over and the three wrappers only that C used (`C_DigestInit`, `C_GetMechanismList`, `C_GetMechanismInfo`; `FUNCTIONS` still lists them, so a module's load is refused as before) are deleted, and `test_pkiops*` link no `tools/pkiops.c` or `tools/cms_env.c` (`hybrid.mk`). `tools/fhsm-gui` keeps its legacy recipe, all C (slice 6).
+
+**How.**
+- `ops::signed_by` is `with_signer` (the token signer as a closure, any builder) plus `emit_into` (fhsm_pki's `emit`); `issue` maps the proof-of-possession refusal (0xC0) to "not valid", nothing written, before the emit. Serials come from `C_GenerateRandom` on the session, as `p11_rng`. `fhsm_pki_issue`'s and `_crl`'s `days <= 0` checks are the Rust's, after the key lookup, as C.
+- `pqhsm_pki::ffi::x509::ocsp_for` is what `fhsm_ocsp_answer_ex`'s encoder did through `fhsm_pki_ocsp`'s C ABI (the same refusals and room); that C ABI's closure now calls it too. `to_db` is public for the C ABI's `fhsm_rev_db_t`.
+- `cli/src/lib.rs` gains `fill` (from `fhsm-sign`) and `write_der` (from `fhsm-csr`'s `emit`, which `fhsm-ca`'s is).
+- DIV-072, 073, 074 as decided; each has its "As built (slice 5)" in `DIVERGENCES.md`. DIV-074 after the review: `crl` reserves its number under the lock and signs after it (user: "Reserve, then sign (Recommended)"), and the Target is reworded to "no lock file appears; a writer on a missing database creates it" (user: "Keep, reword Target (Recommended)").
+- Harness: `phase5_expect.py` (was `div075_expect.py`) adds DIV-073's fifteen rows and DIV-074's three locked rows and `lock.db` as copied; `inner.sh` adds `fhsm-ca`'s PIN prompt and `race_ca.txt` (twelve revokes at once on a missing database, four CRLs at once, compared with the expected line); `pkiops_calllog.c` drives every slice 5 function and refusal through the C ABI; the two `nm` checks on `tools/fhsm-ca` look for the Rust `Db::load` and `x509::issue`, which it now calls without the C ABI.
+
+**Deliberate differences (no golden row reaches them):** `pkiops_ocsp` clears `*resp`, `*resp_len` and `*stats` first, also when the key lookup fails, where C cleared them only after it. A non-UTF-8 path in an OCSP or responder message is printed with U+FFFD where C printed its bytes.
+
+**Not done here.** RULE-021/022 over the database with the clock pinned (PHASE5_PLAN.md §4) is not a separate run: the golden's `crl` and `revoke` rows and `race_ca.txt` show the numbering. The GUI still writes the database without the lock (DIV-074; slice 6).
+
+### Slice 5 review (architecture-critic, 2026-11-11)
+
+No HIGH, four MEDIUM, four LOW, three nits; each checked against the code.
+
+| # | Finding | Done |
+|---|---|---|
+| M1 | An exclusive `DbLock` on a dangling link went ahead unlocked: the path loaded as an empty database, so two revokes could lose one | Fixed: refused, "cannot lock PATH: strerror"; a test. |
+| M2 | The C GUI writes the database without the lock | Recorded in DIV-074; slice 6. |
+| M3 | `crl` held the lock across module load, login and signing, so a slow module made `revoke` fail | Decided: the number is reserved under the lock and the list signed after it; DIV-074. |
+| M4 | DIV-074's Target said "no new file appears"; a writer creates a missing database | Decided: Target reworded. |
+| L5 | The comment on gaps in CRL numbers did not match the code | Rewritten with M3. |
+| L6 | The race check was printed, not compared | Fixed: same/DIFF against the expected line; with M3 no CRL holds the lock across its login. |
+| L7 | The 10 s wait restarted on each inode re-check | Fixed: one deadline. |
+| L8 | The lock test lacked the create race and the dangling link | Fixed: both. |
+| nits | three behaviours for non-UTF-8 paths; the export test is textual; the notes still described the shim | The third fixed; the first two left. |
+
+**Evidence (slice 5).**
+- `pki_tools_characterize.sh` (unchanged, 1998 lines; C runs identical): the Rust `fhsm-ca` (and the other four) on the C module match C less DIV-073 to 075, on the hybrid module C less DIV-059 and DIV-073 to 075, both identical. The expectation is `tests-support/hybrid/phase5_expect.py`: the fifteen `--days` rows refused ("--days must be positive.", exit 2, before the module), the three rows run under `flock -x` refused after 10 s with nothing changed, and `lock.db` as copied (`crlNumber 1`, one entry).
+- `race_ca.txt`: twelve revokes at once on a missing database, all kept; four CRLs at once, numbers 1 to 4, `crlNumber 4`: same as expected.
+- `pkiops_calllog.c` drives every slice 5 function through the C ABI (issue with every option, a request whose signature does not match, days 0, no such key, 16 bytes of room; CRLs over one entry and none and their refusals; an OCSP answer and its refusals; SHA-512): C and Rust 940 records, identical.
+- DIV-072 check: `fhsm-ca crl` at a terminal without FHSM_PIN: "asked, PIN not echoed, rc=0".
+- `test_pkiops*` linked against `pqhsm-pkiops` alone (no `tools/pkiops.c`, no `tools/cms_env.c`): `make tests` 106/106; `pki_artifacts` 21 DER files, 0 differ; openssl CLI 18 ok each. The `nm` checks find the Rust `Db::load` and `x509::issue` in `tools/fhsm-ca`.
+- Cargo: workspace 954 passed, 0 failed (new: `div074_lock` with the create race and a dangling link, `fhsm-ca`'s `--days` parser, `exports_are_pkiops_h` in place of the shim's rename test). Clippy `-D warnings` clean for the workspace.
+- Harness `p5s5` (`run10`, the final tree; `run9` before the review fixes the same but for the two `nm` checks): `p5s4`'s summary but the new rows, and run-to-run noise (corpus 9597 records; "C reading Rust-written" 2 lines, RSA-keyed token sizes).

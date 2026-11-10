@@ -4,12 +4,11 @@
 //! argument is visible in `ps` to every user on the machine.
 
 use std::ffi::CString;
-use std::fs::File;
 use std::io::{self, Write};
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStringExt;
 use std::process::exit;
 
-use pqhsm_cli::{atoi, atol, fail, init, pem, perror_exit, pin};
+use pqhsm_cli::{atoi, atol, fail, init, pin, write_der};
 use pqhsm_pkiops::keys::Alg;
 use pqhsm_pkiops::{Error, Intent, close, open, ops, parse_slot};
 
@@ -47,21 +46,8 @@ fn die(e: Error) -> ! {
     fail(PROG, &e)
 }
 
-/// `emit`: DER or PEM to `path`, or stdout.
 fn emit(der: &[u8], path: Option<&[u8]>, as_pem: bool, label: &str) {
-    let mut f: Box<dyn Write> = match path {
-        Some(p) => match File::create(std::ffi::OsStr::from_bytes(p)) {
-            Ok(f) => Box::new(f),
-            Err(e) => perror_exit("fhsm-csr: open", &e),
-        },
-        None => Box::new(io::stdout().lock()),
-    };
-    if as_pem {
-        // C ignores what PEM_write_bio returns.
-        let _ = f.write_all(&pem(label, der)).and_then(|()| f.flush());
-    } else if let Err(e) = f.write_all(der).and_then(|()| f.flush()) {
-        perror_exit("fhsm-csr: write", &e);
-    }
+    write_der(PROG, der, path, as_pem, label);
 }
 
 fn main() {

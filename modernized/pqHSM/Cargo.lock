@@ -288,6 +288,7 @@ name = "pqhsm-cli"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "pqhsm-pki",
  "pqhsm-pkiops",
  "zeroize",
 ]

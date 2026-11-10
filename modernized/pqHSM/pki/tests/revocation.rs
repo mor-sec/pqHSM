@@ -19,7 +19,7 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 use common::*;
-use pqhsm_pki::revocation::{self as rev, Db, Entry, Query, Tbs};
+use pqhsm_pki::revocation::{self as rev, Db, DbLock, Entry, Query, Tbs};
 
 /// DIV-016 (DECIDED, Fix): `fhsm_rev_date_to_time` rejects any field outside its calendar
 /// range. C let `timegm` normalise it. (case, C's epoch seconds); Rust returns None.
@@ -1025,4 +1025,80 @@ fn the_div_tables_match_divergences_md() {
         .expect("the deferral table");
     assert!(deferred.contains("| RULE-099, RULE-100 |"));
     assert!(deferred.contains("| RULE-023 |"));
+}
+
+/// DIV-074: a held lock refuses another writer and a reader after the wait, with nothing
+/// changed; a shared lock admits a reader; a missing database is created empty by a writer's
+/// lock (and loads as missing), not by a reader's; and a lock taken on a file a save has since
+/// replaced is taken again on the new one.
+#[test]
+fn div074_lock() {
+    use std::time::Duration;
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("rev.db");
+    let none = Duration::ZERO;
+    drop(DbLock::take(&p, false, none).unwrap());
+    assert!(!p.exists(), "a reader creates nothing");
+    let held = DbLock::take(&p, true, none).unwrap();
+    assert_eq!(fs::metadata(&p).unwrap().len(), 0);
+    assert_eq!(Db::load(&p).unwrap(), Db::default());
+    for exclusive in [true, false] {
+        let e = DbLock::take(&p, exclusive, Duration::from_millis(50))
+            .err()
+            .unwrap();
+        assert_eq!(e.code, rev::EIO);
+        assert!(
+            e.msg.ends_with(
+                "is locked by another process; gave up after 0 seconds.\n  Nothing was changed.\n"
+            ),
+            "{}",
+            e.msg
+        );
+    }
+    drop(held);
+    let r1 = DbLock::take(&p, false, none).unwrap();
+    let _r2 = DbLock::take(&p, false, none).expect("readers share");
+    assert!(DbLock::take(&p, true, none).is_err());
+    drop((r1, _r2));
+    // A writer's save renames a new file over the one a waiter opened: the waiter's lock is
+    // on the old inode until it looks again.
+    let w = DbLock::take(&p, true, none).unwrap();
+    let t = std::thread::spawn({
+        let p = p.clone();
+        move || {
+            let l = DbLock::take(&p, true, Duration::from_secs(5)).unwrap();
+            let d = Db::load(&p).unwrap();
+            drop(l);
+            d.crl_number
+        }
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let mut d = Db::load(&p).unwrap();
+    d.crl_number = 7;
+    d.save(&p).unwrap();
+    drop(w);
+    assert_eq!(
+        t.join().unwrap(),
+        7,
+        "the waiter reads what the holder saved"
+    );
+
+    // Two writers on a missing database: one creates it, the other waits for it.
+    let q = dir.path().join("new.db");
+    let first = DbLock::take(&q, true, none).unwrap();
+    let t = std::thread::spawn({
+        let q = q.clone();
+        move || DbLock::take(&q, true, Duration::from_secs(5)).is_ok()
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!t.is_finished(), "the second writer waits");
+    drop(first);
+    assert!(t.join().unwrap());
+
+    // A dangling link would load as an empty database: refused, and nothing created.
+    let link = dir.path().join("link.db");
+    symlink(dir.path().join("gone/rev.db"), &link).unwrap();
+    let e = DbLock::take(&link, true, none).err().expect("refused");
+    assert!(e.msg.starts_with("cannot lock "), "{}", e.msg);
+    assert!(!dir.path().join("gone").exists());
 }

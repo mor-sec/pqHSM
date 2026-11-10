@@ -5,14 +5,14 @@
 
 use std::ffi::{CStr, CString, OsStr, c_long};
 use std::fs::File;
-use std::io::{self, BufWriter, ErrorKind, Read, Write};
+use std::io::{self, BufWriter, Read, Write};
 use std::mem::ManuallyDrop;
 use std::os::fd::{FromRawFd, IntoRawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 use std::process::exit;
 
-use pqhsm_cli::{fail, init, perror_exit, pin};
+use pqhsm_cli::{fail, fill, init, perror_exit, pin};
 use pqhsm_pkiops::ops::{self, Session};
 use pqhsm_pkiops::sign::{self, Hash, Signing, Verdict, Verifying};
 use pqhsm_pkiops::{Error, Intent, close, open, parse_slot, strerror};
@@ -149,20 +149,6 @@ fn open_in(path: Option<&[u8]>) -> Box<dyn Read> {
             Err(e) => cannot(b"read", p, &e),
         },
     }
-}
-
-/// fread's: until `buf` is full, the end, or an error, with what was read before it.
-fn fill(r: &mut dyn Read, buf: &mut [u8]) -> (usize, Option<io::Error>) {
-    let mut n = 0;
-    while n < buf.len() {
-        match r.read(&mut buf[n..]) {
-            Ok(0) => break,
-            Ok(k) => n += k,
-            Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) => return (n, Some(e)),
-        }
-    }
-    (n, None)
 }
 
 /// `stream_into`: the whole stream to `feed`, in blocks. sign, verify and the digests share
