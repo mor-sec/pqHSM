@@ -39,6 +39,19 @@
 #define pkiops_encrypt_file          pqhsm_c_pkiops_encrypt_file
 #define pkiops_encrypt_file_for_cert pqhsm_c_pkiops_encrypt_file_for_cert
 #define pkiops_decrypt_file          pqhsm_c_pkiops_decrypt_file
+/* Slice 4, fhsm-sign's (no C here calls them). */
+#define pkiops_hash_begin    pqhsm_c_pkiops_hash_begin
+#define pkiops_hash_update   pqhsm_c_pkiops_hash_update
+#define pkiops_hash_end      pqhsm_c_pkiops_hash_end
+#define pkiops_sign_begin    pqhsm_c_pkiops_sign_begin
+#define pkiops_sign_update   pqhsm_c_pkiops_sign_update
+#define pkiops_sign_end      pqhsm_c_pkiops_sign_end
+#define pkiops_verify_begin  pqhsm_c_pkiops_verify_begin
+#define pkiops_verify_update pqhsm_c_pkiops_verify_update
+#define pkiops_verify_end    pqhsm_c_pkiops_verify_end
+#define pkiops_cms_sign      pqhsm_c_pkiops_cms_sign
+#define pkiops_cms_digest    pqhsm_c_pkiops_cms_digest
+#define pkiops_cms_verify    pqhsm_c_pkiops_cms_verify
 
 #include "../../../../tools/pkiops.c"
 

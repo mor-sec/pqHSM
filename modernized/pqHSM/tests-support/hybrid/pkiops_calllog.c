@@ -4,7 +4,8 @@
  * refusals, pkiops_open with each intent and --slot, two tokens (the refusal that lists them),
  * a reload, and the operations that reach each wrapper pkiops.c calls (all but
  * C_GetMechanismList, C_GetMechanismInfo and C_DigestInit, which nothing in it calls); from
- * slice 3, every key fhsm-crypt makes, both kinds of recipient, and every object's attributes.
+ * slice 3, every key fhsm-crypt makes, both kinds of recipient, and every object's attributes;
+ * from slice 4, streamed signatures, the digests and CMS SignedData.
  *
  *   pkiops_calllog MODULE        (FHSM_TOKENS_DIR: an empty directory)
  */
@@ -89,6 +90,66 @@ int main(int argc, char **argv) {
     show("verify end", pkiops_verify_end(s, sig, sig_len, &valid, &e));
     printf("  valid %d\n", valid);
     free(sig);
+
+    /* Slice 4: a wrong and a non-DER ECDSA signature, the composite and RSA-PSS (its
+     * mechanism parameters), the digests and their refusals, and a CMS signed, named and
+     * checked against the right data, the wrong data, and something not a CMS. */
+    static const uint8_t other[] = "other data";
+    show("sign begin ee", pkiops_sign_begin(s, "ee", &e));
+    show("sign update ee", pkiops_sign_update(s, data, sizeof data, &e));
+    show("sign end ee", pkiops_sign_end(s, &sig, &sig_len, &e));
+    show("verify begin", pkiops_verify_begin(s, "ee", &e));
+    show("verify update, other data", pkiops_verify_update(s, other, sizeof other, &e));
+    show("verify end", pkiops_verify_end(s, sig, sig_len, &valid, &e));
+    printf("  valid %d\n", valid);
+    show("verify begin", pkiops_verify_begin(s, "ee", &e));
+    show("verify end, not DER", pkiops_verify_end(s, data, sizeof data, &valid, &e));
+    printf("  valid %d\n", valid);
+    free(sig);
+    show("keygen pss", pkiops_keygen_alg(s, "pss", PKIOPS_ALG_RSA_PSS, &pub, &priv, &e));
+    const char *const signers[] = { "ca", "pss" };
+    for (int i = 0; i < 2; i++) {
+        show(signers[i], pkiops_sign_begin(s, signers[i], &e));
+        show("  sign update", pkiops_sign_update(s, data, sizeof data, &e));
+        show("  sign end", pkiops_sign_end(s, &sig, &sig_len, &e));
+        printf("  %zu bytes\n", sig_len);
+        show("  verify begin", pkiops_verify_begin(s, signers[i], &e));
+        show("  verify update", pkiops_verify_update(s, data, sizeof data, &e));
+        show("  verify end", pkiops_verify_end(s, sig, sig_len, &valid, &e));
+        printf("  valid %d\n", valid);
+        free(sig);
+    }
+    show("sign begin nope", pkiops_sign_begin(s, "nope", &e));
+    show("verify begin nope", pkiops_verify_begin(s, "nope", &e));
+
+    uint8_t dg[64], dg2[64]; size_t dl = 0, dl2 = 0;
+    struct pkiops_hash *h = pkiops_hash_begin("SHA256", &e);
+    show("hash SHA256", h ? 0 : 1);
+    show("  update", pkiops_hash_update(h, data, sizeof data, &e));
+    show("  end", pkiops_hash_end(h, dg, &dl, &e));
+    printf("  %zu bytes\n", dl);
+    h = pkiops_hash_begin("SHA256", &e);
+    pkiops_hash_update(h, other, sizeof other, &e);
+    pkiops_hash_end(h, dg2, &dl2, &e);
+    show("hash nope", pkiops_hash_begin("nope", &e) ? 0 : 1);
+    show("hash NULL", pkiops_hash_begin(NULL, &e) ? 0 : 1);
+    static uint8_t cms[262144];
+    size_t cms_len = sizeof cms;
+    show("cms sign ee", pkiops_cms_sign(s, "ee", cert, cert_len, dg, dl, cms, &cms_len, &e));
+    const char *dname = NULL;
+    printf("cms digest -> %d %s\n", pkiops_cms_digest(cms, cms_len, &dname), dname ? dname : "(none)");
+    int verdict = 9;
+    show("cms verify", pkiops_cms_verify(cms, cms_len, dg, dl, &verdict, &e));
+    printf("  verdict %d\n", verdict);
+    show("cms verify, other data", pkiops_cms_verify(cms, cms_len, dg2, dl2, &verdict, &e));
+    printf("  verdict %d\n", verdict);
+    show("cms verify, a certificate", pkiops_cms_verify(cert, cert_len, dg, dl, &verdict, &e));
+    printf("  verdict %d\n", verdict);
+    printf("cms digest of a certificate -> %d\n", pkiops_cms_digest(cert, cert_len, &dname));
+    cms_len = sizeof cms;
+    show("cms sign nope", pkiops_cms_sign(s, "nope", cert, cert_len, dg, dl, cms, &cms_len, &e));
+    cms_len = sizeof cms;
+    show("cms sign ee, digest too short", pkiops_cms_sign(s, "ee", cert, cert_len, dg, 20, cms, &cms_len, &e));
 
     show("keygen aes256", pkiops_keygen_secret(s, "box", PKIOPS_SKEY_AES256, &key, &e));
     /* Paths relative to the token directory, so the messages naming them do not carry the

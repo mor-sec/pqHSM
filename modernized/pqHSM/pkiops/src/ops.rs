@@ -3,13 +3,11 @@
 //! Each is `tools/pkiops.c`'s, call for call (the call log shows the order) and message for
 //! message.
 
-use std::ffi::{CStr, c_int, c_long, c_ulong, c_void};
+use std::ffi::{CStr, c_int, c_long, c_ulong};
 use std::ptr::null_mut;
 
-use pqhsm_pki::ffi::{
-    fhsm_composite_spki, fhsm_pki_csr, fhsm_pki_ecdsa_raw_to_der, fhsm_pki_selfsigned,
-    fhsm_pki_signer_t,
-};
+use pqhsm_pki::ffi::fhsm_composite_spki;
+use pqhsm_pki::ffi::x509::{self, Signer};
 
 use crate::Error;
 use crate::ffi::{
@@ -76,6 +74,8 @@ pub(crate) const CKG_MGF1_SHA256: CK_ULONG = 2;
 const COMPOSITE_PUB_MAX: usize = 4096;
 /// `FHSM_PKI_SIG_MAX`.
 const SIG_MAX: usize = 8192;
+pub(crate) const RV_FUNCTION_FAILED: u32 = 0x06;
+pub(crate) const RV_ARGUMENTS_BAD: u32 = 0x07;
 const RV_BUFFER_TOO_SMALL: u32 = 0x150;
 
 pub(crate) fn err(code: c_int, parts: &[&[u8]]) -> Error {
@@ -580,127 +580,157 @@ struct TokenSigner {
     alg: Alg,
 }
 
-/// `tok_sign`, the fhsm_pki signing callback. `ctx` is a [`TokenSigner`].
-unsafe extern "C" fn tok_sign(
-    ctx: *mut c_void,
-    tbs: *const u8,
-    tbs_len: usize,
-    sig: *mut u8,
-    sig_len: *mut usize,
-) -> u32 {
-    // SAFETY: fhsm_pki's contract: ctx is the TokenSigner of signed_by, tbs readable,
-    // *sig_len writable bytes at sig.
-    unsafe {
-        let g = &*ctx.cast::<TokenSigner>();
-        if g.alg == Alg::Composite {
-            // p11_sign: the composite's path, unchanged.
+impl TokenSigner {
+    /// `tok_sign`: the module's signature over `tbs` into `sig`, and its length; ECDSA's as
+    /// DER, which X.509 and CMS carry where PKCS#11 gives r || s.
+    fn sign(&self, tbs: &[u8], sig: &mut [u8]) -> Result<usize, u32> {
+        let ok = |rv: CK_ULONG| if rv == 0 { Ok(()) } else { Err(rv as u32) };
+        let tbs_len = tbs.len() as CK_ULONG;
+        if self.alg == Alg::Composite {
+            // p11_sign: the composite's path, unchanged, straight into the builder's room.
             let mut m = CK_MECHANISM {
                 mechanism: keys::CKM_COMPOSITE,
                 p_parameter: null_mut(),
                 parameter_len: 0,
             };
-            let rv = w_sign_init(g.s, &mut m, g.private);
-            if rv != 0 {
-                return rv as u32;
-            }
-            let mut n = *sig_len as CK_ULONG;
-            let rv = w_sign(g.s, tbs.cast_mut(), tbs_len as CK_ULONG, sig, &mut n);
-            if rv != 0 {
-                return rv as u32;
-            }
-            *sig_len = n as usize;
-            return 0;
+            // SAFETY: m lives for the call.
+            ok(unsafe { w_sign_init(self.s, &mut m, self.private) })?;
+            let mut n = sig.len() as CK_ULONG;
+            // SAFETY: tbs readable, n writable bytes at sig.
+            ok(unsafe {
+                w_sign(
+                    self.s,
+                    tbs.as_ptr().cast_mut(),
+                    tbs_len,
+                    sig.as_mut_ptr(),
+                    &mut n,
+                )
+            })?;
+            // A length past the room is refused rather than read.
+            return Some(n as usize)
+                .filter(|&n| n <= sig.len())
+                .ok_or(RV_FUNCTION_FAILED);
         }
-        // RSA-PSS's parameters as fhsm_pki's AlgorithmIdentifier names them: SHA-256, MGF1
-        // with SHA-256, a 32-byte salt.
-        let mut pss: [CK_ULONG; 3] = [CKM_SHA256, CKG_MGF1_SHA256, 32];
-        let mut m = CK_MECHANISM {
-            mechanism: g.alg.info().mech,
-            p_parameter: null_mut(),
-            parameter_len: 0,
-        };
-        if g.alg == Alg::RsaPss {
-            m.p_parameter = pss.as_mut_ptr().cast();
-            m.parameter_len = size_of_val(&pss) as CK_ULONG;
-        }
-        let rv = w_sign_init(g.s, &mut m, g.private);
-        if rv != 0 {
-            return rv as u32;
-        }
+        // SAFETY: the mechanism lives for the call.
+        ok(with_mechanism(self.alg, |m| unsafe {
+            w_sign_init(self.s, m, self.private)
+        }))?;
         let mut raw = vec![0u8; SIG_MAX];
         let mut n = SIG_MAX as CK_ULONG;
-        let rv = w_sign(
-            g.s,
-            tbs.cast_mut(),
-            tbs_len as CK_ULONG,
-            raw.as_mut_ptr(),
-            &mut n,
-        );
-        if rv != 0 {
-            return rv as u32;
+        // SAFETY: tbs readable, n writable bytes at raw.
+        ok(unsafe {
+            w_sign(
+                self.s,
+                tbs.as_ptr().cast_mut(),
+                tbs_len,
+                raw.as_mut_ptr(),
+                &mut n,
+            )
+        })?;
+        raw.truncate((n as usize).min(SIG_MAX));
+        if self.alg.info().ecdsa_half != 0 {
+            raw = ecdsa_der(&raw)?;
         }
-        let n = (n as usize).min(SIG_MAX);
-        // PKCS#11 gives ECDSA as r || s; X.509 and CMS carry DER.
-        if g.alg.info().ecdsa_half != 0 {
-            return fhsm_pki_ecdsa_raw_to_der(raw.as_ptr(), n, sig, sig_len);
-        }
-        if n > *sig_len {
-            return RV_BUFFER_TOO_SMALL;
-        }
-        std::ptr::copy_nonoverlapping(raw.as_ptr(), sig, n);
-        *sig_len = n;
-        0
+        let out = sig.get_mut(..raw.len()).ok_or(RV_BUFFER_TOO_SMALL)?;
+        out.copy_from_slice(&raw);
+        Ok(raw.len())
     }
 }
 
-/// `token_signer`: the key labelled `label`, ready to sign, and its public key. The public
-/// half is looked up first, as the builders always did, so a missing label reads the same.
-fn token_signer(s: Handle, label: &[u8]) -> Result<(TokenSigner, &'static [u8], Vec<u8>), Error> {
-    let hpub = find_one(s, CKO_PUBLIC_KEY, label)?;
+/// `fhsm_pki_ecdsa_raw_to_der`: r || s, two halves of equal length and 264 bytes at most, as a
+/// DER Ecdsa-Sig-Value.
+pub(crate) fn ecdsa_der(rs: &[u8]) -> Result<Vec<u8>, u32> {
+    if rs.is_empty() || !rs.len().is_multiple_of(2) || rs.len() > 264 {
+        return Err(RV_ARGUMENTS_BAD);
+    }
+    Ok(pqhsm_pki::x509::ecdsa_sig(rs))
+}
+
+/// The SPKI, when a builder wants one.
+type Spki = Option<Vec<u8>>;
+
+/// `token_signer`: the key labelled `label`, ready to sign, and with `want_spki` its public
+/// key, whose half is then looked up first, as the builders always did, so a missing label
+/// reads the same.
+fn token_signer(
+    s: Handle,
+    label: &[u8],
+    want_spki: bool,
+) -> Result<(TokenSigner, &'static [u8], Spki), Error> {
+    let hpub = if want_spki {
+        Some(find_one(s, CKO_PUBLIC_KEY, label)?)
+    } else {
+        None
+    };
     let private = find_one(s, CKO_PRIVATE_KEY, label)?;
     let alg = alg_of(s, label, private)?;
     let name = alg.info().name.to_bytes();
     let algid = pqhsm_pki::x509::pki_algid(alg as i32)
         .ok_or_else(|| err(2, &[b"no AlgorithmIdentifier for ", name, b"\n"]))?;
-    let spki = spki_of(s, hpub, alg)?;
+    let spki = hpub.map(|h| spki_of(s, h, alg)).transpose()?;
     Ok((TokenSigner { s, private, alg }, algid, spki))
 }
 
-/// The builder `build` over the key `label`, into `der`: `*len` its room on entry, the length
-/// on return, whatever the result, as fhsm_pki writes it.
-/// `out`: `*len` writable bytes, set to the length written.
-unsafe fn signed_by(
+/// `alg_mechanism`: the signing mechanism of `a`, with RSA-PSS's parameters as fhsm_pki's
+/// AlgorithmIdentifier names them (SHA-256, MGF1 with SHA-256, a 32-byte salt), for `f`.
+pub(crate) fn with_mechanism<T>(a: Alg, f: impl FnOnce(&mut CK_MECHANISM) -> T) -> T {
+    let mut pss: [CK_ULONG; 3] = [CKM_SHA256, CKG_MGF1_SHA256, 32];
+    let mut m = CK_MECHANISM {
+        mechanism: a.info().mech,
+        p_parameter: null_mut(),
+        parameter_len: 0,
+    };
+    if a == Alg::RsaPss {
+        m.p_parameter = pss.as_mut_ptr().cast();
+        m.parameter_len = size_of_val(&pss) as CK_ULONG;
+    }
+    f(&mut m)
+}
+
+/// fhsm_pki's builder `build`, signing with the key `label`, given the key's algorithm and,
+/// with `want_spki`, its SubjectPublicKeyInfo (else empty); into `out` as fhsm_pki's `emit`
+/// writes: `*len` the room on entry, the length on return once built, too little room
+/// BUFFER_TOO_SMALL.
+///
+/// # Safety
+/// `out` has `*len` writable bytes.
+pub(crate) unsafe fn signed_by(
     s: Handle,
     label: &[u8],
+    want_spki: bool,
     out: *mut u8,
     len: &mut usize,
     what: &str,
-    build: impl FnOnce(&fhsm_pki_signer_t, *mut u8, &mut usize) -> u32,
+    build: impl FnOnce(&mut Signer, Alg, &[u8]) -> Result<Vec<u8>, u32>,
 ) -> Result<(), Error> {
-    let (mut ts, algid, spki) = token_signer(s, label)?;
-    let ps = fhsm_pki_signer_t {
-        algid: algid.as_ptr(),
-        algid_len: algid.len(),
-        spki: spki.as_ptr(),
-        spki_len: spki.len(),
-        sign: Some(tok_sign),
-        sign_ctx: (&raw mut ts).cast(),
+    let (ts, algid, spki) = token_signer(s, label, want_spki)?;
+    let mut sign = |tbs: &[u8], sig: &mut [u8]| ts.sign(tbs, sig);
+    let mut signer = Signer {
+        algid,
+        sign: &mut sign,
     };
-    match build(&ps, out, len) {
-        0 => Ok(()),
-        r => Err(Error::new(
-            2,
-            format!("building the {what} failed (0x{r:x})\n"),
-        )),
-    }
+    build(&mut signer, ts.alg, spki.as_deref().unwrap_or_default())
+        .and_then(|der| {
+            let room = std::mem::replace(len, der.len());
+            if room < der.len() {
+                return Err(RV_BUFFER_TOO_SMALL);
+            }
+            // SAFETY: the caller's room, at least der.len() bytes.
+            unsafe { std::ptr::copy_nonoverlapping(der.as_ptr(), out, der.len()) };
+            Ok(())
+        })
+        .map_err(|r| Error::new(2, format!("building the {what} failed (0x{r:x})\n")))
 }
 
 /// The DER room the tools give a request or certificate (`tools/fhsm_csr.c`'s buffer).
 const DER_MAX: usize = 32768;
 
-/// Into a fresh `DER_MAX` buffer, trimmed to what was written.
-fn to_vec(f: impl FnOnce(*mut u8, &mut usize) -> Result<(), Error>) -> Result<Vec<u8>, Error> {
-    let mut der = vec![0u8; DER_MAX];
+/// Into a fresh buffer of `room` bytes, trimmed to what was written.
+pub(crate) fn to_vec(
+    room: usize,
+    f: impl FnOnce(*mut u8, &mut usize) -> Result<(), Error>,
+) -> Result<Vec<u8>, Error> {
+    let mut der = vec![0u8; room];
     let mut n = der.len();
     f(der.as_mut_ptr(), &mut n)?;
     der.truncate(n);
@@ -720,8 +750,8 @@ pub(crate) unsafe fn csr_into(
 ) -> Result<(), Error> {
     // SAFETY: ps and its buffers live for the call; *n writable bytes at out.
     unsafe {
-        signed_by(s, label, out, len, "request", |ps, out, n| {
-            fhsm_pki_csr(ps, subject.as_ptr(), out, n)
+        signed_by(s, label, true, out, len, "request", |sg, _, spki| {
+            x509::csr(sg, spki, subject.to_bytes())
         })
     }
 }
@@ -741,8 +771,13 @@ pub(crate) unsafe fn root_into(
 ) -> Result<(), Error> {
     // SAFETY: as csr_into.
     unsafe {
-        signed_by(s, label, out, len, "certificate", |ps, out, n| {
-            fhsm_pki_selfsigned(ps, subject.as_ptr(), serial, days, out, n)
+        signed_by(s, label, true, out, len, "certificate", |sg, _, spki| {
+            // fhsm_pki_selfsigned's: serial 0 is malformed, a negative one encodes negative
+            // (RFC 5280 4.1.2.2)
+            if serial <= 0 || days <= 0 {
+                return Err(RV_ARGUMENTS_BAD);
+            }
+            x509::selfsigned(sg, spki, subject.to_bytes(), serial, days)
         })
     }
 }
@@ -750,7 +785,9 @@ pub(crate) unsafe fn root_into(
 /// `pkiops_csr`: a PKCS#10 request signed by the key `label` with its own algorithm.
 pub fn csr(s: Session, label: &[u8], subject: &CStr) -> Result<Vec<u8>, Error> {
     // SAFETY: to_vec hands n writable bytes.
-    to_vec(|out, n| unsafe { csr_into(s.0, label, subject, out, n) })
+    to_vec(DER_MAX, |out, n| unsafe {
+        csr_into(s.0, label, subject, out, n)
+    })
 }
 
 /// `pkiops_root`: a self-signed root, CA:TRUE, keyCertSign and cRLSign.
@@ -762,7 +799,9 @@ pub fn root(
     days: c_int,
 ) -> Result<Vec<u8>, Error> {
     // SAFETY: as csr.
-    to_vec(|out, n| unsafe { root_into(s.0, label, subject, serial, days, out, n) })
+    to_vec(DER_MAX, |out, n| unsafe {
+        root_into(s.0, label, subject, serial, days, out, n)
+    })
 }
 
 #[cfg(test)]

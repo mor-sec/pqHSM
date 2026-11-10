@@ -130,7 +130,7 @@ tests/test_tpm: $(PQHSM_HOOKS_LIB)
 # From slice 1 a ported tool is pqhsm-cli's binary instead (PQHSM_CLI_BINS, below).
 PQHSM_PKIOPS_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_pkiops.a
 PQHSM_PKIOPS_TU   := $(PQHSM_DIR)/pkiops/shim/pkiops_tu.c
-PQHSM_CLI_BINS    := tools/fhsm-csr tools/fhsm-token tools/fhsm-crypt
+PQHSM_CLI_BINS    := tools/fhsm-csr tools/fhsm-token tools/fhsm-crypt tools/fhsm-sign
 PQHSM_PKIOPS_BINS := $(filter-out $(PQHSM_CLI_BINS),$(TOOLS)) tests/test_pkiops tests/test_pkiops_algs \
                      tests/test_pkiops_objects tests/test_pkiops_secret tests/test_pkiops_envelope \
                      tests/test_pkiops_envelope_rsa

@@ -465,6 +465,28 @@ unsafe fn bio_text(cap: usize, print: impl FnOnce(*mut openssl_sys::BIO)) -> Opt
     }
 }
 
+/// A DER certificate's subject, printed as [`cert_attrs`] prints it (up to 1023 bytes); None
+/// when `der` is not one certificate, whole.
+pub fn cert_subject(der: &[u8]) -> Option<Vec<u8>> {
+    // SAFETY: der readable for its length; x freed here, its subject used before.
+    unsafe {
+        let mut p = der.as_ptr();
+        let x = openssl_sys::d2i_X509(null_mut(), &mut p, der.len() as c_long);
+        if x.is_null() {
+            return None;
+        }
+        if p != der.as_ptr().add(der.len()) {
+            openssl_sys::X509_free(x);
+            return None;
+        }
+        let t = bio_text(1024, |b| {
+            X509_NAME_print_ex(b, openssl_sys::X509_get_subject_name(x), 0, NAME_FLAGS);
+        });
+        openssl_sys::X509_free(x);
+        t
+    }
+}
+
 /// A certificate's lines: its type, trust, and from its DER subject, issuer, serial and
 /// validity.
 fn cert_attrs(o: &mut Lines, s: Handle, h: Handle) {

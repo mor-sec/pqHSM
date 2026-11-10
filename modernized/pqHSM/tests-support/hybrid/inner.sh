@@ -465,9 +465,18 @@ printf 'pki tools characterise: %s, C run 1 %s, %s lines, run 2 vs run 1 %s' "$(
   FHSM_SO_PIN=sopin1234 FHSM_PIN=userpin1234 tools/fhsm-token init --label prompt > /dev/null 2>&1 &&
   python3 /work/modernized/pqHSM/tests-support/hybrid/pin_prompt.py userpin1234 \
     tools/fhsm-crypt keygen --label p --alg aes256) > /out/pin_prompt_crypt.txt 2>&1
+# Slice 4 on: fhsm-sign likewise, after its input is opened.
+(cd $AMH && export FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 &&
+  FHSM_SO_PIN=sopin1234 FHSM_PIN=userpin1234 tools/fhsm-token init --label prompt > /dev/null 2>&1 &&
+  FHSM_PIN=userpin1234 tools/fhsm-csr keygen --label p --alg ecdsa-p256 > /dev/null 2>&1 &&
+  printf 'data' > $FHSM_TOKENS_DIR/d &&
+  python3 /work/modernized/pqHSM/tests-support/hybrid/pin_prompt.py userpin1234 \
+    tools/fhsm-sign sign --label p --in $FHSM_TOKENS_DIR/d --out $FHSM_TOKENS_DIR/d.sig) > /out/pin_prompt_sign.txt 2>&1
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
-sed -E 's/(PIN length +|accepted length \()4\.\.64/\18..64/' /out/pki_char_c1.txt > /out/pki_char_c_expect.txt   # DIV-059
+# Slice 4 on: the Rust fhsm-sign on either module, DIV-075 (cms-verify names its signer, --signer).
+python3 -I /work/modernized/pqHSM/tests-support/hybrid/div075_expect.py < /out/pki_char_c1.txt > /out/pki_char_c_expect_on_c.txt
+sed -E 's/(PIN length +|accepted length \()4\.\.64/\18..64/' /out/pki_char_c_expect_on_c.txt > /out/pki_char_c_expect.txt   # DIV-059
 PCL=modernized/pqHSM/tests-support/hybrid/pkiops_calllog.c
 PCF="-std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Iinclude -Itools -I/usr/local/ssl/include"
 PCL_L="-L/usr/local/ssl/lib64 -L/usr/local/ssl/lib"
@@ -479,14 +488,15 @@ for t in c hybrid; do
   FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/pkiops_calllog_$t $AMC/libfreehsm.so > /out/pkiops_calllog_$t.txt 2>&1
   echo "rc=$?" >> /out/pkiops_calllog_$t.txt
 done
-printf '; hybrid tools: %s; on the C module vs C %s; on the hybrid module vs C less DIV-059 %s; call log: %s, C %s, hybrid %s, %s records, %s' \
-  "$(tail -1 /out/pki_char_h_build.log)" "$(pl_same /out/pki_char_c1.txt /out/pki_char_h_on_c.txt)" \
+printf '; hybrid tools: %s; on the C module vs C less DIV-075 %s; on the hybrid module vs C less DIV-059, DIV-075 %s; call log: %s, C %s, hybrid %s, %s records, %s' \
+  "$(tail -1 /out/pki_char_h_build.log)" "$(pl_same /out/pki_char_c_expect_on_c.txt /out/pki_char_h_on_c.txt)" \
   "$(pl_same /out/pki_char_c_expect.txt /out/pki_char_h.txt)" "$(tail -1 /out/pkiops_calllog_build.log)" \
   "$(tail -1 /out/pkiops_calllog_c.txt)" "$(tail -1 /out/pkiops_calllog_hybrid.txt)" \
   "$(grep -c '^  C_' /out/pkiops_calllog_c.txt)" "$(pl_same /out/pkiops_calllog_c.txt /out/pkiops_calllog_hybrid.txt)" >> /out/pki_char.txt
 printf '; PIN prompt (DIV-072): %s' "$(tail -1 /out/pin_prompt.txt)" >> /out/pki_char.txt
 printf '; fhsm-token init: %s' "$(tr '\n' ' ' < /out/pin_prompt_token.txt | sed 's/ $//')" >> /out/pki_char.txt
 printf '; fhsm-crypt: %s' "$(tail -1 /out/pin_prompt_crypt.txt)" >> /out/pki_char.txt
+printf '; fhsm-sign: %s' "$(tail -1 /out/pin_prompt_sign.txt)" >> /out/pki_char.txt
 
 # 4q. Slice 8c review M1: the audit switch's other side. `make audit-switch` recurses without
 #     -f, so under hybrid.mk it builds pure C; this is its second half, on fresh copies of each

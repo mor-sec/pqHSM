@@ -1560,3 +1560,40 @@ Range `a2accb4..03ef0f2` plus slice 3's working tree. One HIGH, four MEDIUM, fou
 ### Before slice 4: newtype handles (2026-11-10; slices 0-1 review H2, slices 2-3 review M4)
 
 `ops::Slot`, `ops::Session` and `ops::ObjHandle`: `#[repr(transparent)]` wrappers over `c_ulong`, with `Display` as the number. They are the safe API's types: `open` returns a `Slot`; `token_info`, `token_init` and `session_user` take one; `session_user` returns a `Session`, which every operation takes; `keygen_alg`, `keygen_secret`, `destroy`, `object_attrs` and the `handle` fields of `objects::Key` and `objects::Object` hold `ObjHandle`s. The records' layout is unchanged (`records_as_c` still passes). Each public function unwraps once at its top; the internal helpers and the module wrappers stay raw. The C exports wrap at the boundary, since `pkiops_handle` is one type in C. A `compile_fail` doctest on `objects::destroy` shows that a swapped session and object no longer compile. No behaviour change: cargo 947 passed, 0 failed, plus the doctest; clippy clean, also with `--features shim`. The harness is run with slice 4. Not done here: the review nits (the narrower `unsafe` in `cert_attrs`, a single `strerror`, the three-state `have`); they stay listed against slice 4.
+
+### Slice 4: `fhsm-sign` (2026-11-10)
+
+**What moved.** The twelve `pkiops.h` functions `fhsm-sign` calls that were still C: `pkiops_hash_begin`, `_update`, `_end`, `pkiops_sign_begin`, `_update`, `_end`, `pkiops_verify_begin`, `_update`, `_end`, `pkiops_cms_sign`, `_cms_digest`, `_cms_verify`. Safe: `pkiops/src/sign.rs` (`Hash`, `Signing`, `Verifying`, `cms_sign`, `cms_digest`, `cms_verify` with `Verdict`, `read_der` = C's `slurp_der`, `describe_cert`). The C exports and the renames as before; `tools/fhsm-sign` is `pqhsm-cli`'s `fhsm-sign` (`hybrid.mk`).
+
+**How.**
+- `Hash` is OpenSSL's `EVP_MD_fetch` and `EVP_MD_CTX`, through the `openssl` crate; `pkiops_hash_end` frees the hash whatever happens, as C's, which the GUI relies on.
+- C's `g_stream_alg` is `capi.rs`'s `STREAM_ALG` (set by a successful begin; 0, the composite, before any). The safe API carries the algorithm in `Signing` and `Verifying` instead.
+- ECDSA: the signature out is DER (`ops::ecdsa_der`, fhsm_pki's encoder after `fhsm_pki_ecdsa_raw_to_der`'s checks); the signature in is parsed whole by `d2i_ECDSA_SIG` and padded with `BN_bn2binpad`, and a signature that is not one still ends the operation with zeros, as C.
+- `fhsm-sign` keeps C's order: the signature or certificate files, then the input, then the PIN, the module and the operation; `cms` reads and digests all of its input before the PIN. Writes go through a 4096-byte buffer as glibc's stdio, the file's close checked ("close: ..."), standard output's flush not.
+- H3 (slices 0-1 review): `pqhsm-pki`'s `ffi::x509` is public, and every builder (request, root, CMS) is called with a closure signer, `TokenSigner::sign`; `tok_sign`, `fhsm_pki_signer_t` and the C-ABI round trip are gone from `pqhsm-pkiops`. `fhsm_pki_selfsigned`'s serial and days checks are `root_into`'s, and `signed_by` writes the caller's buffer as fhsm_pki's `emit` (the length back once built, BUFFER_TOO_SMALL past the room). M3: `token_signer` looks up the public key only when the builder wants the SPKI (`cms` does not, as C's `want_spki = 0`). M2's rest: `put`, `fail`, `out`, `any`, `mech`, `types` are `unsafe fn`.
+- DIV-075 as decided; "As built" in `DIVERGENCES.md`.
+
+**Deliberate differences (no golden row reaches them):** a `--signer` file with bytes after the certificate is "not a certificate" (exit 2). A hash name EVP cannot fetch, or not UTF-8, is "digest init failed" as C's NULL fetch.
+
+**Not done here.** The newtype change's nits (a narrower `unsafe` in `cert_attrs`, one `strerror`, the three-state `have`) move to slice 5. No test reaches the C ABI's -1 for a composite CMS whose SignerInfo names another certificate (what the GUI sees); the transcript row covers the tool.
+
+### Slice 4 review (architecture-critic, 2026-11-10)
+
+No HIGH, one MEDIUM, four LOW, nits; each checked against the code. Fixed before the commit unless the row says otherwise.
+
+| # | Finding | Done |
+|---|---|---|
+| M1 | `--out`'s close was not checked: on NFS or quota a failure at close left a truncated signature and exit 0, where C exits 2 "close: ..." | Fixed: a 4096-byte `BufWriter`, then `into_inner` and `close(2)`, each failure `perror("fhsm-sign: close")`. |
+| L1 | Standard output line-buffered: a write to `/dev/full` exited 2 or 0 by the signature's bytes; C ignores `fflush` | Fixed: fd 1 through the same buffer, flush ignored. |
+| L2 | `--signer` accepted a certificate with bytes after it, then exit 4 against its own signer | Fixed: `cert_subject` requires the whole input (a test). |
+| L3 | DIV-072's slice 4 line said `cms` asks once its input is open; it asks after reading it | Fixed. |
+| L4 | No test of the C ABI's new -1 (badsid composite) | Not done; listed above. |
+| nits | `Hash._md`; the 96-byte zero buffer; `read_sig` beside `read_der`; `say` twice; `RV_*` repeated | First two fixed; `pqhsm-pki`'s `rv` is crate-private; the rest left. |
+
+**Evidence (slice 4).**
+- `pki_tools_characterize.sh` (unchanged, 1998 lines; C runs identical): the Rust `fhsm-sign` on the C module matches C less DIV-075, and on the hybrid module C less DIV-059 and DIV-075, both identical. The DIV-075 expectation is `tests-support/hybrid/div075_expect.py`: the signer lines on the three rows that verify, the `--signer` rows as options instead of usage (exit 0, 0, 4), the badsid row exit 2, `--signer` in the usage.
+- `pkiops_calllog.c` drives every slice 4 function through the C ABI (ECDSA wrong data and non-DER, the composite and RSA-PSS streamed, the digests and their refusals, a CMS signed, named and checked three ways, the refusals): C and Rust 875 records, identical.
+- DIV-072 check: `fhsm-sign sign` on a terminal without FHSM_PIN: "asked, PIN not echoed, rc=0".
+- `test_pkiops_algs` and `pki_tools_algs.sh` against the Rust in `make tests`, 106/106; `pki_artifacts` 21 DER files, 0 differ; openssl CLI 18 ok each.
+- Cargo: workspace 952 passed, 0 failed (new: digests, ECDSA DER parsed whole, `read_der` as `slurp_der`, CMS verdicts on garbage, a certificate with trailing bytes). Clippy `-D warnings` clean for the workspace and for `pqhsm-pkiops --features shim`.
+- Harness `p5s4` (`run8`, the final tree; `run6` before the review fixes and H3 the same): `p5s3`'s summary but the new prompt line, the call log's 875 records, and run-to-run noise (corpus 9628 records, `run6` 10265; "C reading Rust-written" 2 lines, RSA-keyed token sizes differing by 1-3 bytes either way, `algs` and `envrsa`).

@@ -25,3 +25,6 @@ zeroize.workspace = true
 # Its C ABI: the request and certificate builders, and the composite and revocation code the
 # C tools' links took from pqhsm-module before.
 pqhsm-pki = { path = "../pki", features = ["ffi"] }
+
+[dev-dependencies]
+tempfile.workspace = true

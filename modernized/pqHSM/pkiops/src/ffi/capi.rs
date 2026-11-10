@@ -6,11 +6,13 @@ use std::ffi::{CStr, OsStr, c_char, c_int, c_long, c_uint};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::ptr::null;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::{fail, p11_err};
 use crate::Error;
 use crate::keys::{self, Alg};
 use crate::ops::*;
+use crate::sign::{self, Hash, Signing, Verdict, Verifying};
 use crate::{envelope, objects};
 
 /// A C string argument; C's strlen of NULL crashes, this aborts instead.
@@ -20,7 +22,9 @@ unsafe fn arg<'a>(p: *const c_char) -> &'a CStr {
     unsafe { CStr::from_ptr(p) }
 }
 
-fn put<T>(out: *mut T, v: T) {
+/// # Safety
+/// `out` null or writable.
+unsafe fn put<T>(out: *mut T, v: T) {
     // SAFETY: the caller's output, null or writable.
     if let Some(o) = unsafe { out.as_mut() } {
         *o = v;
@@ -33,7 +37,7 @@ fn status<T>(r: Result<T, Error>, e: *mut p11_err, ok: impl FnOnce(T)) -> c_int 
             ok(v);
             0
         }
-        Err(x) => fail(e, x),
+        Err(x) => unsafe { fail(e, x) },
     }
 }
 
@@ -47,9 +51,11 @@ pub unsafe extern "C" fn pkiops_parse_slot(
     out: *mut c_long,
     e: *mut p11_err,
 ) -> c_int {
-    status(crate::parse_slot(unsafe { arg(text) }.to_bytes()), e, |v| {
-        put(out, v)
-    })
+    status(
+        crate::parse_slot(unsafe { arg(text) }.to_bytes()),
+        e,
+        |v| unsafe { put(out, v) },
+    )
 }
 
 /// `pkiops_token_info`.
@@ -62,7 +68,7 @@ pub unsafe extern "C" fn pkiops_token_info(
     out: *mut TokenInfo,
     e: *mut p11_err,
 ) -> c_int {
-    status(token_info(Slot(slot)), e, |v| put(out, v))
+    status(token_info(Slot(slot)), e, |v| unsafe { put(out, v) })
 }
 
 /// A PIN from C: `n` bytes at `p`, which may be NULL when `n` is 0.
@@ -128,7 +134,7 @@ pub unsafe extern "C" fn pkiops_alg_parse(
     e: *mut p11_err,
 ) -> c_int {
     let name = (!name.is_null()).then(|| unsafe { arg(name) }.to_bytes());
-    status(Alg::parse(name), e, |a| put(out, a as c_uint))
+    status(Alg::parse(name), e, |a| unsafe { put(out, a as c_uint) })
 }
 
 /// `pkiops_key_alg`.
@@ -145,7 +151,7 @@ pub unsafe extern "C" fn pkiops_key_alg(
     status(
         key_alg(Session(session), unsafe { arg(label) }.to_bytes()),
         e,
-        |a| put(out, a as c_uint),
+        |a| unsafe { put(out, a as c_uint) },
     )
 }
 
@@ -162,7 +168,9 @@ pub unsafe extern "C" fn pkiops_session_user(
     e: *mut p11_err,
 ) -> c_int {
     let pin = unsafe { pin_arg(pin, pin_len) };
-    status(session_user(Slot(slot), pin), e, |s| put(session, s.0))
+    status(session_user(Slot(slot), pin), e, |s| unsafe {
+        put(session, s.0)
+    })
 }
 
 /// `pkiops_session_close`.
@@ -200,14 +208,14 @@ pub unsafe extern "C" fn pkiops_keygen_alg(
     e: *mut p11_err,
 ) -> c_int {
     let Some(a) = Alg::from_index(a) else {
-        return fail(e, Error::new(1, "no such algorithm\n"));
+        return unsafe { fail(e, Error::new(1, "no such algorithm\n")) };
     };
     status(
         keygen_alg(Session(session), unsafe { arg(label) }.to_bytes(), a),
         e,
         |(p, k)| {
-            put(pub_, p.0);
-            put(priv_, k.0);
+            unsafe { put(pub_, p.0) };
+            unsafe { put(priv_, k.0) };
         },
     )
 }
@@ -217,7 +225,7 @@ pub unsafe extern "C" fn pkiops_keygen_alg(
 unsafe fn der_room<'a>(der: *mut u8, len: *mut usize) -> &'a mut usize {
     assert!(
         !der.is_null() && !len.is_null(),
-        "pkiops_csr and pkiops_root write a DER buffer"
+        "pkiops_csr, pkiops_root and pkiops_cms_sign write a DER buffer"
     );
     // SAFETY: the caller's contract.
     unsafe { &mut *len }
@@ -305,8 +313,8 @@ fn list_out<T: Copy>(
             .ok_or_else(|| Error::new(2, "out of memory\n"))
     });
     status(r, e, |(p, len)| {
-        put(out, p);
-        put(n, len);
+        unsafe { put(out, p) };
+        unsafe { put(n, len) };
     })
 }
 
@@ -410,7 +418,9 @@ pub unsafe extern "C" fn pkiops_skey_parse(
     e: *mut p11_err,
 ) -> c_int {
     let name = (!name.is_null()).then(|| unsafe { arg(name) }.to_bytes());
-    status(keys::Skey::parse(name), e, |k| put(out, k as c_uint))
+    status(keys::Skey::parse(name), e, |k| unsafe {
+        put(out, k as c_uint)
+    })
 }
 
 /// `pkiops_keygen_secret`.
@@ -426,12 +436,14 @@ pub unsafe extern "C" fn pkiops_keygen_secret(
     e: *mut p11_err,
 ) -> c_int {
     let Some(k) = keys::Skey::from_index(k) else {
-        return fail(e, Error::new(1, "no such key type\n"));
+        return unsafe { fail(e, Error::new(1, "no such key type\n")) };
     };
     let label = unsafe { arg(label) }.to_bytes();
-    status(objects::keygen_secret(Session(session), label, k), e, |h| {
-        put(key, h.0)
-    })
+    status(
+        objects::keygen_secret(Session(session), label, k),
+        e,
+        |h| unsafe { put(key, h.0) },
+    )
 }
 
 /// A C string path argument.
@@ -513,4 +525,270 @@ pub unsafe extern "C" fn pkiops_decrypt_file(
         }
     }
     status(r, e, |()| ())
+}
+
+// --- slice 4: fhsm-sign's -----------------------------------------------------------------------
+
+/// `g_stream_alg`: the algorithm the stream under way began with, for its end. C's zero, the
+/// composite, before any.
+static STREAM_ALG: AtomicU32 = AtomicU32::new(0);
+
+fn stream_alg() -> Alg {
+    Alg::from_index(STREAM_ALG.load(Ordering::Relaxed)).expect("stored from an Alg")
+}
+
+/// A byte argument; NULL is taken only with a zero length.
+unsafe fn bytes<'a>(p: *const u8, n: usize) -> &'a [u8] {
+    if n == 0 {
+        return &[];
+    }
+    assert!(!p.is_null(), "a NULL buffer where tools/pkiops.h takes one");
+    // SAFETY: the caller's n readable bytes.
+    unsafe { std::slice::from_raw_parts(p, n) }
+}
+
+/// `*out` and `*n`: a malloc'd copy of `v`, which the C caller frees.
+fn malloc_out(
+    r: Result<Vec<u8>, Error>,
+    out: *mut *mut u8,
+    n: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    list_out(r, 0, false, out, n, e)
+}
+
+/// `pkiops_sign_begin`.
+///
+/// # Safety
+/// `label` is a C string; `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_sign_begin(
+    session: Handle,
+    label: *const c_char,
+    e: *mut p11_err,
+) -> c_int {
+    let label = unsafe { arg(label) }.to_bytes();
+    status(Signing::begin(Session(session), label), e, |op| {
+        STREAM_ALG.store(op.alg as u32, Ordering::Relaxed)
+    })
+}
+
+/// `pkiops_sign_update`.
+///
+/// # Safety
+/// `data` has `len` readable bytes; `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_sign_update(
+    session: Handle,
+    data: *const u8,
+    len: usize,
+    e: *mut p11_err,
+) -> c_int {
+    let op = Signing {
+        s: session,
+        alg: stream_alg(),
+    };
+    status(op.update(unsafe { bytes(data, len) }), e, |()| ())
+}
+
+/// `pkiops_sign_end`: `*sig` malloc'd.
+///
+/// # Safety
+/// `sig`, `sig_len` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_sign_end(
+    session: Handle,
+    sig: *mut *mut u8,
+    sig_len: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    let op = Signing {
+        s: session,
+        alg: stream_alg(),
+    };
+    malloc_out(op.end(), sig, sig_len, e)
+}
+
+/// `pkiops_verify_begin`.
+///
+/// # Safety
+/// As `pkiops_sign_begin`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_verify_begin(
+    session: Handle,
+    label: *const c_char,
+    e: *mut p11_err,
+) -> c_int {
+    let label = unsafe { arg(label) }.to_bytes();
+    status(Verifying::begin(Session(session), label), e, |op| {
+        STREAM_ALG.store(op.alg as u32, Ordering::Relaxed)
+    })
+}
+
+/// `pkiops_verify_update`.
+///
+/// # Safety
+/// As `pkiops_sign_update`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_verify_update(
+    session: Handle,
+    data: *const u8,
+    len: usize,
+    e: *mut p11_err,
+) -> c_int {
+    let op = Verifying {
+        s: session,
+        alg: stream_alg(),
+    };
+    status(op.update(unsafe { bytes(data, len) }), e, |()| ())
+}
+
+/// `pkiops_verify_end`: `*valid` 1 or 0; a failure to check is the only error.
+///
+/// # Safety
+/// `sig` has `sig_len` readable bytes; `valid` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_verify_end(
+    session: Handle,
+    sig: *const u8,
+    sig_len: usize,
+    valid: *mut c_int,
+    e: *mut p11_err,
+) -> c_int {
+    let op = Verifying {
+        s: session,
+        alg: stream_alg(),
+    };
+    status(op.end(unsafe { bytes(sig, sig_len) }), e, |v| unsafe {
+        put(valid, c_int::from(v))
+    })
+}
+
+/// `pkiops_hash_begin`: NULL on failure; `pkiops_hash_end` frees it.
+///
+/// # Safety
+/// `name` null or a C string; `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_hash_begin(name: *const c_char, e: *mut p11_err) -> *mut Hash {
+    // SAFETY: the caller's C string, when not NULL.
+    let name = (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) });
+    match Hash::begin(name) {
+        Ok(h) => Box::into_raw(Box::new(h)),
+        Err(x) => {
+            unsafe { fail(e, x) };
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// `pkiops_hash_update`.
+///
+/// # Safety
+/// `h` from `pkiops_hash_begin`, not yet ended; `data` has `len` readable bytes; `e` null or
+/// writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_hash_update(
+    h: *mut Hash,
+    data: *const u8,
+    len: usize,
+    e: *mut p11_err,
+) -> c_int {
+    // SAFETY: the caller's live hash.
+    let h = unsafe { h.as_mut() }.expect("a hash from pkiops_hash_begin");
+    status(h.update(unsafe { bytes(data, len) }), e, |()| ())
+}
+
+/// `pkiops_hash_end`: frees `h` whatever happens.
+///
+/// # Safety
+/// As `pkiops_hash_update`; `out` has 64 writable bytes; `out_len` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_hash_end(
+    h: *mut Hash,
+    out: *mut u8,
+    out_len: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    assert!(
+        !h.is_null() && !out.is_null(),
+        "pkiops_hash_end takes a hash and 64 bytes"
+    );
+    // SAFETY: the caller hands h back, once.
+    let h = unsafe { Box::from_raw(h) };
+    status(h.end(), e, |d| {
+        // SAFETY: d is at most 64 bytes, out's room.
+        unsafe { std::ptr::copy_nonoverlapping(d.as_ptr(), out, d.len()) };
+        unsafe { put(out_len, d.len()) };
+    })
+}
+
+/// `pkiops_cms_sign`.
+///
+/// # Safety
+/// `label` is a C string; `cert` and `digest` cover their lengths; `der` has `*der_len`
+/// writable bytes; `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_cms_sign(
+    session: Handle,
+    label: *const c_char,
+    cert: *const u8,
+    cert_len: usize,
+    digest: *const u8,
+    digest_len: usize,
+    der: *mut u8,
+    der_len: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    let label = unsafe { arg(label) }.to_bytes();
+    let (cert, digest) = unsafe { (bytes(cert, cert_len), bytes(digest, digest_len)) };
+    let len = unsafe { der_room(der, der_len) };
+    status(
+        unsafe { sign::cms_sign_into(session, label, cert, digest, der, len) },
+        e,
+        |()| (),
+    )
+}
+
+/// `pkiops_cms_digest`: 0 and `*name`, or -1.
+///
+/// # Safety
+/// As `fhsm_pki_cms_digest`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_cms_digest(
+    cms: *const u8,
+    cms_len: usize,
+    name: *mut *const c_char,
+) -> c_int {
+    // SAFETY: the caller's contract, fhsm_pki's.
+    if unsafe { pqhsm_pki::ffi::fhsm_pki_cms_digest(cms, cms_len, name) } == 0 {
+        0
+    } else {
+        -1
+    }
+}
+
+/// `pkiops_cms_verify`: `*verdict` 1 verified, 0 not matching, -1 not a CMS it can read.
+///
+/// # Safety
+/// `cms` and `digest` cover their lengths; `verdict` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_cms_verify(
+    cms: *const u8,
+    cms_len: usize,
+    digest: *const u8,
+    digest_len: usize,
+    verdict: *mut c_int,
+    e: *mut p11_err,
+) -> c_int {
+    let (cms, digest) = unsafe { (bytes(cms, cms_len), bytes(digest, digest_len)) };
+    status(sign::cms_verify(cms, digest), e, |v| unsafe {
+        put(
+            verdict,
+            match v {
+                Verdict::Verified { .. } => 1,
+                Verdict::Mismatch => 0,
+                Verdict::Unreadable => -1,
+            },
+        )
+    })
 }

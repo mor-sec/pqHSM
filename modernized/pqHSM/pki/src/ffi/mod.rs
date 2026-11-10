@@ -7,7 +7,7 @@ pub(crate) mod libcrypto;
 #[cfg(feature = "ffi")]
 pub(crate) mod composite;
 #[cfg(feature = "ffi")]
-pub(crate) mod x509;
+pub mod x509;
 
 #[cfg(feature = "ffi")]
 mod c_abi;

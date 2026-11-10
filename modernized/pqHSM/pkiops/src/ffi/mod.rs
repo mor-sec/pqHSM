@@ -136,7 +136,10 @@ fn logcall(name: &'static CStr, rv: CK_RV, t0: Instant, args: impl FnOnce() -> S
 }
 
 /// `*p` after a successful call, else 0, as each C summary prints it.
-fn out(rv: CK_RV, p: *const CK_ULONG) -> CK_ULONG {
+///
+/// # Safety
+/// `p` null or readable once `rv` is 0.
+unsafe fn out(rv: CK_RV, p: *const CK_ULONG) -> CK_ULONG {
     // SAFETY: an output pointer the module was handed; read only after it returned OK.
     if rv == 0 && !p.is_null() {
         unsafe { *p }
@@ -146,12 +149,17 @@ fn out(rv: CK_RV, p: *const CK_ULONG) -> CK_ULONG {
 }
 
 /// `*p` whatever the result, as w_Sign and w_SignFinal print it.
-fn any(p: *const CK_ULONG) -> CK_ULONG {
+///
+/// # Safety
+/// `p` null or readable.
+unsafe fn any(p: *const CK_ULONG) -> CK_ULONG {
     // SAFETY: an output pointer the module was handed, null or valid.
     unsafe { p.as_ref() }.copied().unwrap_or(0)
 }
 
-fn mech(m: *const CK_MECHANISM) -> String {
+/// # Safety
+/// `m` null or readable.
+unsafe fn mech(m: *const CK_MECHANISM) -> String {
     // SAFETY: the caller's mechanism, null or valid for the call it was passed to.
     match unsafe { m.as_ref() } {
         Some(m) => mech_name(m.mechanism).into_owned(),
@@ -159,7 +167,9 @@ fn mech(m: *const CK_MECHANISM) -> String {
     }
 }
 
-fn types(t: *const CK_ATTRIBUTE, n: CK_ULONG, cap: usize) -> String {
+/// # Safety
+/// `t` null or `n` readable attributes.
+unsafe fn types(t: *const CK_ATTRIBUTE, n: CK_ULONG, cap: usize) -> String {
     if t.is_null() || n == 0 {
         return attr_types([], cap);
     }
@@ -199,7 +209,9 @@ pub(crate) unsafe extern "C" fn w_open_session(sl: S, f: S, app: V, nfy: V, s: P
         real!("OpenSession" as unsafe extern "C" fn(S, S, V, V, P) -> CK_RV)(sl, f, app, nfy, s)
     };
     logcall(c"C_OpenSession", rv, t, || {
-        format!("slot {sl}, flags 0x{f:x} -> session {}", out(rv, s))
+        format!("slot {sl}, flags 0x{f:x} -> session {}", unsafe {
+            out(rv, s)
+        })
     });
     rv
 }
@@ -237,9 +249,9 @@ pub(crate) unsafe extern "C" fn w_generate_key_pair(
     logcall(c"C_GenerateKeyPair", rv, t, || {
         format!(
             "session {s}, {} -> public {}, private {}",
-            mech(m),
-            out(rv, hp),
-            out(rv, hk)
+            unsafe { mech(m) },
+            unsafe { out(rv, hp) },
+            unsafe { out(rv, hk) }
         )
     });
     rv
@@ -252,7 +264,7 @@ pub(crate) unsafe extern "C" fn w_find_objects_init(s: S, tp: A, n: S) -> CK_RV 
         format!(
             "session {s}, matching {}",
             if n != 0 {
-                types(tp, n, 120)
+                unsafe { types(tp, n, 120) }
             } else {
                 "anything".into()
             }
@@ -265,7 +277,9 @@ pub(crate) unsafe extern "C" fn w_find_objects(s: S, h: P, max: S, n: P) -> CK_R
     let rv =
         unsafe { real!("FindObjects" as unsafe extern "C" fn(S, P, S, P) -> CK_RV)(s, h, max, n) };
     logcall(c"C_FindObjects", rv, t, || {
-        format!("session {s}, up to {max} -> {} found", out(rv, n))
+        format!("session {s}, up to {max} -> {} found", unsafe {
+            out(rv, n)
+        })
     });
     rv
 }
@@ -281,10 +295,9 @@ pub(crate) unsafe extern "C" fn w_get_attribute_value(s: S, o: S, tp: A, n: S) -
         real!("GetAttributeValue" as unsafe extern "C" fn(S, S, A, S) -> CK_RV)(s, o, tp, n)
     };
     logcall(c"C_GetAttributeValue", rv, t, || {
-        format!(
-            "session {s}, object {o}, {}, values not shown",
+        format!("session {s}, object {o}, {}, values not shown", unsafe {
             types(tp, n, 120)
-        )
+        })
     });
     rv
 }
@@ -292,7 +305,7 @@ pub(crate) unsafe extern "C" fn w_digest_init(s: S, m: M) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DigestInit" as unsafe extern "C" fn(S, M) -> CK_RV)(s, m) };
     logcall(c"C_DigestInit", rv, t, || {
-        format!("session {s}, {}", mech(m))
+        format!("session {s}, {}", unsafe { mech(m) })
     });
     rv
 }
@@ -300,7 +313,7 @@ pub(crate) unsafe extern "C" fn w_sign_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("SignInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
     logcall(c"C_SignInit", rv, t, || {
-        format!("session {s}, {}, key {k}", mech(m))
+        format!("session {s}, {}, key {k}", unsafe { mech(m) })
     });
     rv
 }
@@ -311,7 +324,7 @@ pub(crate) unsafe extern "C" fn w_sign(s: S, d: B, dn: S, sig: B, sn: P) -> CK_R
     logcall(c"C_Sign", rv, t, || {
         format!(
             "session {s}, {dn} bytes in -> {} bytes{}",
-            any(sn),
+            unsafe { any(sn) },
             none_if(sig.cast(), " (size query)")
         )
     });
@@ -331,7 +344,7 @@ pub(crate) unsafe extern "C" fn w_sign_final(s: S, sig: B, sn: P) -> CK_RV {
     logcall(c"C_SignFinal", rv, t, || {
         format!(
             "session {s} -> {} bytes{}",
-            any(sn),
+            unsafe { any(sn) },
             none_if(sig.cast(), " (size query)")
         )
     });
@@ -341,7 +354,7 @@ pub(crate) unsafe extern "C" fn w_verify_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("VerifyInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
     logcall(c"C_VerifyInit", rv, t, || {
-        format!("session {s}, {}, key {k}", mech(m))
+        format!("session {s}, {}, key {k}", unsafe { mech(m) })
     });
     rv
 }
@@ -406,7 +419,7 @@ pub(crate) unsafe extern "C" fn w_get_slot_list(present: c_uchar, ids: P, n: P) 
         };
         format!(
             "{which} -> {}{}",
-            out(rv, n),
+            unsafe { out(rv, n) },
             none_if(ids.cast(), " (count)")
         )
     });
@@ -419,7 +432,7 @@ pub(crate) unsafe extern "C" fn w_get_mechanism_list(sl: S, list: P, n: P) -> CK
     logcall(c"C_GetMechanismList", rv, t, || {
         format!(
             "slot {sl} -> {}{}",
-            out(rv, n),
+            unsafe { out(rv, n) },
             none_if(list.cast(), " (count)")
         )
     });
@@ -450,9 +463,9 @@ pub(crate) unsafe extern "C" fn w_generate_key(s: S, m: M, tp: A, n: S, k: P) ->
     logcall(c"C_GenerateKey", rv, t, || {
         format!(
             "session {s}, {}, template {} -> key {}",
-            mech(m),
-            types(tp, n, 200),
-            out(rv, k)
+            unsafe { mech(m) },
+            unsafe { types(tp, n, 200) },
+            unsafe { out(rv, k) }
         )
     });
     rv
@@ -462,7 +475,7 @@ pub(crate) unsafe extern "C" fn w_encrypt_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("EncryptInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
     logcall(c"C_EncryptInit", rv, t, || {
-        format!("session {s}, {}, key {k}", mech(m))
+        format!("session {s}, {}, key {k}", unsafe { mech(m) })
     });
     rv
 }
@@ -473,7 +486,7 @@ pub(crate) unsafe extern "C" fn w_encrypt(s: S, i: B, n: S, o: B, on: P) -> CK_R
     logcall(c"C_Encrypt", rv, t, || {
         format!(
             "session {s}, {n} bytes in -> {} out{}, not shown",
-            out(rv, on),
+            unsafe { out(rv, on) },
             none_if(o.cast(), " (size)")
         )
     });
@@ -483,7 +496,7 @@ pub(crate) unsafe extern "C" fn w_decrypt_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DecryptInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
     logcall(c"C_DecryptInit", rv, t, || {
-        format!("session {s}, {}, key {k}", mech(m))
+        format!("session {s}, {}, key {k}", unsafe { mech(m) })
     });
     rv
 }
@@ -494,7 +507,7 @@ pub(crate) unsafe extern "C" fn w_decrypt(s: S, i: B, n: S, o: B, on: P) -> CK_R
     logcall(c"C_Decrypt", rv, t, || {
         format!(
             "session {s}, {n} bytes in -> {} out{}, not shown",
-            out(rv, on),
+            unsafe { out(rv, on) },
             none_if(o.cast(), " (size)")
         )
     });
@@ -630,7 +643,9 @@ fn install(fns: Option<&[*mut c_void; N]>) {
     let _ = c;
 }
 
-fn fail(e: *mut p11_err, err: Error) -> c_int {
+/// # Safety
+/// `e` null or writable.
+unsafe fn fail(e: *mut p11_err, err: Error) -> c_int {
     // SAFETY: the caller's p11_err, null or valid (C wrote through it unchecked).
     if let Some(e) = unsafe { e.as_mut() } {
         let m = err.c_msg();
@@ -745,7 +760,7 @@ pub unsafe extern "C" fn pkiops_load(module: *const c_char, e: *mut p11_err) -> 
     // SAFETY: the caller's C string, or null.
     match load((!module.is_null()).then(|| unsafe { CStr::from_ptr(module) })) {
         Ok(()) => 0,
-        Err(err) => fail(e, err),
+        Err(err) => unsafe { fail(e, err) },
     }
 }
 
@@ -779,7 +794,7 @@ pub unsafe extern "C" fn pkiops_open(
             }
             0
         }
-        Err(err) => fail(e, err),
+        Err(err) => unsafe { fail(e, err) },
     }
 }
 

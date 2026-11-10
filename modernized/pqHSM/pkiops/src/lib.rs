@@ -5,7 +5,8 @@
 //! `pkiops_unload`, the call log and the error a function returns. Slice 1: what `fhsm-csr`
 //! calls (sessions, the algorithms, key pairs, requests and roots). Slice 2: `fhsm-token`'s
 //! token state and init. Slice 3: `fhsm-crypt`'s objects, secret keys and CMS envelopes
-//! (`objects`, `cms_env`, `envelope`). The rest of `pkiops.h` is
+//! (`objects`, `cms_env`, `envelope`). Slice 4: `fhsm-sign`'s digests, streamed signatures
+//! and CMS SignedData (`sign`). The rest of `pkiops.h` is
 //! still `tools/pkiops.c`, reached through `shim/pkiops_tu.c`. All `unsafe` is in `ffi`,
 //! which `pqhsm-cli` calls through its safe functions (`ffi::ops`).
 //!
@@ -20,6 +21,7 @@ pub mod ffi;
 pub mod keys;
 pub mod objects;
 pub mod ops;
+pub mod sign;
 
 pub use ffi::{close, load, open, unload};
 
