@@ -8,7 +8,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::process::exit;
 
 use pqhsm_cli::{fail, init, pin};
-use pqhsm_pkiops::ops::{self, TokenInfo};
+use pqhsm_pkiops::ops;
 use pqhsm_pkiops::{Error, Intent, close, open, parse_slot};
 
 const PROG: &str = "fhsm-token";
@@ -55,10 +55,10 @@ fn cmd_info(module: &CString, slot: c_long) -> i32 {
         out.extend(v);
         out.push(b'\n');
     };
-    row("label", TokenInfo::text(&ti.label));
-    row("manufacturer", TokenInfo::text(&ti.manufacturer));
-    row("model", TokenInfo::text(&ti.model));
-    row("serial", TokenInfo::text(&ti.serial));
+    row("label", ops::text(&ti.label));
+    row("manufacturer", ops::text(&ti.manufacturer));
+    row("model", ops::text(&ti.model));
+    row("serial", ops::text(&ti.serial));
     row(
         "initialised",
         if ti.initialised != 0 {
@@ -154,7 +154,7 @@ fn cmd_init(module: &CString, slot: c_long, label: &[u8], force: bool) -> i32 {
     {
         say(&[
             format!("fhsm-token: slot {sid} already holds an initialised token (\"").as_bytes(),
-            TokenInfo::text(&ti.label),
+            ops::text(&ti.label),
             b"\").\n  Re-initialising DESTROYS every key on it. If that is what you\n  want, pass --force. If you meant to look, use `fhsm-token info`.\n",
         ]);
         close();

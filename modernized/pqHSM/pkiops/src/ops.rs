@@ -22,39 +22,39 @@ use crate::{Error, SlotId};
 /// `pkiops_handle`: a slot, session or object.
 pub type Handle = c_ulong;
 
-const CKF_RW: CK_ULONG = 6;
-const CKU_USER: CK_ULONG = 1;
-const CKO_PUBLIC_KEY: CK_ULONG = 2;
-const CKO_PRIVATE_KEY: CK_ULONG = 3;
-const CKO_SECRET_KEY: CK_ULONG = 4;
-const CKA_CLASS: CK_ULONG = 0x000;
-const CKA_TOKEN: CK_ULONG = 0x001;
-const CKA_LABEL: CK_ULONG = 0x003;
-const CKA_VALUE: CK_ULONG = 0x011;
-const CKA_KEY_TYPE: CK_ULONG = 0x100;
-const CKA_SENSITIVE: CK_ULONG = 0x103;
-const CKA_SIGN: CK_ULONG = 0x108;
-const CKA_VERIFY: CK_ULONG = 0x10A;
-const CKA_MODULUS: CK_ULONG = 0x120;
-const CKA_MODULUS_BITS: CK_ULONG = 0x121;
-const CKA_PUBLIC_EXPONENT: CK_ULONG = 0x122;
-const CKA_EC_PARAMS: CK_ULONG = 0x180;
-const CKA_EC_POINT: CK_ULONG = 0x181;
-const CKA_PARAMETER_SET: CK_ULONG = 0x61D;
-const CKA_ALLOWED_MECHANISMS: CK_ULONG = 0x4000_0600;
-const CKM_SHA256: CK_ULONG = 0x250;
-const CKG_MGF1_SHA256: CK_ULONG = 2;
+pub(crate) const CKF_RW: CK_ULONG = 6;
+pub(crate) const CKU_USER: CK_ULONG = 1;
+pub(crate) const CKO_PUBLIC_KEY: CK_ULONG = 2;
+pub(crate) const CKO_PRIVATE_KEY: CK_ULONG = 3;
+pub(crate) const CKO_SECRET_KEY: CK_ULONG = 4;
+pub(crate) const CKA_CLASS: CK_ULONG = 0x000;
+pub(crate) const CKA_TOKEN: CK_ULONG = 0x001;
+pub(crate) const CKA_LABEL: CK_ULONG = 0x003;
+pub(crate) const CKA_VALUE: CK_ULONG = 0x011;
+pub(crate) const CKA_KEY_TYPE: CK_ULONG = 0x100;
+pub(crate) const CKA_SENSITIVE: CK_ULONG = 0x103;
+pub(crate) const CKA_SIGN: CK_ULONG = 0x108;
+pub(crate) const CKA_VERIFY: CK_ULONG = 0x10A;
+pub(crate) const CKA_MODULUS: CK_ULONG = 0x120;
+pub(crate) const CKA_MODULUS_BITS: CK_ULONG = 0x121;
+pub(crate) const CKA_PUBLIC_EXPONENT: CK_ULONG = 0x122;
+pub(crate) const CKA_EC_PARAMS: CK_ULONG = 0x180;
+pub(crate) const CKA_EC_POINT: CK_ULONG = 0x181;
+pub(crate) const CKA_PARAMETER_SET: CK_ULONG = 0x61D;
+pub(crate) const CKA_ALLOWED_MECHANISMS: CK_ULONG = 0x4000_0600;
+pub(crate) const CKM_SHA256: CK_ULONG = 0x250;
+pub(crate) const CKG_MGF1_SHA256: CK_ULONG = 2;
 /// `FHSM_COMPOSITE_PUB_MAX`.
 const COMPOSITE_PUB_MAX: usize = 4096;
 /// `FHSM_PKI_SIG_MAX`.
 const SIG_MAX: usize = 8192;
 const RV_BUFFER_TOO_SMALL: u32 = 0x150;
 
-fn err(code: c_int, parts: &[&[u8]]) -> Error {
+pub(crate) fn err(code: c_int, parts: &[&[u8]]) -> Error {
     Error::new(code, parts.concat())
 }
 
-fn at(type_: CK_ULONG, v: &[u8]) -> CK_ATTRIBUTE {
+pub(crate) fn at(type_: CK_ULONG, v: &[u8]) -> CK_ATTRIBUTE {
     CK_ATTRIBUTE {
         type_,
         p_value: v.as_ptr().cast_mut().cast(),
@@ -62,7 +62,7 @@ fn at(type_: CK_ULONG, v: &[u8]) -> CK_ATTRIBUTE {
     }
 }
 
-fn at_ul(type_: CK_ULONG, v: &CK_ULONG) -> CK_ATTRIBUTE {
+pub(crate) fn at_ul(type_: CK_ULONG, v: &CK_ULONG) -> CK_ATTRIBUTE {
     CK_ATTRIBUTE {
         type_,
         p_value: (v as *const CK_ULONG).cast_mut().cast(),
@@ -110,11 +110,9 @@ pub struct TokenInfo {
     pub max_pin: c_ulong,
 }
 
-impl TokenInfo {
-    /// A text field up to its NUL.
-    pub fn text(f: &[u8]) -> &[u8] {
-        f.split(|&b| b == 0).next().unwrap_or_default()
-    }
+/// A C text field (`TokenInfo`'s, [`crate::objects`]'s) up to its NUL, as `%s` prints it.
+pub fn text(f: &[u8]) -> &[u8] {
+    f.split(|&b| b == 0).next().unwrap_or_default()
 }
 
 /// `field`: a space-padded PKCS#11 field, trailing spaces and NULs dropped.
@@ -220,7 +218,7 @@ pub fn session_close(s: Handle) {
 
 /// `p11_find_one_e`: exactly one object of class `cls` labelled `label`; two is an ambiguity
 /// the operator resolves, not one this picks from.
-fn find_one(s: Handle, cls: CK_ULONG, label: &[u8]) -> Result<Handle, Error> {
+pub(crate) fn find_one(s: Handle, cls: CK_ULONG, label: &[u8]) -> Result<Handle, Error> {
     let c = cls;
     let mut t = [at_ul(CKA_CLASS, &c), at(CKA_LABEL, label)];
     // SAFETY: a template of 2 whose values outlive the search.
@@ -262,7 +260,7 @@ fn attr_failed(type_: CK_ULONG, rv: CK_ULONG) -> Error {
 }
 
 /// `get_attr`: one attribute, its length then its value.
-fn get_attr(s: Handle, h: Handle, type_: CK_ULONG) -> Result<Vec<u8>, Error> {
+pub(crate) fn get_attr(s: Handle, h: Handle, type_: CK_ULONG) -> Result<Vec<u8>, Error> {
     let mut a = CK_ATTRIBUTE {
         type_,
         p_value: null_mut(),
@@ -289,7 +287,7 @@ fn get_attr(s: Handle, h: Handle, type_: CK_ULONG) -> Result<Vec<u8>, Error> {
     Ok(b)
 }
 
-fn get_ulong(s: Handle, h: Handle, type_: CK_ULONG) -> Result<CK_ULONG, Error> {
+pub(crate) fn get_ulong(s: Handle, h: Handle, type_: CK_ULONG) -> Result<CK_ULONG, Error> {
     let mut v: CK_ULONG = 0;
     let mut a = CK_ATTRIBUTE {
         type_,
@@ -307,7 +305,7 @@ fn get_ulong(s: Handle, h: Handle, type_: CK_ULONG) -> Result<CK_ULONG, Error> {
 /// `alg_of`: which algorithm the key labelled `label` signs with, from `h` (its private half
 /// to sign, its public half otherwise) and, where the type alone does not say, its public
 /// half. An RSA key without CKA_ALLOWED_MECHANISMS, made elsewhere, signs with PSS.
-fn alg_of(s: Handle, label: &[u8], h: Handle) -> Result<Alg, Error> {
+pub(crate) fn alg_of(s: Handle, label: &[u8], h: Handle) -> Result<Alg, Error> {
     let kt = get_ulong(s, h, CKA_KEY_TYPE)?;
     if kt == keys::CKK_COMPOSITE {
         return Ok(Alg::Composite);
@@ -744,9 +742,9 @@ mod tests {
         assert_eq!(size_of::<CkTokenInfo>(), 208);
         assert_eq!(std::mem::offset_of!(CkTokenInfo, max_pin), 96 + 5 * 8);
         let f: [u8; 33] = field(b"freehsm \0  \0                    ");
-        assert_eq!(TokenInfo::text(&f), b"freehsm");
+        assert_eq!(text(&f), b"freehsm");
         let full: [u8; 17] = field(&[b'x'; 16]);
-        assert_eq!(TokenInfo::text(&full), &[b'x'; 16]);
-        assert_eq!(TokenInfo::text(&field::<17>(&[b' '; 16])), b"");
+        assert_eq!(text(&full), &[b'x'; 16]);
+        assert_eq!(text(&field::<17>(&[b' '; 16])), b"");
     }
 }

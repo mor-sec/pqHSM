@@ -1506,3 +1506,53 @@ Range `84b9e52..a2accb4`. Three HIGH, three MEDIUM, two LOW, nits; each checked 
 - Harness `p5s2` (`run3`, working tree on a2accb4): `p5s1`'s summary but the new check, and the run-to-run lines: "C reading Rust-written" 2 lines (as `p5s0`; `p5s1` had 4), corpus 9630 records (`p5s1` 9893; timing-dependent `test_cbc_pad_oracle` and `test_concurrency_store`, among the 7 expected DIFFs). `make tests` 106/106.
 
 **Not covered by a golden row:** `init --force`, a `--label` over 32, `--so-pin` refused, init without `FHSM_PIN`. Each is C's code path line for line; rows can go into the characterisation script when it is next regenerated.
+
+### Slice 3: `fhsm-crypt` and `cms_env` (2026-11-10)
+
+**What moved.** The twelve `pkiops.h` functions `fhsm-crypt` calls: `pkiops_keys`, `_objects`, `_obj_class_name`, `_object_attrs`, `_destroy`, `_skey_name`, `_skey_list`, `_skey_parse`, `_keygen_secret`, `_encrypt_file`, `_encrypt_file_for_cert`, `_decrypt_file`; and all of `tools/cms_env.c`. Safe: `pkiops/src/objects.rs` (listing, `show`'s attribute lines, delete, secret keys and the OAEP pair), `pkiops/src/cms_env.rs` (AuthEnvelopedData's head and tail, written and read, pure Rust), `pkiops/src/envelope.rs` (the files: AES-GCM and RSA-OAEP through the `openssl` crate, wrap, unwrap and OAEP decryption on the token). `keys.rs` gains the `Skey` table. `tools/fhsm-crypt` is `pqhsm-cli`'s binary (`cli/src/bin/fhsm-crypt.rs`). `tools/cms_env.c` stays on the C links: the C copies in the shim still call it.
+
+**How.**
+- The records (`struct pkiops_key`, `_object`, `_attr`) are `#[repr(C)]`, sizes checked by a test and against `pkiops.h` with a C compiler (112, 152, 248). The C exports `calloc` the arrays the C callers `free`: NULL for no keys or objects, as C's `realloc`-grown lists; room for 40 attribute lines, as C's.
+- C's fixed fields and 200-byte comma lists are kept, cut as `snprintf` cuts them (`fill`, `append_capped`: a piece that does not fit leaves its cut text, which a later piece that fits writes over), so `show` prints what C printed for a list that overflows.
+- Optional module functions (`C_DestroyObject`, `C_GenerateKey`, `C_Encrypt*`, `C_Decrypt*`) are checked with `ffi::has`, C's `if (!p11.X)`.
+- A certificate's subject and issuer still come from `X509_NAME_print_ex` (bound by hand: `openssl-sys` lacks it) with C's flags, `XN_FLAG_ONELINE & ~ASN1_STRFLGS_ESC_MSB` (0x82031b, a test derives it); serial and dates from the same libcrypto calls.
+- `envelope.rs`: OpenSSL's `CipherCtx` (AES-GCM, 64 KiB chunks, 12-byte nonce, 16-byte tag) and `PkeyCtx` (OAEP, SHA-256, MGF1-SHA-256); the subjectKeyIdentifier is SHA-1 over the SubjectPublicKeyInfo's key bits, and issuer-and-serial is the issuer's DER plus the serial's TLV taken from the certificate's own DER (a test with a serial needing a leading zero). Keys and buffers are `Zeroizing`. Output goes to `mkstemp`'s file beside the destination (0600), `fsync`ed, `close`'s result checked, renamed only once complete (for decryption, once the tag verified), removed otherwise.
+- `pkiops_decrypt_file` writes `used` when the key is found, as C does, before the content is decrypted, an empty label included.
+- `read_cert` opens the file as `BIO_new_file` does: an open that fails is "cannot read" (2); once open, a read that fails (a directory) is "not a certificate" (1), as in C.
+- `fhsm-crypt` holds its stdout as C's stdio does: on a terminal each line goes out before the stderr message that follows it (the list before "nothing destroyed", an object's lines before a later object's error); otherwise once, at exit. Widths (`%-32s` and the rest) are padded in bytes: labels need not be UTF-8.
+
+**Deliberate differences (malformed input or a broken module; no golden row reaches them):**
+- `cms_env` refuses a recipient whose TL runs past the RecipientInfos SET ("a malformed recipient"); C's unsigned subtraction wrapped and let it through to the next check. The reader is panic-free (a test feeds every prefix of a good head).
+- A module that answers `C_FindObjects` with more handles than it was given room for gets 16 read; C read past its array.
+- Writes are unbuffered: on ENOSPC the message is "cannot write OUT" or "cannot encrypt into OUT" as the failing write is reached; C's buffered `fwrite` usually reported it at the flush in `temp_finish`. Same code (2), same cleanup.
+
+**Review nits deferred to slice 3:**
+- `pki_algid(alg as i32)` relying on `Alg`'s order: unchanged. `keys::tests` holds the order to `tools/pkiops.c`'s table, not to `pqhsm-pki`'s; the call goes with H3 in slice 4.
+- `real!` looking names up at run time: unchanged; one index per call, only on the tools' path.
+- The missing SAFETY comment: `clippy::undocumented_unsafe_blocks` flags every C-ABI argument read in `capi.rs`, which the crate documents in each function's `# Safety` section instead. Not changed.
+- Newtype handles: still raw `c_ulong` (`Handle`, `SlotId`). The review below rejects the earlier reason (H3 does not change the safe signatures). They are left to their own change before slice 4, so this slice's diff stays a port. See the review's M4.
+
+### Slices 2-3 review (architecture-critic, 2026-11-10)
+
+Range `a2accb4..03ef0f2` plus slice 3's working tree. One HIGH, four MEDIUM, four LOW, nits; each checked against the code. Fixed before slice 3's commit unless the row says otherwise.
+
+| # | Finding | Done |
+|---|---|---|
+| H1 | `fhsm-crypt` wrote stdout only at exit, so on a terminal "nothing destroyed. Add --yes" came above the list it refers to (C's stdout is line-buffered there); the note claimed parity | Fixed: on a terminal, stdout is written before each stderr line that can follow it (`show`'s per-object error, `delete`'s warning). Note corrected. |
+| M1 | `pkiops_keygen_secret` aborted on an out-of-range key type; C returns 1, "no such key type" | Fixed: C's check and message. |
+| M2 | `--cert` on a directory: Rust exit 2 "cannot read", C exit 1 "not a certificate" | Fixed: open, then a read whose failure leaves nothing to parse. |
+| M3 | No harness evidence under slice 3 | Harness `p5s3` below. |
+| M4 | Newtype handles deferred on a wrong reason | Reason corrected. They wait for their own change before slice 4 (decision recorded at the commit). |
+| L1 | "Panic-free" was tested on prefixes only | Fixed: every single-byte XOR (0x01, 0x80, 0xFF) of a KEK, an SKI and an issuer-and-serial file, head and tail. |
+| L2 | `used` not written for a found key with an empty label when decryption then fails | Fixed: `decrypt_file` reports the key found (`Option`), not inferred from the label. |
+| L3 | Carried from C: decrypt pass 1 tries OAEP decryption with every RSA private key, signing keys included, relying on the module to refuse | Kept for parity. Phase 6 candidate: skip keys whose `CKA_DECRYPT` is false or whose allowed mechanisms omit OAEP. |
+| L4 | Carried from C: "never written over" is a stat then `rename`, which replaces a file created between them | Kept for parity. Phase 6 candidate: `renameat2(RENAME_NOREPLACE)`. |
+| nits | `cert_attrs` wider `unsafe` than the one unbound call; `Option<Option<[u8; 20]>>` for C's three-state `have`; a partial head read dropped after EIO; two `strerror`s, `libc::strerror` not thread-safe for the GUI's threads (as in C) | Not changed in this slice; with the newtype change. |
+
+**Evidence (slice 3).**
+- `pki_tools_characterize.sh` gains an fhsm-crypt section (appended; 1998 lines): the refusals, keygen of all four kinds, list and show, encryption by AES-128, AES-256 and the OAEP pair and for certificates (a token RSA signer's; an OpenSSL one without subjectKeyIdentifier, named by issuer and serial, which `openssl cms -decrypt` opens), the altered file (exit 4, nothing left behind), and delete. Two C runs identical (handles need no mask); hybrid tools against C identical on the C module, identical less DIV-059 on the hybrid module.
+- `pkiops_calllog.c` drives every slice 3 function through the C ABI (each key kind, both recipient kinds, the certificate's holder, the refusals, every object's fields and attribute lines, a stale handle): C and Rust 684 records, identical. Its paths are now relative to the token directory: `run4` differed in 3 lines only by the mktemp name inside messages.
+- DIV-072 check (step 5b): `fhsm-crypt keygen` on a terminal without FHSM_PIN: "asked, PIN not echoed, rc=0".
+- `test_pkiops_objects`, `_secret`, `_envelope`, `_envelope_rsa` and `tests/fhsm_crypt_cli.sh` run against the Rust in `make tests`, 106/106.
+- Cargo: workspace 947 passed, 0 failed (new: the records' layout, the snprintf cuts, curves and name flags, the `Skey` table, cms_env's round trips, writer bytes, refusals and single-byte mutations, issuer-and-serial and the SKI). Clippy `-D warnings` clean for the workspace and for `pqhsm-pkiops --features shim`.
+- Harness `p5s3` (`run5`, working tree on 03ef0f2): `p5s2`'s summary but the new fhsm-crypt prompt line and the run-to-run corpus count (9593 records; `run4` 9767, `p5s2` 9630; timing-dependent, among the 7 expected DIFFs). "C reading Rust-written" 2 lines, as `p5s2`.

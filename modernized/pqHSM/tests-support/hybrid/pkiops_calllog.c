@@ -3,7 +3,8 @@
  * call record (function, summary, CK_RV; not the time) and every p11_err, for: the load
  * refusals, pkiops_open with each intent and --slot, two tokens (the refusal that lists them),
  * a reload, and the operations that reach each wrapper pkiops.c calls (all but
- * C_GetMechanismList, C_GetMechanismInfo and C_DigestInit, which nothing in it calls).
+ * C_GetMechanismList, C_GetMechanismInfo and C_DigestInit, which nothing in it calls); from
+ * slice 3, every key fhsm-crypt makes, both kinds of recipient, and every object's attributes.
  *
  *   pkiops_calllog MODULE        (FHSM_TOKENS_DIR: an empty directory)
  */
@@ -12,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int records;
 static void rec(const struct pkiops_call *c, void *ctx) {
@@ -89,7 +91,10 @@ int main(int argc, char **argv) {
     free(sig);
 
     show("keygen aes256", pkiops_keygen_secret(s, "box", PKIOPS_SKEY_AES256, &key, &e));
-    const char *tmp = getenv("FHSM_TOKENS_DIR");
+    /* Paths relative to the token directory, so the messages naming them do not carry the
+     * run's mktemp name. */
+    const char *tmp = ".";
+    if (chdir(getenv("FHSM_TOKENS_DIR")) != 0) { perror("chdir"); return 2; }
     snprintf(path, sizeof path, "%s/plain", tmp);
     FILE *f = fopen(path, "wb"); fputs("plain text\n", f); fclose(f);
     char enc[512], dec[512], used[65] = "";
@@ -97,14 +102,66 @@ int main(int argc, char **argv) {
     snprintf(dec, sizeof dec, "%s/plain.out", tmp);
     show("encrypt", pkiops_encrypt_file(s, "box", path, enc, &e));
     show("decrypt", pkiops_decrypt_file(s, enc, dec, used, sizeof used, &e));
+    printf("  used \"%s\"\n", used);
 
+    /* Slice 3: every kind of key fhsm-crypt makes, both kinds of recipient, a certificate's
+     * holder, the refusals; then every object's fields and every attribute line. */
+    show("keygen aes128", pkiops_keygen_secret(s, "box128", PKIOPS_SKEY_AES128, &key, &e));
+    show("keygen hmac", pkiops_keygen_secret(s, "mac", PKIOPS_SKEY_HMAC, &key, &e));
+    show("keygen rsa-oaep", pkiops_keygen_secret(s, "oaep", PKIOPS_SKEY_RSA_OAEP, &key, &e));
+    show("keygen rsa-pkcs1", pkiops_keygen_alg(s, "rsa", PKIOPS_ALG_RSA_PKCS1, &pub, &priv, &e));
+    enum pkiops_skey sk;
+    show("skey parse rsa-oaep", pkiops_skey_parse("rsa-oaep", &sk, &e));
+    show("skey parse ecdsa-p256", pkiops_skey_parse("ecdsa-p256", &sk, &e));
+    show("skey parse des", pkiops_skey_parse("des", &sk, &e));
+    printf("  skey %s; list %s; class 4 %s\n", pkiops_skey_name(sk), pkiops_skey_list(),
+           pkiops_obj_class_name(PKIOPS_OBJ_COUNT) ? "named" : "NULL");
+    snprintf(enc, sizeof enc, "%s/oaep.cms", tmp);
+    snprintf(dec, sizeof dec, "%s/oaep.out", tmp);
+    show("encrypt oaep", pkiops_encrypt_file(s, "oaep", path, enc, &e));
+    used[0] = '\0';
+    show("decrypt oaep", pkiops_decrypt_file(s, enc, dec, used, sizeof used, &e));
+    printf("  used \"%s\"\n", used);
+    show("decrypt oaep again (out exists)", pkiops_decrypt_file(s, enc, dec, used, sizeof used, &e));
+    snprintf(enc, sizeof enc, "%s/x.cms", tmp);
+    show("encrypt mac", pkiops_encrypt_file(s, "mac", path, enc, &e));
+    show("encrypt ee (not for encryption)", pkiops_encrypt_file(s, "ee", path, enc, &e));
+    show("encrypt nope", pkiops_encrypt_file(s, "nope", path, enc, &e));
+    snprintf(dec, sizeof dec, "%s/plain.dec", tmp);
+    show("decrypt plain (not CMS)", pkiops_decrypt_file(s, path, dec, used, sizeof used, &e));
+    ca_len = sizeof ca;
+    show("root rsa", pkiops_root(s, "rsa", "/CN=RSA", 2, 30, ca, &ca_len, &e));
+    char crt[512];
+    snprintf(crt, sizeof crt, "%s/rsa.der", tmp);
+    f = fopen(crt, "wb"); fwrite(ca, 1, ca_len, f); fclose(f);
+    snprintf(enc, sizeof enc, "%s/rsa.cms", tmp);
+    snprintf(dec, sizeof dec, "%s/rsa.out", tmp);
+    show("encrypt for cert", pkiops_encrypt_file_for_cert(crt, path, enc, &e));
+    show("encrypt for cert, not a cert", pkiops_encrypt_file_for_cert(path, path, dec, &e));
+    show("decrypt for cert (the key may not)", pkiops_decrypt_file(s, enc, dec, used, sizeof used, &e));
+
+    struct pkiops_key *keys = NULL; size_t nk = 0;
+    show("keys", pkiops_keys(s, &keys, &nk, &e));
+    for (size_t i = 0; i < nk; i++)
+        printf("  key %lu private %d type 0x%lx \"%s\" %s\n", keys[i].handle, keys[i].is_private,
+               keys[i].key_type, keys[i].label, keys[i].alg);
+    free(keys);
     struct pkiops_object *objs = NULL; size_t n = 0;
     show("objects", pkiops_objects(s, PKIOPS_OBJS_ALL, &objs, &n, &e));
     printf("  %zu objects\n", n);
+    for (size_t i = 0; i < n; i++) {
+        printf("  object %lu %s type 0x%lx \"%s\" id %s alg %s\n", objs[i].handle,
+               pkiops_obj_class_name(objs[i].cls), objs[i].key_type, objs[i].label, objs[i].id,
+               objs[i].alg);
+        struct pkiops_attr *attrs = NULL; size_t na = 0;
+        show("  object attrs", pkiops_object_attrs(s, objs[i].handle, &attrs, &na, &e));
+        for (size_t q = 0; q < na; q++) printf("    %s = %s\n", attrs[q].name, attrs[q].value);
+        free(attrs);
+    }
+    show("destroy oaep (private half)", pkiops_destroy(s, key, &e));
     struct pkiops_attr *attrs = NULL; size_t na = 0;
-    if (n) show("object attrs", pkiops_object_attrs(s, objs[0].handle, &attrs, &na, &e));
+    show("object attrs, destroyed", pkiops_object_attrs(s, key, &attrs, &na, &e));
     free(attrs);
-    show("destroy box", pkiops_destroy(s, key, &e));
     free(objs);
     struct pkiops_slot *sl = NULL; size_t ns = 0;
     show("slots", pkiops_slots(&sl, &ns, &e));

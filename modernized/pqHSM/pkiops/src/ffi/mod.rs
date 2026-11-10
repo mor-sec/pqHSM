@@ -105,6 +105,12 @@ macro_rules! real {
     }};
 }
 
+/// Whether the module gave the function `name` (C's `if (!p11.DestroyObject)`): the optional
+/// ones of [`FUNCTIONS`] may be missing.
+pub(crate) fn has(name: &str) -> bool {
+    !REAL[index(name)].load(Ordering::Acquire).is_null()
+}
+
 /// `logcall`: report a call that has returned, if a callback is set.
 fn logcall(name: &'static CStr, rv: CK_RV, t0: Instant, args: impl FnOnce() -> String) {
     let (cb, ctx) = {
@@ -667,10 +673,7 @@ impl Slots for Module {
     }
 
     fn label(&mut self, id: SlotId) -> Vec<u8> {
-        if REAL[index("GetTokenInfo")]
-            .load(Ordering::Acquire)
-            .is_null()
-        {
+        if !has("GetTokenInfo") {
             return crate::label_of(None);
         }
         // CK_TOKEN_INFO opens with label[32]; 1024 bytes holds the whole struct, as in C.

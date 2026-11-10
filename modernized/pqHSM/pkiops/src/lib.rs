@@ -3,7 +3,9 @@
 //! Replaces `tools/pkiops.c` and `tools/p11_util.h`, slice by slice (`PHASE5_PLAN.md` §2).
 //! Slice 0: the module loader, `pkiops_load`, `pkiops_open`, `pkiops_close`,
 //! `pkiops_unload`, the call log and the error a function returns. Slice 1: what `fhsm-csr`
-//! calls (sessions, the algorithms, key pairs, requests and roots). The rest of `pkiops.h` is
+//! calls (sessions, the algorithms, key pairs, requests and roots). Slice 2: `fhsm-token`'s
+//! token state and init. Slice 3: `fhsm-crypt`'s objects, secret keys and CMS envelopes
+//! (`objects`, `cms_env`, `envelope`). The rest of `pkiops.h` is
 //! still `tools/pkiops.c`, reached through `shim/pkiops_tu.c`. All `unsafe` is in `ffi`,
 //! which `pqhsm-cli` calls through its safe functions (`ffi::ops`).
 //!
@@ -12,8 +14,11 @@
 use std::ffi::{c_long, c_ulong};
 use std::io::Write;
 
+pub mod cms_env;
+pub mod envelope;
 pub mod ffi;
 pub mod keys;
+pub mod objects;
 pub mod ops;
 
 pub use ffi::{close, load, open, unload};
@@ -57,6 +62,16 @@ pub fn parse_slot(t: &[u8]) -> Result<c_long, Error> {
         ));
     }
     Ok(v)
+}
+
+/// `strerror(errno)` for an error from the OS: the text C's messages carry.
+pub fn strerror(e: &std::io::Error) -> String {
+    let n = e.raw_os_error().unwrap_or(0);
+    // SAFETY: strerror returns a NUL-terminated string valid until the next call on this
+    // thread; it is copied at once.
+    unsafe { std::ffi::CStr::from_ptr(libc::strerror(n)) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// `CK_SLOT_ID`.

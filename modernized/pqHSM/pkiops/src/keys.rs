@@ -93,8 +93,103 @@ const ALL: [Alg; 9] = [
 /// `pkiops_alg_list`.
 pub const ALG_LIST: &CStr = c"composite, ecdsa-p256, ecdsa-p384, rsa-pss, rsa-pkcs1, ed25519, ml-dsa-44, ml-dsa-65, ml-dsa-87";
 
-/// The names of `SKEY`, the keys that do not sign (slice 3 ports their table).
-const SKEY_NAMES: [&[u8]; 4] = [b"aes128", b"aes256", b"hmac", b"rsa-oaep"];
+/// `enum pkiops_skey`: the keys that do not sign, in its order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Skey {
+    Aes128 = 0,
+    Aes256,
+    /// A 32-byte generic secret.
+    Hmac,
+    /// An RSA 3072 pair, OAEP only.
+    RsaOaep,
+}
+
+pub const CKK_GENERIC_SECRET: c_ulong = 0x10;
+pub const CKK_AES: c_ulong = 0x1F;
+
+/// One row of `SKEY`.
+pub struct SkeyInfo {
+    pub name: &'static CStr,
+    pub keytype: c_ulong,
+    pub keygen: c_ulong,
+    /// CKA_VALUE_LEN.
+    pub len: c_ulong,
+    /// Encrypts and wraps; a MAC key otherwise.
+    pub cipher: bool,
+}
+
+/// `SKEY`. The rsa-oaep row is a key pair, generated apart; listing still matches on it.
+pub const SKEY: [SkeyInfo; 4] = [
+    SkeyInfo {
+        name: c"aes128",
+        keytype: CKK_AES,
+        keygen: 0x1080,
+        len: 16,
+        cipher: true,
+    },
+    SkeyInfo {
+        name: c"aes256",
+        keytype: CKK_AES,
+        keygen: 0x1080,
+        len: 32,
+        cipher: true,
+    },
+    SkeyInfo {
+        name: c"hmac",
+        keytype: CKK_GENERIC_SECRET,
+        keygen: 0x0350,
+        len: 32,
+        cipher: false,
+    },
+    SkeyInfo {
+        name: c"rsa-oaep",
+        keytype: CKK_RSA,
+        keygen: 0,
+        len: 0,
+        cipher: false,
+    },
+];
+
+const SKEYS: [Skey; 4] = [Skey::Aes128, Skey::Aes256, Skey::Hmac, Skey::RsaOaep];
+
+/// `pkiops_skey_list`.
+pub const SKEY_LIST: &CStr = c"aes128, aes256, hmac, rsa-oaep";
+
+impl Skey {
+    pub fn from_index(i: u32) -> Option<Skey> {
+        SKEYS.get(i as usize).copied()
+    }
+
+    pub fn info(self) -> &'static SkeyInfo {
+        &SKEY[self as usize]
+    }
+
+    /// `pkiops_skey_parse`; `None` is C's NULL name. A signature algorithm's name is sent to
+    /// fhsm-csr, as [`Alg::parse`] sends these to fhsm-crypt.
+    pub fn parse(name: Option<&[u8]>) -> Result<Skey, Error> {
+        if let Some(n) = name {
+            if let Some(&k) = SKEYS.iter().find(|k| k.info().name.to_bytes() == n) {
+                return Ok(k);
+            }
+            if ALL.iter().any(|a| a.info().name.to_bytes() == n) {
+                let n = String::from_utf8_lossy(n); // one of ALG's names: ASCII
+                return Err(Error::new(
+                    1,
+                    format!(
+                        "\"{n}\" is a signature algorithm: fhsm-csr keygen --alg {n} makes it.\n"
+                    ),
+                ));
+            }
+        }
+        let mut m = b"\"".to_vec();
+        m.extend(name.unwrap_or_default());
+        m.extend(b"\" is not a key fhsm-crypt makes.\n  One of: ");
+        m.extend(SKEY_LIST.to_bytes());
+        m.push(b'\n');
+        Err(Error::new(1, m))
+    }
+}
 
 impl Alg {
     pub fn from_index(i: u32) -> Option<Alg> {
@@ -111,7 +206,7 @@ impl Alg {
             if let Some(&a) = ALL.iter().find(|a| a.info().name.to_bytes() == n) {
                 return Ok(a);
             }
-            if SKEY_NAMES.contains(&n) {
+            if SKEYS.iter().any(|k| k.info().name.to_bytes() == n) {
                 let n = String::from_utf8_lossy(n);
                 return Err(Error::new(
                     1,
@@ -254,12 +349,50 @@ mod tests {
             .map(|l| l.split('"').nth(1).unwrap())
             .collect();
         assert_eq!(named, ALG.map(|r| r.name.to_str().unwrap()));
-        for n in SKEY_NAMES {
-            assert!(
-                c.contains(&format!("= {{ \"{}\",", String::from_utf8_lossy(n))),
-                "SKEY has {n:?}"
-            );
+        // SKEY's rows: `[PKIOPS_SKEY_AES128] = { "aes128", CKK_AES_, 0x1080UL, 16, 1 },`.
+        let rows: Vec<Vec<String>> = c
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("[PKIOPS_SKEY_"))
+            .map(|l| {
+                let body = l.split('{').nth(1).unwrap().split('}').next().unwrap();
+                body.split(',')
+                    .map(|f| f.trim().trim_matches('"').to_string())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(rows.len(), SKEY.len());
+        for (r, k) in rows.iter().zip(&SKEY) {
+            assert_eq!(r[0], k.name.to_str().unwrap());
+            assert_eq!(r[2], format!("0x{:04X}UL", k.keygen));
+            assert_eq!(r[3], k.len.to_string());
         }
+    }
+
+    #[test]
+    fn skeys_as_c() {
+        for (i, k) in SKEYS.iter().enumerate() {
+            assert_eq!(*k as usize, i);
+            assert_eq!(Skey::parse(Some(k.info().name.to_bytes())), Ok(*k));
+        }
+        assert_eq!(Skey::from_index(4), None);
+        assert_eq!(
+            SKEY_LIST.to_bytes(),
+            SKEY.map(|r| r.name.to_str().unwrap()).join(", ").as_bytes()
+        );
+        let e = Skey::parse(Some(b"ed25519")).unwrap_err();
+        assert_eq!(
+            (e.code, &e.msg[..]),
+            (
+                1,
+                &b"\"ed25519\" is a signature algorithm: fhsm-csr keygen --alg ed25519 makes it.\n"
+                    [..]
+            )
+        );
+        let e = Skey::parse(None).unwrap_err();
+        assert_eq!(
+            &e.msg[..],
+            b"\"\" is not a key fhsm-crypt makes.\n  One of: aes128, aes256, hmac, rsa-oaep\n"
+        );
     }
 
     #[test]

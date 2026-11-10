@@ -26,6 +26,19 @@
 /* Slice 2, fhsm-token's (no C here calls them). */
 #define pkiops_token_info    pqhsm_c_pkiops_token_info
 #define pkiops_token_init    pqhsm_c_pkiops_token_init
+/* Slice 3, fhsm-crypt's (only each other's C calls them). */
+#define pkiops_keys                  pqhsm_c_pkiops_keys
+#define pkiops_obj_class_name        pqhsm_c_pkiops_obj_class_name
+#define pkiops_objects               pqhsm_c_pkiops_objects
+#define pkiops_object_attrs          pqhsm_c_pkiops_object_attrs
+#define pkiops_destroy               pqhsm_c_pkiops_destroy
+#define pkiops_skey_name             pqhsm_c_pkiops_skey_name
+#define pkiops_skey_list             pqhsm_c_pkiops_skey_list
+#define pkiops_skey_parse            pqhsm_c_pkiops_skey_parse
+#define pkiops_keygen_secret         pqhsm_c_pkiops_keygen_secret
+#define pkiops_encrypt_file          pqhsm_c_pkiops_encrypt_file
+#define pkiops_encrypt_file_for_cert pqhsm_c_pkiops_encrypt_file_for_cert
+#define pkiops_decrypt_file          pqhsm_c_pkiops_decrypt_file
 
 #include "../../../../tools/pkiops.c"
 

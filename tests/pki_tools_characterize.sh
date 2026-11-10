@@ -3,10 +3,10 @@
 # Copyright 2026 Afchine Madjlessi <afchine.mad@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 # ===========================================================================
-# pki_tools_characterize.sh --- what the four PKI tools do, written down.
+# pki_tools_characterize.sh --- what the five PKI tools do, written down.
 #
 # Not a test that passes or fails. It drives every subcommand of fhsm-token,
-# fhsm-csr, fhsm-ca and fhsm-sign -- and their main refusals -- and prints a
+# fhsm-csr, fhsm-ca, fhsm-sign and fhsm-crypt -- and their main refusals -- and prints a
 # normalised transcript: each command's exit code, its messages, and the ASN.1
 # shape of what it wrote. Run it before a change and after it, and diff:
 #
@@ -36,8 +36,9 @@ TOK="${TOK:-./tools/fhsm-token}"
 CSR="${CSR:-./tools/fhsm-csr}"
 CA="${CA:-./tools/fhsm-ca}"
 SIGN="${SIGN:-./tools/fhsm-sign}"
+CRYPT="${CRYPT:-./tools/fhsm-crypt}"
 
-for t in "$TOK" "$CSR" "$CA" "$SIGN"; do
+for t in "$TOK" "$CSR" "$CA" "$SIGN" "$CRYPT"; do
     [ -x "$t" ] || { echo "pki_tools_characterize.sh: $t is not built -- make PROFILE=all-mechanisms all" >&2; exit 2; }
 done
 for c in openssl python3 flock; do
@@ -95,7 +96,7 @@ run() {
     return 0
 }
 
-echo "pki_tools_characterize: $(basename "$TOK") $(basename "$CSR") $(basename "$CA") $(basename "$SIGN")"
+echo "pki_tools_characterize: $(basename "$TOK") $(basename "$CSR") $(basename "$CA") $(basename "$SIGN") $(basename "$CRYPT")"
 echo
 
 # --- fhsm-token --------------------------------------------------------------
@@ -194,3 +195,78 @@ run "revoke while the db is locked"          flock -x "$W/lock.db" "$CA" revoke 
 run "crl while the db is locked"             flock -x "$W/lock.db" "$CA" crl --label ca --ca-cert "$W/ca.der" --db "$W/lock.db" --days 30 --out "$W/lock.crl" --module "$LIB"
 run "ocsp-respond while the db is locked"    flock -x "$W/lock.db" "$CA" ocsp-respond --label ca --ca-cert "$W/ca.der" --db "$W/lock.db" --req "$W/req.der" --out "$W/lock.ocsp" --module "$LIB"
 echo "   lock.db"; mask < "$W/lock.db" | sed 's/^/    /'
+
+# --- fhsm-crypt (Phase 5 slice 3) ----------------------------------------------
+# Appended, so no row above moves. Deletions come last: they change what the
+# rows before them would list.
+leftovers() { echo "   temporary files left: $(ls "$W" | grep -c '\.[A-Za-z0-9]\{6\}$')"; }
+same() { cmp -s "$1" "$2" && echo "   $(basename "$2"): the same as $(basename "$1")" || echo "   $(basename "$2"): DIFFERS from $(basename "$1")"; }
+run "crypt, no arguments"                    "$CRYPT"
+run "crypt --pin refused"                    "$CRYPT" list --pin x --module "$LIB"
+run "crypt, bad --class"                     "$CRYPT" list --class foo --module "$LIB"
+run "crypt --alg outside keygen"             "$CRYPT" list --alg aes128 --module "$LIB"
+run "crypt keygen without --alg"             "$CRYPT" keygen --label k --module "$LIB"
+run "crypt keygen, a signature algorithm"    "$CRYPT" keygen --label k --alg ecdsa-p256 --module "$LIB"
+run "crypt keygen, unknown algorithm"        "$CRYPT" keygen --label k --alg des --module "$LIB"
+run "crypt encrypt, --key and --cert"        "$CRYPT" encrypt --key k --cert "$W/ee.der" --in "$W/data" --out "$W/x" --module "$LIB"
+run "crypt decrypt without --out"            "$CRYPT" decrypt --in "$W/data" --module "$LIB"
+run "crypt without FHSM_PIN"                 env -u FHSM_PIN "$CRYPT" list --module "$LIB"
+run "crypt keygen aes128"                    "$CRYPT" keygen --label k128 --alg aes128 --module "$LIB"
+run "crypt keygen aes256"                    "$CRYPT" keygen --label k256 --alg aes256 --module "$LIB"
+run "crypt keygen hmac"                      "$CRYPT" keygen --label mac --alg hmac --module "$LIB"
+run "crypt keygen rsa-oaep"                  "$CRYPT" keygen --label oaep --alg rsa-oaep --module "$LIB"
+run "crypt keygen, label taken"              "$CRYPT" keygen --label k256 --alg aes128 --module "$LIB"
+run "crypt keygen, a signing key's label"    "$CRYPT" keygen --label ee --alg aes256 --module "$LIB"
+run "crypt list"                             "$CRYPT" list --module "$LIB"
+run "crypt list --class key"                 "$CRYPT" list --class key --module "$LIB"
+run "crypt list --class cert"                "$CRYPT" list --class cert --module "$LIB"
+run "crypt show ee"                          "$CRYPT" show --label ee --module "$LIB"
+run "crypt show k256"                        "$CRYPT" show --label k256 --module "$LIB"
+run "crypt show mac"                         "$CRYPT" show --label mac --module "$LIB"
+run "crypt show oaep"                        "$CRYPT" show --label oaep --module "$LIB"
+run "crypt show, nothing labelled"           "$CRYPT" show --label nope --module "$LIB"
+run "crypt show --class cert ee"             "$CRYPT" show --label ee --class cert --module "$LIB"
+run "crypt encrypt k256"                     "$CRYPT" encrypt --key k256 --in "$W/data" --out "$W/data.p7m" --module "$LIB"
+echo "   shape data.p7m"; shape "$W/data.p7m"
+run "crypt decrypt k256"                     "$CRYPT" decrypt --in "$W/data.p7m" --out "$W/data.dec" --module "$LIB"
+same "$W/data" "$W/data.dec"
+run "crypt encrypt over an existing file"    "$CRYPT" encrypt --key k256 --in "$W/data" --out "$W/data.p7m" --module "$LIB"
+python3 -c 'import sys; b = bytearray(open(sys.argv[1], "rb").read()); b[-20] ^= 1; open(sys.argv[2], "wb").write(b)' "$W/data.p7m" "$W/alt.p7m"
+run "crypt decrypt, altered"                 "$CRYPT" decrypt --in "$W/alt.p7m" --out "$W/alt.dec" --module "$LIB"
+[ -e "$W/alt.dec" ] && echo "   alt.dec: left behind" || echo "   alt.dec: none"
+leftovers
+run "crypt decrypt, not CMS"                 "$CRYPT" decrypt --in "$W/data" --out "$W/plain.dec" --module "$LIB"
+run "crypt encrypt k128"                     "$CRYPT" encrypt --key k128 --in "$W/data" --out "$W/data128.p7m" --module "$LIB"
+run "crypt decrypt k128"                     "$CRYPT" decrypt --in "$W/data128.p7m" --out "$W/data128.dec" --module "$LIB"
+same "$W/data" "$W/data128.dec"
+run "crypt encrypt with the hmac key"        "$CRYPT" encrypt --key mac --in "$W/data" --out "$W/mac.p7m" --module "$LIB"
+run "crypt encrypt, missing key"             "$CRYPT" encrypt --key nope --in "$W/data" --out "$W/nope.p7m" --module "$LIB"
+run "crypt encrypt with a signing key"       "$CRYPT" encrypt --key ee --in "$W/data" --out "$W/ee.p7m" --module "$LIB"
+run "crypt encrypt oaep"                     "$CRYPT" encrypt --key oaep --in "$W/data" --out "$W/oaep.p7m" --module "$LIB"
+echo "   shape oaep.p7m"; shape "$W/oaep.p7m"
+run "crypt decrypt oaep"                     "$CRYPT" decrypt --in "$W/oaep.p7m" --out "$W/oaep.dec" --module "$LIB"
+same "$W/data" "$W/oaep.dec"
+run "crypt encrypt --cert, not RSA"          "$CRYPT" encrypt --cert "$W/ee.der" --in "$W/data" --out "$W/cert.p7m"
+run "crypt encrypt --cert, not a cert"       "$CRYPT" encrypt --cert "$W/data" --in "$W/data" --out "$W/cert.p7m"
+"$CSR" keygen --label rsa --alg rsa-pkcs1 --module "$LIB" >/dev/null 2>&1
+"$CSR" root --label rsa --subject "/CN=RSA signer" --out "$W/rsa.der" --module "$LIB" >/dev/null 2>&1
+run "crypt encrypt --cert, a signing RSA key's" "$CRYPT" encrypt --cert "$W/rsa.der" --in "$W/data" --out "$W/rsa.p7m"
+echo "   shape rsa.p7m"; shape "$W/rsa.p7m"
+run "crypt decrypt, the token key may not"   "$CRYPT" decrypt --in "$W/rsa.p7m" --out "$W/rsa.dec" --module "$LIB"
+# A certificate without subjectKeyIdentifier is named by issuer and serial,
+# and OpenSSL opens what fhsm-crypt made for it.
+printf '[req]\ndistinguished_name = dn\nprompt = no\nx509_extensions = ext\n[dn]\nCN = holder\n[ext]\nsubjectKeyIdentifier = none\nauthorityKeyIdentifier = none\nbasicConstraints = CA:FALSE\n' > "$W/req.cnf"
+openssl req -x509 -config "$W/req.cnf" -newkey rsa:2048 -nodes -keyout "$W/holder.key" -out "$W/holder.pem" -days 30 >/dev/null 2>&1 \
+    || echo "   (could not make holder.pem)"
+run "crypt encrypt --cert, no SKI"           "$CRYPT" encrypt --cert "$W/holder.pem" --in "$W/data" --out "$W/holder.p7m"
+echo "   shape holder.p7m"; shape "$W/holder.p7m"
+openssl cms -decrypt -inform DER -in "$W/holder.p7m" -recip "$W/holder.pem" -inkey "$W/holder.key" -out "$W/holder.dec" >/dev/null 2>&1 \
+    || echo "   openssl cms -decrypt holder.p7m: failed"
+same "$W/data" "$W/holder.dec"
+run "crypt delete k128, no --yes"            "$CRYPT" delete --label k128 --module "$LIB"
+run "crypt delete oaep --class key, no --yes" "$CRYPT" delete --label oaep --class key --module "$LIB"
+run "crypt delete --class cert ee"           "$CRYPT" delete --label ee --class cert --module "$LIB"
+run "crypt delete, nothing labelled"         "$CRYPT" delete --label nope --module "$LIB"
+run "crypt delete k128 --yes"                "$CRYPT" delete --label k128 --yes --module "$LIB"
+run "crypt decrypt, its key deleted"         "$CRYPT" decrypt --in "$W/data128.p7m" --out "$W/gone.dec" --module "$LIB"
+run "crypt list after delete"                "$CRYPT" list --class key --module "$LIB"

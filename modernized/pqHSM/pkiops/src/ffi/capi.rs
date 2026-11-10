@@ -2,13 +2,16 @@
 //! ported, the GUI): each a thin shim over [`crate::ops`], C's argument conventions in, its
 //! `struct p11_err` out.
 
-use std::ffi::{CStr, c_char, c_int, c_long, c_uint};
+use std::ffi::{CStr, OsStr, c_char, c_int, c_long, c_uint};
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 use std::ptr::null;
 
 use super::{fail, p11_err};
 use crate::Error;
 use crate::keys::{self, Alg};
 use crate::ops::*;
+use crate::{envelope, objects};
 
 /// A C string argument; C's strlen of NULL crashes, this aborts instead.
 unsafe fn arg<'a>(p: *const c_char) -> &'a CStr {
@@ -263,4 +266,226 @@ pub unsafe extern "C" fn pkiops_root(
         e,
         |()| (),
     )
+}
+
+// --- slice 3: fhsm-crypt's ---------------------------------------------------------------------
+
+/// A Vec copied into a malloc'd array the C caller frees: NULL when `null_if_empty` and there
+/// is nothing, as C's `realloc`-grown lists leave it.
+fn malloc_copy<T: Copy>(v: &[T], min: usize, null_if_empty: bool) -> Option<*mut T> {
+    if v.is_empty() && null_if_empty {
+        return Some(std::ptr::null_mut());
+    }
+    let n = v.len().max(min).max(1);
+    // SAFETY: calloc of n elements of T, each zeroed; v.len() <= n of them written.
+    unsafe {
+        let p = libc::calloc(n, size_of::<T>()).cast::<T>();
+        if p.is_null() {
+            return None;
+        }
+        std::ptr::copy_nonoverlapping(v.as_ptr(), p, v.len());
+        Some(p)
+    }
+}
+
+/// `*out` and `*n` from a list, or C's "out of memory".
+fn list_out<T: Copy>(
+    r: Result<Vec<T>, Error>,
+    min: usize,
+    null_if_empty: bool,
+    out: *mut *mut T,
+    n: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    let r = r.and_then(|v| {
+        malloc_copy(&v, min, null_if_empty)
+            .map(|p| (p, v.len()))
+            .ok_or_else(|| Error::new(2, "out of memory\n"))
+    });
+    status(r, e, |(p, len)| {
+        put(out, p);
+        put(n, len);
+    })
+}
+
+/// `pkiops_keys`: malloc'd, NULL when there are none.
+///
+/// # Safety
+/// `out`, `n` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_keys(
+    session: Handle,
+    out: *mut *mut objects::Key,
+    n: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    list_out(objects::keys(session), 0, true, out, n, e)
+}
+
+/// `pkiops_obj_class_name`: NULL out of range.
+#[unsafe(no_mangle)]
+pub extern "C" fn pkiops_obj_class_name(c: c_uint) -> *const c_char {
+    objects::ObjClass::from_index(c).map_or(null(), |c| c.name().as_ptr())
+}
+
+/// `pkiops_objects`: malloc'd, NULL when there are none.
+///
+/// # Safety
+/// `out`, `n` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_objects(
+    session: Handle,
+    classes: c_uint,
+    out: *mut *mut objects::Object,
+    n: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    list_out(objects::objects(session, classes), 0, true, out, n, e)
+}
+
+/// `pkiops_object_attrs`: malloc'd room for C's 40 lines.
+///
+/// # Safety
+/// `out`, `n` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_object_attrs(
+    session: Handle,
+    object: Handle,
+    out: *mut *mut objects::Attr,
+    n: *mut usize,
+    e: *mut p11_err,
+) -> c_int {
+    list_out(objects::object_attrs(session, object), 40, false, out, n, e)
+}
+
+/// `pkiops_destroy`.
+///
+/// # Safety
+/// `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_destroy(session: Handle, object: Handle, e: *mut p11_err) -> c_int {
+    status(objects::destroy(session, object), e, |()| ())
+}
+
+/// `pkiops_skey_name`: NULL out of range.
+#[unsafe(no_mangle)]
+pub extern "C" fn pkiops_skey_name(k: c_uint) -> *const c_char {
+    keys::Skey::from_index(k).map_or(null(), |k| k.info().name.as_ptr())
+}
+
+/// `pkiops_skey_list`.
+#[unsafe(no_mangle)]
+pub extern "C" fn pkiops_skey_list() -> *const c_char {
+    keys::SKEY_LIST.as_ptr()
+}
+
+/// `pkiops_skey_parse`.
+///
+/// # Safety
+/// `name` is null or a C string; `out` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_skey_parse(
+    name: *const c_char,
+    out: *mut c_uint,
+    e: *mut p11_err,
+) -> c_int {
+    let name = (!name.is_null()).then(|| unsafe { arg(name) }.to_bytes());
+    status(keys::Skey::parse(name), e, |k| put(out, k as c_uint))
+}
+
+/// `pkiops_keygen_secret`.
+///
+/// # Safety
+/// `label` is a C string; `key` and `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_keygen_secret(
+    session: Handle,
+    label: *const c_char,
+    k: c_uint,
+    key: *mut Handle,
+    e: *mut p11_err,
+) -> c_int {
+    let Some(k) = keys::Skey::from_index(k) else {
+        return fail(e, Error::new(1, "no such key type\n"));
+    };
+    let label = unsafe { arg(label) }.to_bytes();
+    status(objects::keygen_secret(session, label, k), e, |h| {
+        put(key, h)
+    })
+}
+
+/// A C string path argument.
+unsafe fn path_arg<'a>(p: *const c_char) -> &'a Path {
+    Path::new(OsStr::from_bytes(unsafe { arg(p) }.to_bytes()))
+}
+
+/// `pkiops_encrypt_file`.
+///
+/// # Safety
+/// The strings are C strings; `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_encrypt_file(
+    session: Handle,
+    label: *const c_char,
+    in_path: *const c_char,
+    out_path: *const c_char,
+    e: *mut p11_err,
+) -> c_int {
+    let r = unsafe {
+        envelope::encrypt_file(
+            session,
+            arg(label).to_bytes(),
+            path_arg(in_path),
+            path_arg(out_path),
+        )
+    };
+    status(r, e, |()| ())
+}
+
+/// `pkiops_encrypt_file_for_cert`.
+///
+/// # Safety
+/// The strings are C strings; `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_encrypt_file_for_cert(
+    cert_path: *const c_char,
+    in_path: *const c_char,
+    out_path: *const c_char,
+    e: *mut p11_err,
+) -> c_int {
+    let r = unsafe {
+        envelope::encrypt_file_for_cert(path_arg(cert_path), path_arg(in_path), path_arg(out_path))
+    };
+    status(r, e, |()| ())
+}
+
+/// `pkiops_decrypt_file`: the label used into `used` as `snprintf(used, used_cap, "%s")`.
+///
+/// # Safety
+/// The paths are C strings; `used` null or `used_cap` writable bytes; `e` null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pkiops_decrypt_file(
+    session: Handle,
+    in_path: *const c_char,
+    out_path: *const c_char,
+    used: *mut c_char,
+    used_cap: usize,
+    e: *mut p11_err,
+) -> c_int {
+    let mut label = None;
+    let r = unsafe {
+        envelope::decrypt_file(session, path_arg(in_path), path_arg(out_path), &mut label)
+    };
+    if let Some(label) = label
+        && !used.is_null()
+        && used_cap > 0
+    {
+        let n = label.len().min(used_cap - 1);
+        // SAFETY: used_cap writable bytes, n + 1 <= used_cap of them written.
+        unsafe {
+            std::ptr::copy_nonoverlapping(label.as_ptr(), used.cast::<u8>(), n);
+            *used.add(n) = 0;
+        }
+    }
+    status(r, e, |()| ())
 }

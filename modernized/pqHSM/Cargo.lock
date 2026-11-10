@@ -344,8 +344,10 @@ name = "pqhsm-pkiops"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "openssl",
  "openssl-sys",
  "pqhsm-pki",
+ "zeroize",
 ]
 
 [[package]]
