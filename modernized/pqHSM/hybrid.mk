@@ -20,6 +20,7 @@
 # src/fhsm_ecdsa_raw.c, src/fhsm_pq_params.c, src/fhsm_mode.c, src/gen/ or src/dispatch/, is in
 # the module (tests/test_conf alone links fhsm_mode.c). Phase 5 slice 0: the PKI tools' module
 # loader and pkiops_load, _open, _close, _unload and _set_call_log (pqhsm-pkiops, below).
+# Slice 1: tools/fhsm-csr is pqhsm-cli's binary, and fhsm-csr's twelve pkiops_* are Rust.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -124,13 +125,21 @@ tests/test_tpm: $(PQHSM_HOOKS_LIB)
 # tools/pkiops.c literally, so each is overridden here: make warns "overriding recipe" once per
 # target. Not a target-specific PQHSM_LIB, as test_tpm's: it would reach $(LIB), a prerequisite
 # of test_pkiops*, if make built the module for them. tools/fhsm-gui stays pure C (slice 6).
+# From slice 1 a ported tool is pqhsm-cli's binary instead (PQHSM_CLI_BINS, below).
 PQHSM_PKIOPS_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_pkiops.a
 PQHSM_PKIOPS_TU   := $(PQHSM_DIR)/pkiops/shim/pkiops_tu.c
-PQHSM_PKIOPS_BINS := $(TOOLS) tests/test_pkiops tests/test_pkiops_algs tests/test_pkiops_objects \
-                     tests/test_pkiops_secret tests/test_pkiops_envelope tests/test_pkiops_envelope_rsa
+PQHSM_CLI_BINS    := tools/fhsm-csr
+PQHSM_PKIOPS_BINS := $(filter-out $(PQHSM_CLI_BINS),$(TOOLS)) tests/test_pkiops tests/test_pkiops_algs \
+                     tests/test_pkiops_objects tests/test_pkiops_secret tests/test_pkiops_envelope \
+                     tests/test_pkiops_envelope_rsa
 
 $(PQHSM_PKIOPS_LIB): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-pkiops --features ffi --manifest-path $(PQHSM_DIR)/Cargo.toml
+	cargo build --release --locked -p pqhsm-pkiops --features shim --manifest-path $(PQHSM_DIR)/Cargo.toml
+
+# The Rust tools, built by cargo and copied to the C names; they keep the legacy prerequisites.
+$(PQHSM_CLI_BINS): $(PQHSM_SRC)
+	cargo build --release --locked -p pqhsm-cli --bin $(notdir $@) --manifest-path $(PQHSM_DIR)/Cargo.toml
+	cp $(PQHSM_DIR)/target/release/$(notdir $@) $@
 
 # The main source is the target's name with _ for -: tools/fhsm-csr is tools/fhsm_csr.c.
 $(PQHSM_PKIOPS_BINS): $(PQHSM_PKIOPS_TU) $(PQHSM_PKIOPS_LIB)

@@ -284,6 +284,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pqhsm-cli"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "pqhsm-pkiops",
+ "zeroize",
+]
+
+[[package]]
 name = "pqhsm-core"
 version = "0.1.0"
 dependencies = [
@@ -335,6 +344,7 @@ name = "pqhsm-pkiops"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "openssl-sys",
  "pqhsm-pki",
 ]
 

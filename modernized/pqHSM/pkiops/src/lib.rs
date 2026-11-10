@@ -2,21 +2,59 @@
 //!
 //! Replaces `tools/pkiops.c` and `tools/p11_util.h`, slice by slice (`PHASE5_PLAN.md` §2).
 //! Slice 0: the module loader, `pkiops_load`, `pkiops_open`, `pkiops_close`,
-//! `pkiops_unload`, the call log and the error a function returns. The rest of `pkiops.h` is
-//! still `tools/pkiops.c`, reached through `shim/pkiops_tu.c`. All `unsafe` is in `ffi`.
+//! `pkiops_unload`, the call log and the error a function returns. Slice 1: what `fhsm-csr`
+//! calls (sessions, the algorithms, key pairs, requests and roots). The rest of `pkiops.h` is
+//! still `tools/pkiops.c`, reached through `shim/pkiops_tu.c`. All `unsafe` is in `ffi`,
+//! which `pqhsm-cli` calls through its safe functions (`ffi::ops`).
 //!
 //! Every message is C's, byte for byte: `tests/pki_tools_characterize.sh` is the golden.
 
 use std::ffi::{c_long, c_ulong};
 use std::io::Write;
 
-#[cfg(feature = "ffi")]
 pub mod ffi;
+pub mod keys;
 
-// The staticlib carries pqhsm-pki's C ABI (fhsm_composite_*, fhsm_rev_*), which the tools'
-// links took from pqhsm-module before; naming the crate keeps its symbols linked.
-#[cfg(feature = "ffi")]
-extern crate pqhsm_pki;
+/// `strtol(t, &end, 10)`: the value, clamped as strtol clamps it, how many bytes it read (0
+/// when no digits), and whether it overflowed (strtol's ERANGE).
+pub fn strtol(t: &[u8]) -> (c_long, usize, bool) {
+    let mut i = t
+        .iter()
+        .take_while(|&&c| c == b' ' || (b'\t'..=b'\r').contains(&c))
+        .count();
+    let neg = t.get(i) == Some(&b'-');
+    if matches!(t.get(i), Some(b'-' | b'+')) {
+        i += 1;
+    }
+    let digits = t[i.min(t.len())..]
+        .iter()
+        .take_while(|c| c.is_ascii_digit())
+        .count();
+    if digits == 0 {
+        return (0, 0, false);
+    }
+    let mut v: i128 = 0;
+    for &c in &t[i..i + digits] {
+        // Capped past both ends, so the clamp below still sees an overflow either way.
+        v = (v * 10 + i128::from(c - b'0')).min(i128::from(c_long::MAX) + 2);
+    }
+    let v = if neg { -v } else { v };
+    let clamped = v.clamp(c_long::MIN.into(), c_long::MAX.into());
+    (clamped as c_long, i + digits, clamped != v)
+}
+
+/// `pkiops_parse_slot`: a whole decimal, not negative.
+pub fn parse_slot(t: &[u8]) -> Result<c_long, Error> {
+    let (v, end, overflow) = strtol(t);
+    // C: errno, an empty text, or `*end` not the end (nothing read leaves end at the start).
+    if overflow || end == 0 || end != t.len() || v < 0 {
+        return Err(Error::new(
+            1,
+            [b"--slot ", t, b" is not a slot identifier.\n"].concat(),
+        ));
+    }
+    Ok(v)
+}
 
 /// `CK_SLOT_ID`.
 pub type SlotId = c_ulong;
@@ -35,7 +73,10 @@ impl Error {
     pub const CAP: usize = 4096;
 
     pub fn new(code: i32, msg: impl Into<Vec<u8>>) -> Self {
-        Error { code, msg: msg.into() }
+        Error {
+            code,
+            msg: msg.into(),
+        }
     }
 
     /// The message as C's buffer holds it.
@@ -112,14 +153,20 @@ pub trait Slots {
 /// The label `p11_label_of` prints from `CK_TOKEN_INFO`'s first 32 bytes, or `None` if
 /// `C_GetTokenInfo` failed.
 pub fn label_of(info: Option<&[u8]>) -> Vec<u8> {
-    let Some(info) = info else { return b"(unreadable)".to_vec() };
+    let Some(info) = info else {
+        return b"(unreadable)".to_vec();
+    };
     let mut l = &info[..32.min(info.len())];
     while let [rest @ .., b' ' | 0] = l {
         l = rest;
     }
     // C prints it with %s, so a NUL inside ends it.
     let l = l.split(|&b| b == 0).next().unwrap_or_default();
-    if l.is_empty() { b"(no label)".to_vec() } else { l.to_vec() }
+    if l.is_empty() {
+        b"(no label)".to_vec()
+    } else {
+        l.to_vec()
+    }
 }
 
 fn append_slots(e: &mut Error, m: &mut impl Slots, ids: &[SlotId]) {
@@ -131,7 +178,10 @@ fn append_slots(e: &mut Error, m: &mut impl Slots, ids: &[SlotId]) {
 }
 
 fn several(m: &mut impl Slots, tok: &[SlotId]) -> Error {
-    let mut e = Error::new(3, format!("{} slots hold a token; name one with --slot:\n", tok.len()));
+    let mut e = Error::new(
+        3,
+        format!("{} slots hold a token; name one with --slot:\n", tok.len()),
+    );
     append_slots(&mut e, m, tok);
     e
 }
@@ -285,21 +335,60 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    #[test]
+    fn strtol_and_slots_as_c() {
+        assert_eq!(strtol(b" \t\x0b+42x"), (42, 6, false));
+        assert_eq!(strtol(b"-7"), (-7, 2, false));
+        assert_eq!(strtol(b"abc"), (0, 0, false));
+        assert_eq!(strtol(b"-"), (0, 0, false));
+        assert_eq!(strtol(b"9223372036854775807"), (c_long::MAX, 19, false));
+        assert_eq!(strtol(b"9223372036854775808"), (c_long::MAX, 19, true));
+        assert_eq!(strtol(b"-9223372036854775808"), (c_long::MIN, 20, false));
+        assert_eq!(strtol(b"-99999999999999999999999"), (c_long::MIN, 24, true));
+        assert_eq!(parse_slot(b"0"), Ok(0));
+        assert_eq!(parse_slot(b" +3"), Ok(3));
+        assert_eq!(parse_slot(b"-0"), Ok(0));
+        for bad in [&b""[..], b" ", b"1x", b"-1", b"x", b"99999999999999999999"] {
+            let e = parse_slot(bad).unwrap_err();
+            assert_eq!(
+                e,
+                Error::new(
+                    1,
+                    [b"--slot ", bad, b" is not a slot identifier.\n"].concat()
+                )
+            );
+        }
+    }
+
     /// The copy of `tools/p11_util.h`'s order and slot numbers is safe only while something
     /// compares them; `tests/test_p11_loader.c` compares the header's with the module's.
     #[test]
     fn functions_match_p11_util_h() {
-        let h = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/p11_util.h"))
-            .expect("tools/p11_util.h");
+        let h = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tools/p11_util.h"
+        ))
+        .expect("tools/p11_util.h");
         let table = &h[h.find("static struct {").unwrap()..h.find("} p11;").unwrap()];
-        let fields: Vec<&str> =
-            table.split("(*").skip(1).map(|s| &s[..s.find(')').unwrap()]).collect();
+        let fields: Vec<&str> = table
+            .split("(*")
+            .skip(1)
+            .map(|s| &s[..s.find(')').unwrap()])
+            .collect();
         let slots: HashMap<&str, usize> = h
             .lines()
             .filter_map(|l| l.trim().strip_prefix("P11_SLOT_"))
             .filter_map(|l| {
                 let (n, v) = l.split_once('=')?;
-                Some((n.trim(), v.trim().trim_end_matches(',').split_whitespace().next()?.parse().ok()?))
+                Some((
+                    n.trim(),
+                    v.trim()
+                        .trim_end_matches(',')
+                        .split_whitespace()
+                        .next()?
+                        .parse()
+                        .ok()?,
+                ))
             })
             .collect();
         let ours: Vec<&str> = FUNCTIONS.iter().map(|f| f.0).collect();
@@ -319,14 +408,22 @@ mod tests {
             if self.fail {
                 return Err(Error::new(2, "C_GetSlotList failed (0x5)\n"));
             }
-            Ok(if present { self.tok.clone() } else { self.all.clone() })
+            Ok(if present {
+                self.tok.clone()
+            } else {
+                self.all.clone()
+            })
         }
         fn label(&mut self, id: SlotId) -> Vec<u8> {
             format!("tok{id}").into_bytes()
         }
     }
     fn f(all: &[SlotId], tok: &[SlotId]) -> Fake {
-        Fake { all: all.to_vec(), tok: tok.to_vec(), fail: false }
+        Fake {
+            all: all.to_vec(),
+            tok: tok.to_vec(),
+            fail: false,
+        }
     }
     fn msg(r: Result<SlotId, Error>) -> (i32, String) {
         let e = r.unwrap_err();
@@ -342,10 +439,17 @@ mod tests {
         assert_eq!(resolve(&mut f(&[3, 4], &[4]), -1, Any), Ok(4));
         assert_eq!(resolve(&mut f(&[0, 1], &[]), 1, ForInit), Ok(1));
         assert_eq!(resolve(&mut f(&[0, 1], &[0]), 0, WithToken), Ok(0));
-        assert_eq!(msg(resolve(&mut f(&[], &[]), 0, Any)), (3, "the module reports no slot at all.\n".into()));
+        assert_eq!(
+            msg(resolve(&mut f(&[], &[]), 0, Any)),
+            (3, "the module reports no slot at all.\n".into())
+        );
         assert_eq!(
             msg(resolve(&mut f(&[0, 1], &[0]), 7, Any)),
-            (3, "no slot 7 on this module. Available:\n    --slot 0   tok0\n    --slot 1   tok1\n".into())
+            (
+                3,
+                "no slot 7 on this module. Available:\n    --slot 0   tok0\n    --slot 1   tok1\n"
+                    .into()
+            )
         );
         assert_eq!(
             msg(resolve(&mut f(&[0, 1], &[0]), 1, WithToken)),
@@ -353,7 +457,11 @@ mod tests {
         );
         assert_eq!(
             msg(resolve(&mut f(&[0, 1], &[]), 1, WithToken)),
-            (3, "slot 1 holds no initialised token.\n  `fhsm-token init --slot 1` creates one.\n".into())
+            (
+                3,
+                "slot 1 holds no initialised token.\n  `fhsm-token init --slot 1` creates one.\n"
+                    .into()
+            )
         );
         assert_eq!(
             msg(resolve(&mut f(&[0], &[]), -1, WithToken)),
@@ -365,10 +473,19 @@ mod tests {
                 (3, "2 slots hold a token; name one with --slot:\n    --slot 0   tok0\n    --slot 1   tok1\n".into())
             );
         }
-        assert_eq!(msg(resolve(&mut f(&[0], &[0]), -1, ForInit)).1.lines().count(), 4);
+        assert_eq!(
+            msg(resolve(&mut f(&[0], &[0]), -1, ForInit))
+                .1
+                .lines()
+                .count(),
+            4
+        );
         let mut bad = f(&[0], &[0]);
         bad.fail = true;
-        assert_eq!(msg(resolve(&mut bad, -1, Any)), (2, "C_GetSlotList failed (0x5)\n".into()));
+        assert_eq!(
+            msg(resolve(&mut bad, -1, Any)),
+            (2, "C_GetSlotList failed (0x5)\n".into())
+        );
     }
 
     #[test]
@@ -381,7 +498,10 @@ mod tests {
         assert_eq!(label_of(None), b"(unreadable)");
         assert_eq!(calllog::mech_name(0x1057), "CKM_EDDSA");
         assert_eq!(calllog::mech_name(0x1234), "mechanism 0x1234");
-        assert_eq!(calllog::attr_types([0, 3, 0x999], 120), "CKA_CLASS, CKA_LABEL, 0x999");
+        assert_eq!(
+            calllog::attr_types([0, 3, 0x999], 120),
+            "CKA_CLASS, CKA_LABEL, 0x999"
+        );
         assert_eq!(calllog::attr_types([0, 3], 12), "CKA_CLASS, ");
         let e = Error::new(2, vec![b'x'; 5000]);
         assert_eq!(e.c_msg().len(), 4095);

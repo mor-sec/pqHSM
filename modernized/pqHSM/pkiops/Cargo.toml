@@ -13,10 +13,13 @@ publish = false
 crate-type = ["staticlib", "rlib"]
 
 [features]
-# The C ABI of tools/pkiops.h, the hand-over to the C of tools/pkiops.c not ported yet, and
-# pqhsm-pki's C ABI. Off for `cargo test`, on for the hybrid build.
-ffi = ["pqhsm-pki/ffi"]
+# The hand-over of the module to the C of tools/pkiops.c not ported yet (shim/pkiops_tu.c,
+# which must then be linked): on for the hybrid build, off for cargo test and pqhsm-cli.
+shim = []
 
 [dependencies]
 libc.workspace = true
-pqhsm-pki = { path = "../pki" }
+openssl-sys.workspace = true
+# Its C ABI: the request and certificate builders, and the composite and revocation code the
+# C tools' links took from pqhsm-module before.
+pqhsm-pki = { path = "../pki", features = ["ffi"] }

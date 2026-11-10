@@ -1,0 +1,13 @@
+[package]
+name = "pqhsm-cli"
+description = "pqHSM's PKI tools, one binary per tool under its C name (replaces tools/fhsm_*.c, Phase 5)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+libc.workspace = true
+zeroize.workspace = true
+pqhsm-pkiops = { path = "../pkiops" }

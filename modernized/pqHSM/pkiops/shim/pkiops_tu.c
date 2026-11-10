@@ -8,6 +8,21 @@
 #define pkiops_close        pqhsm_c_pkiops_close
 #define pkiops_unload       pqhsm_c_pkiops_unload
 #define pkiops_set_call_log pqhsm_c_pkiops_set_call_log
+/* Slice 1, fhsm-csr's. The C not ported yet that calls one of these (alg_of's message calls
+ * pkiops_alg_list, pkiops_keygen calls pkiops_keygen_alg) calls its C copy, which is still
+ * here; nothing outside this file reaches them. */
+#define pkiops_parse_slot    pqhsm_c_pkiops_parse_slot
+#define pkiops_alg_name      pqhsm_c_pkiops_alg_name
+#define pkiops_alg_list      pqhsm_c_pkiops_alg_list
+#define pkiops_alg_parse     pqhsm_c_pkiops_alg_parse
+#define pkiops_alg_digest    pqhsm_c_pkiops_alg_digest
+#define pkiops_key_alg       pqhsm_c_pkiops_key_alg
+#define pkiops_session_user  pqhsm_c_pkiops_session_user
+#define pkiops_session_close pqhsm_c_pkiops_session_close
+#define pkiops_keygen        pqhsm_c_pkiops_keygen
+#define pkiops_keygen_alg    pqhsm_c_pkiops_keygen_alg
+#define pkiops_csr           pqhsm_c_pkiops_csr
+#define pkiops_root          pqhsm_c_pkiops_root
 
 #include "../../../../tools/pkiops.c"
 

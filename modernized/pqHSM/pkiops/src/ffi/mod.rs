@@ -1,10 +1,13 @@
 //! Every `unsafe` in the crate: the module opened with dlopen, its functions behind the
 //! call-log wrappers, the `tools/pkiops.h` functions ported so far, and the hand-over of the
-//! wrapped table to the C of `tools/pkiops.c` not ported yet (`shim/pkiops_tu.c`).
+//! wrapped table to the C of `tools/pkiops.c` not ported yet (`shim/pkiops_tu.c`, with
+//! feature `shim`). `ops` holds the operations ported past the loader.
 //!
 //! One module at a time, process-wide, as in C. The table is written by `pkiops_load` and
 //! `pkiops_unload` only; the GUI calls those from one thread, as it did C's.
 #![allow(non_camel_case_types)]
+
+pub mod ops;
 
 use std::ffi::{CStr, CString, c_char, c_int, c_long, c_uchar, c_ulong, c_void};
 use std::ptr::{null, null_mut};
@@ -73,6 +76,7 @@ struct Log(Option<pkiops_call_cb>, *mut c_void);
 unsafe impl Send for Log {}
 static LOG: Mutex<Log> = Mutex::new(Log(None, null_mut()));
 
+#[cfg(feature = "shim")]
 unsafe extern "C" {
     /// `shim/pkiops_tu.c`: fills C's `p11` table with `fns` (N pointers in [`FUNCTIONS`]
     /// order), or clears it when `fns` is null.
@@ -80,7 +84,10 @@ unsafe extern "C" {
 }
 
 fn index(name: &str) -> usize {
-    FUNCTIONS.iter().position(|f| f.0 == name).expect("a function of FUNCTIONS")
+    FUNCTIONS
+        .iter()
+        .position(|f| f.0 == name)
+        .expect("a function of FUNCTIONS")
 }
 
 /// The module's function `$name`, as type `$t`. A call with none loaded aborts (C called NULL).
@@ -90,7 +97,10 @@ fn index(name: &str) -> usize {
 macro_rules! real {
     ($name:literal as $t:ty) => {{
         let p = REAL[index($name)].load(Ordering::Acquire);
-        assert!(!p.is_null(), concat!("C_", $name, " called with no module loaded"));
+        assert!(
+            !p.is_null(),
+            concat!("C_", $name, " called with no module loaded")
+        );
         std::mem::transmute::<*mut c_void, $t>(p)
     }};
 }
@@ -104,7 +114,12 @@ fn logcall(name: &'static CStr, rv: CK_RV, t0: Instant, args: impl FnOnce() -> S
     let Some(cb) = cb else { return };
     let a = args();
     let n = a.len().min(ARGS_CAP - 1);
-    let mut c = pkiops_call { fn_: name.as_ptr(), args: [0; ARGS_CAP], rv, ms: 0.0 };
+    let mut c = pkiops_call {
+        fn_: name.as_ptr(),
+        args: [0; ARGS_CAP],
+        rv,
+        ms: 0.0,
+    };
     for (d, s) in c.args.iter_mut().zip(&a.as_bytes()[..n]) {
         *d = *s as c_char;
     }
@@ -116,7 +131,11 @@ fn logcall(name: &'static CStr, rv: CK_RV, t0: Instant, args: impl FnOnce() -> S
 /// `*p` after a successful call, else 0, as each C summary prints it.
 fn out(rv: CK_RV, p: *const CK_ULONG) -> CK_ULONG {
     // SAFETY: an output pointer the module was handed; read only after it returned OK.
-    if rv == 0 && !p.is_null() { unsafe { *p } } else { 0 }
+    if rv == 0 && !p.is_null() {
+        unsafe { *p }
+    } else {
+        0
+    }
 }
 
 /// `*p` whatever the result, as w_Sign and w_SignFinal print it.
@@ -169,8 +188,12 @@ unsafe extern "C" fn w_finalize(a: V) -> CK_RV {
 }
 unsafe extern "C" fn w_open_session(sl: S, f: S, app: V, nfy: V, s: P) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("OpenSession" as unsafe extern "C" fn(S, S, V, V, P) -> CK_RV)(sl, f, app, nfy, s) };
-    logcall(c"C_OpenSession", rv, t, || format!("slot {sl}, flags 0x{f:x} -> session {}", out(rv, s)));
+    let rv = unsafe {
+        real!("OpenSession" as unsafe extern "C" fn(S, S, V, V, P) -> CK_RV)(sl, f, app, nfy, s)
+    };
+    logcall(c"C_OpenSession", rv, t, || {
+        format!("slot {sl}, flags 0x{f:x} -> session {}", out(rv, s))
+    });
     rv
 }
 unsafe extern "C" fn w_close_session(s: S) -> CK_RV {
@@ -182,32 +205,61 @@ unsafe extern "C" fn w_close_session(s: S) -> CK_RV {
 unsafe extern "C" fn w_login(s: S, u: S, pin: B, n: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("Login" as unsafe extern "C" fn(S, S, B, S) -> CK_RV)(s, u, pin, n) };
-    logcall(c"C_Login", rv, t, || format!("session {s}, {}, PIN not shown", user_name(u)));
+    logcall(c"C_Login", rv, t, || {
+        format!("session {s}, {}, PIN not shown", user_name(u))
+    });
     rv
 }
 #[allow(clippy::too_many_arguments)] // C_GenerateKeyPair's
-unsafe extern "C" fn w_generate_key_pair(s: S, m: M, pt: A, pn: S, kt: A, kn: S, hp: P, hk: P) -> CK_RV {
+unsafe extern "C" fn w_generate_key_pair(
+    s: S,
+    m: M,
+    pt: A,
+    pn: S,
+    kt: A,
+    kn: S,
+    hp: P,
+    hk: P,
+) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe {
-        real!("GenerateKeyPair" as unsafe extern "C" fn(S, M, A, S, A, S, P, P) -> CK_RV)(s, m, pt, pn, kt, kn, hp, hk)
+        real!("GenerateKeyPair" as unsafe extern "C" fn(S, M, A, S, A, S, P, P) -> CK_RV)(
+            s, m, pt, pn, kt, kn, hp, hk,
+        )
     };
     logcall(c"C_GenerateKeyPair", rv, t, || {
-        format!("session {s}, {} -> public {}, private {}", mech(m), out(rv, hp), out(rv, hk))
+        format!(
+            "session {s}, {} -> public {}, private {}",
+            mech(m),
+            out(rv, hp),
+            out(rv, hk)
+        )
     });
     rv
 }
 unsafe extern "C" fn w_find_objects_init(s: S, tp: A, n: S) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("FindObjectsInit" as unsafe extern "C" fn(S, A, S) -> CK_RV)(s, tp, n) };
+    let rv =
+        unsafe { real!("FindObjectsInit" as unsafe extern "C" fn(S, A, S) -> CK_RV)(s, tp, n) };
     logcall(c"C_FindObjectsInit", rv, t, || {
-        format!("session {s}, matching {}", if n != 0 { types(tp, n, 120) } else { "anything".into() })
+        format!(
+            "session {s}, matching {}",
+            if n != 0 {
+                types(tp, n, 120)
+            } else {
+                "anything".into()
+            }
+        )
     });
     rv
 }
 unsafe extern "C" fn w_find_objects(s: S, h: P, max: S, n: P) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("FindObjects" as unsafe extern "C" fn(S, P, S, P) -> CK_RV)(s, h, max, n) };
-    logcall(c"C_FindObjects", rv, t, || format!("session {s}, up to {max} -> {} found", out(rv, n)));
+    let rv =
+        unsafe { real!("FindObjects" as unsafe extern "C" fn(S, P, S, P) -> CK_RV)(s, h, max, n) };
+    logcall(c"C_FindObjects", rv, t, || {
+        format!("session {s}, up to {max} -> {} found", out(rv, n))
+    });
     rv
 }
 unsafe extern "C" fn w_find_objects_final(s: S) -> CK_RV {
@@ -218,74 +270,106 @@ unsafe extern "C" fn w_find_objects_final(s: S) -> CK_RV {
 }
 unsafe extern "C" fn w_get_attribute_value(s: S, o: S, tp: A, n: S) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("GetAttributeValue" as unsafe extern "C" fn(S, S, A, S) -> CK_RV)(s, o, tp, n) };
+    let rv = unsafe {
+        real!("GetAttributeValue" as unsafe extern "C" fn(S, S, A, S) -> CK_RV)(s, o, tp, n)
+    };
     logcall(c"C_GetAttributeValue", rv, t, || {
-        format!("session {s}, object {o}, {}, values not shown", types(tp, n, 120))
+        format!(
+            "session {s}, object {o}, {}, values not shown",
+            types(tp, n, 120)
+        )
     });
     rv
 }
 unsafe extern "C" fn w_digest_init(s: S, m: M) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DigestInit" as unsafe extern "C" fn(S, M) -> CK_RV)(s, m) };
-    logcall(c"C_DigestInit", rv, t, || format!("session {s}, {}", mech(m)));
+    logcall(c"C_DigestInit", rv, t, || {
+        format!("session {s}, {}", mech(m))
+    });
     rv
 }
 unsafe extern "C" fn w_sign_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("SignInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
-    logcall(c"C_SignInit", rv, t, || format!("session {s}, {}, key {k}", mech(m)));
+    logcall(c"C_SignInit", rv, t, || {
+        format!("session {s}, {}, key {k}", mech(m))
+    });
     rv
 }
 unsafe extern "C" fn w_sign(s: S, d: B, dn: S, sig: B, sn: P) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("Sign" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, d, dn, sig, sn) };
+    let rv =
+        unsafe { real!("Sign" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, d, dn, sig, sn) };
     logcall(c"C_Sign", rv, t, || {
-        format!("session {s}, {dn} bytes in -> {} bytes{}", any(sn), none_if(sig.cast(), " (size query)"))
+        format!(
+            "session {s}, {dn} bytes in -> {} bytes{}",
+            any(sn),
+            none_if(sig.cast(), " (size query)")
+        )
     });
     rv
 }
 unsafe extern "C" fn w_sign_update(s: S, d: B, dn: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("SignUpdate" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, d, dn) };
-    logcall(c"C_SignUpdate", rv, t, || format!("session {s}, {dn} bytes"));
+    logcall(c"C_SignUpdate", rv, t, || {
+        format!("session {s}, {dn} bytes")
+    });
     rv
 }
 unsafe extern "C" fn w_sign_final(s: S, sig: B, sn: P) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("SignFinal" as unsafe extern "C" fn(S, B, P) -> CK_RV)(s, sig, sn) };
     logcall(c"C_SignFinal", rv, t, || {
-        format!("session {s} -> {} bytes{}", any(sn), none_if(sig.cast(), " (size query)"))
+        format!(
+            "session {s} -> {} bytes{}",
+            any(sn),
+            none_if(sig.cast(), " (size query)")
+        )
     });
     rv
 }
 unsafe extern "C" fn w_verify_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("VerifyInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
-    logcall(c"C_VerifyInit", rv, t, || format!("session {s}, {}, key {k}", mech(m)));
+    logcall(c"C_VerifyInit", rv, t, || {
+        format!("session {s}, {}, key {k}", mech(m))
+    });
     rv
 }
 unsafe extern "C" fn w_verify_update(s: S, d: B, dn: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("VerifyUpdate" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, d, dn) };
-    logcall(c"C_VerifyUpdate", rv, t, || format!("session {s}, {dn} bytes"));
+    logcall(c"C_VerifyUpdate", rv, t, || {
+        format!("session {s}, {dn} bytes")
+    });
     rv
 }
 unsafe extern "C" fn w_verify_final(s: S, sig: B, sn: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("VerifyFinal" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, sig, sn) };
-    logcall(c"C_VerifyFinal", rv, t, || format!("session {s}, {sn}-byte signature"));
+    logcall(c"C_VerifyFinal", rv, t, || {
+        format!("session {s}, {sn}-byte signature")
+    });
     rv
 }
 unsafe extern "C" fn w_init_token(sl: S, pin: B, n: S, label: B) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("InitToken" as unsafe extern "C" fn(S, B, S, B) -> CK_RV)(sl, pin, n, label) };
-    logcall(c"C_InitToken", rv, t, || format!("slot {sl}, SO PIN not shown"));
+    let rv = unsafe {
+        real!("InitToken" as unsafe extern "C" fn(S, B, S, B) -> CK_RV)(sl, pin, n, label)
+    };
+    logcall(c"C_InitToken", rv, t, || {
+        format!("slot {sl}, SO PIN not shown")
+    });
     rv
 }
 unsafe extern "C" fn w_init_pin(s: S, pin: B, n: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("InitPIN" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, pin, n) };
-    logcall(c"C_InitPIN", rv, t, || format!("session {s}, PIN not shown"));
+    logcall(c"C_InitPIN", rv, t, || {
+        format!("session {s}, PIN not shown")
+    });
     rv
 }
 unsafe extern "C" fn w_get_token_info(sl: S, ti: V) -> CK_RV {
@@ -297,43 +381,72 @@ unsafe extern "C" fn w_get_token_info(sl: S, ti: V) -> CK_RV {
 unsafe extern "C" fn w_generate_random(s: S, o: B, n: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("GenerateRandom" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, o, n) };
-    logcall(c"C_GenerateRandom", rv, t, || format!("session {s}, {n} bytes, not shown"));
+    logcall(c"C_GenerateRandom", rv, t, || {
+        format!("session {s}, {n} bytes, not shown")
+    });
     rv
 }
 unsafe extern "C" fn w_get_slot_list(present: c_uchar, ids: P, n: P) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("GetSlotList" as unsafe extern "C" fn(c_uchar, P, P) -> CK_RV)(present, ids, n) };
+    let rv = unsafe {
+        real!("GetSlotList" as unsafe extern "C" fn(c_uchar, P, P) -> CK_RV)(present, ids, n)
+    };
     logcall(c"C_GetSlotList", rv, t, || {
-        let which = if present != 0 { "with a token" } else { "all slots" };
-        format!("{which} -> {}{}", out(rv, n), none_if(ids.cast(), " (count)"))
+        let which = if present != 0 {
+            "with a token"
+        } else {
+            "all slots"
+        };
+        format!(
+            "{which} -> {}{}",
+            out(rv, n),
+            none_if(ids.cast(), " (count)")
+        )
     });
     rv
 }
 unsafe extern "C" fn w_get_mechanism_list(sl: S, list: P, n: P) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("GetMechanismList" as unsafe extern "C" fn(S, P, P) -> CK_RV)(sl, list, n) };
+    let rv =
+        unsafe { real!("GetMechanismList" as unsafe extern "C" fn(S, P, P) -> CK_RV)(sl, list, n) };
     logcall(c"C_GetMechanismList", rv, t, || {
-        format!("slot {sl} -> {}{}", out(rv, n), none_if(list.cast(), " (count)"))
+        format!(
+            "slot {sl} -> {}{}",
+            out(rv, n),
+            none_if(list.cast(), " (count)")
+        )
     });
     rv
 }
 unsafe extern "C" fn w_get_mechanism_info(sl: S, m: S, info: V) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("GetMechanismInfo" as unsafe extern "C" fn(S, S, V) -> CK_RV)(sl, m, info) };
-    logcall(c"C_GetMechanismInfo", rv, t, || format!("slot {sl}, {}", mech_name(m)));
+    let rv =
+        unsafe { real!("GetMechanismInfo" as unsafe extern "C" fn(S, S, V) -> CK_RV)(sl, m, info) };
+    logcall(c"C_GetMechanismInfo", rv, t, || {
+        format!("slot {sl}, {}", mech_name(m))
+    });
     rv
 }
 unsafe extern "C" fn w_destroy_object(s: S, o: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DestroyObject" as unsafe extern "C" fn(S, S) -> CK_RV)(s, o) };
-    logcall(c"C_DestroyObject", rv, t, || format!("session {s}, object {o}"));
+    logcall(c"C_DestroyObject", rv, t, || {
+        format!("session {s}, object {o}")
+    });
     rv
 }
 unsafe extern "C" fn w_generate_key(s: S, m: M, tp: A, n: S, k: P) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("GenerateKey" as unsafe extern "C" fn(S, M, A, S, P) -> CK_RV)(s, m, tp, n, k) };
+    let rv = unsafe {
+        real!("GenerateKey" as unsafe extern "C" fn(S, M, A, S, P) -> CK_RV)(s, m, tp, n, k)
+    };
     logcall(c"C_GenerateKey", rv, t, || {
-        format!("session {s}, {}, template {} -> key {}", mech(m), types(tp, n, 200), out(rv, k))
+        format!(
+            "session {s}, {}, template {} -> key {}",
+            mech(m),
+            types(tp, n, 200),
+            out(rv, k)
+        )
     });
     rv
 }
@@ -341,28 +454,42 @@ unsafe extern "C" fn w_generate_key(s: S, m: M, tp: A, n: S, k: P) -> CK_RV {
 unsafe extern "C" fn w_encrypt_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("EncryptInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
-    logcall(c"C_EncryptInit", rv, t, || format!("session {s}, {}, key {k}", mech(m)));
+    logcall(c"C_EncryptInit", rv, t, || {
+        format!("session {s}, {}, key {k}", mech(m))
+    });
     rv
 }
 unsafe extern "C" fn w_encrypt(s: S, i: B, n: S, o: B, on: P) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("Encrypt" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, i, n, o, on) };
+    let rv =
+        unsafe { real!("Encrypt" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, i, n, o, on) };
     logcall(c"C_Encrypt", rv, t, || {
-        format!("session {s}, {n} bytes in -> {} out{}, not shown", out(rv, on), none_if(o.cast(), " (size)"))
+        format!(
+            "session {s}, {n} bytes in -> {} out{}, not shown",
+            out(rv, on),
+            none_if(o.cast(), " (size)")
+        )
     });
     rv
 }
 unsafe extern "C" fn w_decrypt_init(s: S, m: M, k: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("DecryptInit" as unsafe extern "C" fn(S, M, S) -> CK_RV)(s, m, k) };
-    logcall(c"C_DecryptInit", rv, t, || format!("session {s}, {}, key {k}", mech(m)));
+    logcall(c"C_DecryptInit", rv, t, || {
+        format!("session {s}, {}, key {k}", mech(m))
+    });
     rv
 }
 unsafe extern "C" fn w_decrypt(s: S, i: B, n: S, o: B, on: P) -> CK_RV {
     let t = Instant::now();
-    let rv = unsafe { real!("Decrypt" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, i, n, o, on) };
+    let rv =
+        unsafe { real!("Decrypt" as unsafe extern "C" fn(S, B, S, B, P) -> CK_RV)(s, i, n, o, on) };
     logcall(c"C_Decrypt", rv, t, || {
-        format!("session {s}, {n} bytes in -> {} out{}, not shown", out(rv, on), none_if(o.cast(), " (size)"))
+        format!(
+            "session {s}, {n} bytes in -> {} out{}, not shown",
+            out(rv, on),
+            none_if(o.cast(), " (size)")
+        )
     });
     rv
 }
@@ -409,7 +536,11 @@ fn wrappers() -> [*const c_void; N] {
 fn dlerror() -> Vec<u8> {
     // SAFETY: dlerror's string is valid until the next dl* call on this thread.
     let p = unsafe { libc::dlerror() };
-    if p.is_null() { Vec::new() } else { unsafe { CStr::from_ptr(p) }.to_bytes().to_vec() }
+    if p.is_null() {
+        Vec::new()
+    } else {
+        unsafe { CStr::from_ptr(p) }.to_bytes().to_vec()
+    }
 }
 
 fn load_module(path: *const c_char) -> Result<[*mut c_void; N], Error> {
@@ -417,7 +548,11 @@ fn load_module(path: *const c_char) -> Result<[*mut c_void; N], Error> {
     let h = unsafe { libc::dlopen(path, libc::RTLD_NOW) };
     if h.is_null() {
         let mut m = b"cannot load ".to_vec();
-        m.extend(if path.is_null() { b"(null)" } else { unsafe { CStr::from_ptr(path) }.to_bytes() });
+        m.extend(if path.is_null() {
+            b"(null)"
+        } else {
+            unsafe { CStr::from_ptr(path) }.to_bytes()
+        });
         m.extend(b": ");
         m.extend(dlerror());
         m.push(b'\n');
@@ -433,13 +568,19 @@ fn load_module(path: *const c_char) -> Result<[*mut c_void; N], Error> {
         let mut fl: *const FunctionList = null();
         let rv = unsafe { getlist(&mut fl) };
         if rv != 0 || fl.is_null() {
-            return Err(Error::new(2, format!("C_GetFunctionList failed (0x{rv:x})\n")));
+            return Err(Error::new(
+                2,
+                format!("C_GetFunctionList failed (0x{rv:x})\n"),
+            ));
         }
         for (i, &(name, slot, need)) in FUNCTIONS.iter().enumerate() {
             // SAFETY: the module's table, v2.40's 68 slots at least.
             fns[i] = unsafe { (*fl).pfn[slot] };
             if fns[i].is_null() && need != Need::Optional {
-                return Err(Error::new(2, format!("the module leaves C_{name} unimplemented\n")));
+                return Err(Error::new(
+                    2,
+                    format!("the module leaves C_{name} unimplemented\n"),
+                ));
             }
         }
         return Ok(fns);
@@ -454,7 +595,10 @@ fn load_module(path: *const c_char) -> Result<[*mut c_void; N], Error> {
         // SAFETY: as above.
         fns[i] = unsafe { libc::dlsym(h, sym.as_ptr()) };
         if fns[i].is_null() && need == Need::Both {
-            return Err(Error::new(2, format!("the module exports neither C_GetFunctionList nor C_{name}\n")));
+            return Err(Error::new(
+                2,
+                format!("the module exports neither C_GetFunctionList nor C_{name}\n"),
+            ));
         }
     }
     Ok(fns)
@@ -471,7 +615,12 @@ fn install(fns: Option<&[*mut c_void; N]>) {
         c[i] = if p.is_null() { null() } else { w[i] };
     }
     // SAFETY: N pointers in FUNCTIONS order, the shim's contract; null clears.
-    unsafe { pqhsm_c_pkiops_install(if fns.is_some() { c.as_ptr() } else { null() }) }
+    #[cfg(feature = "shim")]
+    unsafe {
+        pqhsm_c_pkiops_install(if fns.is_some() { c.as_ptr() } else { null() })
+    };
+    #[cfg(not(feature = "shim"))]
+    let _ = c;
 }
 
 fn fail(e: *mut p11_err, err: Error) -> c_int {
@@ -518,7 +667,10 @@ impl Slots for Module {
     }
 
     fn label(&mut self, id: SlotId) -> Vec<u8> {
-        if REAL[index("GetTokenInfo")].load(Ordering::Acquire).is_null() {
+        if REAL[index("GetTokenInfo")]
+            .load(Ordering::Acquire)
+            .is_null()
+        {
             return crate::label_of(None);
         }
         // CK_TOKEN_INFO opens with label[32]; 1024 bytes holds the whole struct, as in C.
@@ -538,28 +690,56 @@ pub extern "C" fn pkiops_set_call_log(cb: Option<pkiops_call_cb>, ctx: *mut c_vo
 }
 
 /// `pkiops_load`: load the module and C_Initialize it. Whatever was loaded before is
-/// finalised and forgotten first; a load that fails leaves none loaded.
+/// finalised and forgotten first; a load that fails leaves none loaded. `None` is C's NULL
+/// path (dlopen's own meaning: the program).
+pub fn load(module: Option<&CStr>) -> Result<(), Error> {
+    unload();
+    let fns = load_module(module.map_or(null(), CStr::as_ptr))?;
+    install(Some(&fns));
+    // SAFETY: the module just installed.
+    let rv = unsafe { w_initialize(null_mut()) };
+    if rv != 0 {
+        unload();
+        return Err(Error::new(2, format!("C_Initialize failed (0x{rv:x})\n")));
+    }
+    INITIALISED.store(true, Ordering::Release);
+    Ok(())
+}
+
+/// `pkiops_open`: [`load`], then the slot: `want` is the one the caller named, or -1.
+pub fn open(module: Option<&CStr>, want: c_long, intent: Intent) -> Result<SlotId, Error> {
+    load(module)?;
+    crate::resolve(&mut Module, want, intent).inspect_err(|_| close())
+}
+
+/// `pkiops_close`: C_Finalize, if initialised.
+pub fn close() {
+    if INITIALISED.swap(false, Ordering::AcqRel) {
+        // SAFETY: the module is loaded while INITIALISED is set.
+        unsafe { w_finalize(null_mut()) };
+    }
+}
+
+/// `pkiops_unload`: [`close`], then forget the module. Not dlclose'd (`tools/pkiops.h`).
+pub fn unload() {
+    close();
+    install(None);
+}
+
+/// `pkiops_load`.
 ///
 /// # Safety
 /// `module` is a C string or null; `e` is null or a writable `struct p11_err`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pkiops_load(module: *const c_char, e: *mut p11_err) -> c_int {
-    pkiops_unload();
-    let fns = match load_module(module) {
-        Ok(f) => f,
-        Err(err) => return fail(e, err),
-    };
-    install(Some(&fns));
-    let rv = unsafe { w_initialize(null_mut()) };
-    if rv != 0 {
-        pkiops_unload();
-        return fail(e, Error::new(2, format!("C_Initialize failed (0x{rv:x})\n")));
+    // SAFETY: the caller's C string, or null.
+    match load((!module.is_null()).then(|| unsafe { CStr::from_ptr(module) })) {
+        Ok(()) => 0,
+        Err(err) => fail(e, err),
     }
-    INITIALISED.store(true, Ordering::Release);
-    0
 }
 
-/// `pkiops_open`: `pkiops_load`, then the slot: `want` is the one the caller named, or -1.
+/// `pkiops_open`.
 ///
 /// # Safety
 /// As [`pkiops_load`]; `slot` is null or writable.
@@ -571,16 +751,17 @@ pub unsafe extern "C" fn pkiops_open(
     slot: *mut c_ulong,
     e: *mut p11_err,
 ) -> c_int {
-    let rc = unsafe { pkiops_load(module, e) };
-    if rc != 0 {
-        return rc;
-    }
     let intent = match intent {
         1 => Intent::ForInit,
         2 => Intent::Any,
         _ => Intent::WithToken,
     };
-    match crate::resolve(&mut Module, want, intent) {
+    // SAFETY: the caller's C string, or null.
+    match open(
+        (!module.is_null()).then(|| unsafe { CStr::from_ptr(module) }),
+        want,
+        intent,
+    ) {
         Ok(s) => {
             // SAFETY: the caller's output, null or writable.
             if let Some(slot) = unsafe { slot.as_mut() } {
@@ -588,26 +769,18 @@ pub unsafe extern "C" fn pkiops_open(
             }
             0
         }
-        Err(err) => {
-            let rc = fail(e, err);
-            pkiops_close();
-            rc
-        }
+        Err(err) => fail(e, err),
     }
 }
 
-/// `pkiops_close`: C_Finalize, if initialised.
+/// `pkiops_close`.
 #[unsafe(no_mangle)]
 pub extern "C" fn pkiops_close() {
-    if INITIALISED.swap(false, Ordering::AcqRel) {
-        // SAFETY: the module is loaded while INITIALISED is set.
-        unsafe { w_finalize(null_mut()) };
-    }
+    close()
 }
 
-/// `pkiops_unload`: `pkiops_close`, then forget the module. Not dlclose'd (`tools/pkiops.h`).
+/// `pkiops_unload`.
 #[unsafe(no_mangle)]
 pub extern "C" fn pkiops_unload() {
-    pkiops_close();
-    install(None);
+    unload()
 }
