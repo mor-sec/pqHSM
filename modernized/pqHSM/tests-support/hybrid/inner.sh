@@ -493,6 +493,9 @@ printf 'pki tools characterise: %s, C run 1 %s, %s lines, run 2 vs run 1 %s' "$(
     --out $FHSM_TOKENS_DIR/$i.crl 2> $FHSM_TOKENS_DIR/$i.err & done; wait
   numbers=$(cat $FHSM_TOKENS_DIR/[1-4].err | sed -n 's/^fhsm-ca: CRL number \([0-9]*\),.*/\1/p' | sort -n | tr '\n' ' ')
   echo "12 revokes at once: $revoked kept; 4 CRLs at once: numbers ${numbers% }, database $(sed -n 's/^crlNumber //p' $D)") > /out/race_ca.txt 2>&1
+# RULE-021/022 (PHASE5_PLAN.md §4): fhsm-ca's dates and CRL number, the C tools and the Rust.
+(cd $AMC && sh /work/modernized/pqHSM/tests-support/hybrid/rule021_dates.sh) > /out/rule021_c.txt 2>&1
+(cd $AMH && sh /work/modernized/pqHSM/tests-support/hybrid/rule021_dates.sh) > /out/rule021_h.txt 2>&1
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
 # Slice 4 on: the Rust fhsm-sign on either module, DIV-075 (cms-verify names its signer, --signer).
@@ -522,6 +525,8 @@ printf '; fhsm-sign: %s' "$(tail -1 /out/pin_prompt_sign.txt)" >> /out/pki_char.
 RACE_OK="12 revokes at once: 12 kept; 4 CRLs at once: numbers 1 2 3 4, database 4"
 printf '; fhsm-ca: %s; DIV-074: %s' "$(tail -1 /out/pin_prompt_ca.txt)" \
   "$([ "$(tail -1 /out/race_ca.txt)" = "$RACE_OK" ] && echo "same ($RACE_OK)" || echo "DIFF ($(tail -1 /out/race_ca.txt))")" >> /out/pki_char.txt
+R021_OK="issue span ok, notBefore ok; crl span ok, thisUpdate ok, number 42, database 42"
+for t in c h; do printf '; RULE-021/022 %s: %s' $t "$([ "$(tail -1 /out/rule021_$t.txt)" = "$R021_OK" ] && echo "same ($R021_OK)" || echo "DIFF ($(tail -1 /out/rule021_$t.txt))")" >> /out/pki_char.txt; done
 
 # 4q. Slice 8c review M1: the audit switch's other side. `make audit-switch` recurses without
 #     -f, so under hybrid.mk it builds pure C; this is its second half, on fresh copies of each
