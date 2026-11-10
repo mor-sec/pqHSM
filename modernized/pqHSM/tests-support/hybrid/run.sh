@@ -26,6 +26,12 @@ tar -C "$REPO" --exclude=./analysis --exclude=./netcache --exclude=./.obj --excl
 # With them, step 11 runs the contract tests offline.
 CONTRACT_DEBS=${CONTRACT_DEBS:-$REPO/netcache/debs}
 if [ -d "$CONTRACT_DEBS" ]; then (cd "$CONTRACT_DEBS" && sha256sum -c --quiet "$REPO/netcache/debs.sha256"); else CONTRACT_DEBS=; fi
+# GTK 4, Xvfb and D-Bus for step 12, the GUI (Phase 5 slice 6), fetched once the same way.
+GTK_DEBS=${GTK_DEBS:-$REPO/netcache/gtkdebs}
+# Every .deb there is installed, so the directory must hold exactly the listed files.
+if [ -d "$GTK_DEBS" ]; then (cd "$GTK_DEBS" && sha256sum -c --quiet "$REPO/netcache/gtkdebs.sha256" &&
+  [ "$(ls *.deb | sort)" = "$(awk '{print $2}' "$REPO/netcache/gtkdebs.sha256" | sort)" ]) ||
+  { echo "run.sh: $GTK_DEBS does not match gtkdebs.sha256" >&2; exit 1; }; else GTK_DEBS=; fi
 # The tree copy (about 1 GB) is removed afterwards unless KEEP_WORK=1; results/ stays.
 rc=0
 podman run --rm --user root --security-opt seccomp=unconfined \
@@ -33,6 +39,7 @@ podman run --rm --user root --security-opt seccomp=unconfined \
     -v "$REPO/analysis/pqHSM/baseline":/fixture:ro,Z -v "$REGISTRY":/opt/rust/cargo/registry:Z \
     ${FIPS_DEBS:+-v "$FIPS_DEBS":/debs:ro,Z} \
     ${CONTRACT_DEBS:+-v "$CONTRACT_DEBS":/cdebs:ro,Z} \
+    ${GTK_DEBS:+-v "$GTK_DEBS":/gdebs:ro,Z} \
     ${WYCHEPROOF_CACHE:+-v "$WYCHEPROOF_CACHE":/wyche:ro,Z} \
     -v "$HERE/inner.sh":/inner.sh:ro,Z "$IMAGE" sh /inner.sh || rc=$?
 # files the container created belong to subordinate ids, hence unshare

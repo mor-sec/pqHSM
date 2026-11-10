@@ -634,6 +634,31 @@ else
   echo "contract: skipped: no CONTRACT_DEBS" > /out/contract.txt
 fi
 
+# 12. The GUI (Phase 5 slice 6; user: "Keep C GUI on Rust (Recommended)", "Fetch once
+#     (Recommended)"): GTK 4, Xvfb and D-Bus from netcache/gtkdebs (run.sh, GTK_DEBS), installed
+#     offline; this branch's tools/fhsm_gui.c built by the legacy Makefile (/tmp/cwork, pure C,
+#     no PQHSM_REV_LOCK) and by hybrid.mk on pqhsm-pkiops, and each through tests/gui_smoke.sh.
+#     Before 10 and 9, as 11.
+if ls /gdebs/*.deb > /dev/null 2>&1; then
+  # dpkg -i of the lot meets pre-dependencies (systemd's) out of order: a later pass settles them
+  for i in 1 2 3; do timeout 600 dpkg -i /gdebs/*.deb >> /out/gui_install.log 2>&1 && break; done
+  timeout 600 dpkg --configure -a >> /out/gui_install.log 2>&1; inst=$?
+  cp /work/tools/fhsm_gui.c /tmp/cwork/tools/fhsm_gui.c
+  gui() { # $1 tree, $2 make
+    (cd "$1" && $2 tools/fhsm-gui) > /out/gui_build_$3.log 2>&1 && b=0 || b=$?
+    (cd "$1" && sh tests/gui_smoke.sh) > /out/gui_smoke_$3.txt 2>&1 && s=0 || s=$?
+    printf '%s build rc=%s smoke rc=%s (%s)' "$3" $b $s "$(tail -1 /out/gui_smoke_$3.txt)"
+  }
+  c=$(gui /tmp/cwork make c); h=$(gui /work "$M" hybrid)
+  # the C sources named on the hybrid link line (none), and the Rust in the binary
+  if [ -x /work/tools/fhsm-gui ]; then
+    links="hybrid link names pkiops.c/cms_env.c: $(grep -E '^cc .*-o tools/fhsm-gui' /out/gui_build_hybrid.log | grep -cE 'tools/(pkiops|cms_env)\.c'), rust pkiops symbols $(nm /work/tools/fhsm-gui | grep -c 'pqhsm_pkiops'), fhsm_rev_db_lock $(nm /work/tools/fhsm-gui | grep -c ' [Tt] fhsm_rev_db_lock$')"
+  else links="hybrid binary absent"; fi
+  printf 'gui: install rc=%s, %s unconfigured; %s; %s; %s\n' "$inst" "$(dpkg --audit | grep -c '^ ')" "$c" "$h" "$links" > /out/gui.txt
+else
+  echo "gui: skipped: no GTK_DEBS" > /out/gui.txt
+fi
+
 # 10. Wycheproof (PHASE3_PLAN.md §5.2, BASELINE.md § Wycheproof), from Phase 3 slice 4: the
 #     legacy runner, full mode, as CI's nightly job, on the C and the hybrid module. Offline:
 #     python-pkcs11 from the cached wheel, the vectors from the one-time fetch (run.sh,
@@ -763,6 +788,7 @@ rm -rf /tmp/wy /tmp/venv
   echo "corpus: $(awk -F'\t' '$3>0' /out/corpus.tsv | wc -l) commands wrote audit logs ($(awk -F'\t' '{r+=$4} END{print r}' /out/corpus.tsv) records); same $(awk -F'\t' '$5=="same" && $3>0' /out/corpus.tsv | wc -l), order-only $(grep -c 'order-only$' /out/corpus.tsv), DIFF $(grep -c 'DIFF$' /out/corpus.tsv)"
   echo "tsan: $(grep -c 'rc=0' /out/tsan_build.log) build ok; $(awk -F'\t' '{printf "%s rc=%s races=%s; ", $1, $2, $3}' /out/tsan.tsv)"
   cat /out/contract.txt
+  cat /out/gui.txt
   echo "wycheproof: $(cat /out/wycheproof.txt)"
   echo "fips: $(grep 'install rc' /out/fips_install.log 2>/dev/null)"; sed 's/^/  /' /out/fips.txt
   echo "cross_impl (C tool on Rust logs): $(grep -E 'test result|rc=' /out/x_cross_impl.txt | tr '\n' ' ')"

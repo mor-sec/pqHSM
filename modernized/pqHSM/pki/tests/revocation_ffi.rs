@@ -632,3 +632,47 @@ fn answer_through_the_c_abi_writes_c_s_response() {
     }
     assert_eq!((seen, synth), (56, 25), "every answer row");
 }
+
+/// DIV-074 through the C ABI the GUI uses: a held lock refuses a second writer, then releases.
+#[test]
+fn div074_lock_c_abi() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = path_c(&dir.path().join("rev.db"));
+    let (mut a, mut b) = (null_mut(), null_mut());
+    let mut err = [0 as c_char; 640];
+    // SAFETY: valid path, out-pointers and buffer
+    assert_eq!(
+        unsafe { fhsm_rev_db_lock(p.as_ptr(), 1, &mut a, err.as_mut_ptr(), 640) },
+        0
+    );
+    assert!(
+        !a.is_null() && dir.path().join("rev.db").exists(),
+        "a writer creates it"
+    );
+    let t = std::thread::spawn(move || {
+        let p = p;
+        let mut b = null_mut();
+        let mut err = [0 as c_char; 640];
+        // SAFETY: as above
+        let rv = unsafe { fhsm_rev_db_lock(p.as_ptr(), 0, &mut b, err.as_mut_ptr(), 640) };
+        unsafe { fhsm_rev_db_unlock(b) };
+        rv
+    });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!t.is_finished(), "a reader waits for the writer");
+    // SAFETY: from fhsm_rev_db_lock; NULL is ignored
+    unsafe { fhsm_rev_db_unlock(a) };
+    unsafe { fhsm_rev_db_unlock(null_mut()) };
+    assert_eq!(t.join().unwrap(), 0);
+    let link = path_c(&dir.path().join("link.db"));
+    std::os::unix::fs::symlink(dir.path().join("gone/x"), dir.path().join("link.db")).unwrap();
+    // SAFETY: as above
+    assert_ne!(
+        unsafe { fhsm_rev_db_lock(link.as_ptr(), 1, &mut b, err.as_mut_ptr(), 640) },
+        0
+    );
+    assert!(b.is_null(), "no lock on failure");
+    // SAFETY: NUL-terminated by rv
+    let msg = unsafe { CStr::from_ptr(err.as_ptr()) }.to_str().unwrap();
+    assert!(msg.starts_with("cannot lock "), "{msg}");
+}

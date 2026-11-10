@@ -380,6 +380,48 @@ pub unsafe extern "C" fn fhsm_rev_db_save(
     unsafe { rv(to_db(&*d).save(path(path_c)), err, err_cap) }
 }
 
+/// DIV-074's lock, for the C GUI (`tools/fhsm_gui.c` under `PQHSM_REV_LOCK`): opaque to C.
+pub struct fhsm_rev_lock_t(#[allow(dead_code)] rev::DbLock);
+
+/// `rev::DbLock::take` with `LOCK_WAIT`: 0 and `*lock` set (free it with `fhsm_rev_db_unlock`),
+/// or an error code and message with `*lock` NULL.
+///
+/// # Safety
+/// `path_c` is a NUL-terminated string, `lock` is writable, `err` as for load.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fhsm_rev_db_lock(
+    path_c: *const c_char,
+    exclusive: c_int,
+    lock: *mut *mut fhsm_rev_lock_t,
+    err: *mut c_char,
+    err_cap: usize,
+) -> c_int {
+    // SAFETY: the caller's contract
+    unsafe { *lock = null_mut() };
+    // SAFETY: the caller's contract
+    match rev::DbLock::take(unsafe { path(path_c) }, exclusive != 0, rev::LOCK_WAIT) {
+        Ok(l) => {
+            // SAFETY: the caller's contract
+            unsafe { *lock = Box::into_raw(Box::new(fhsm_rev_lock_t(l))) };
+            0
+        }
+        // SAFETY: the caller's contract
+        Err(e) => unsafe { rv(Err(e), err, err_cap) },
+    }
+}
+
+/// Releases a lock from `fhsm_rev_db_lock`; NULL is ignored.
+///
+/// # Safety
+/// `lock` is NULL or from `fhsm_rev_db_lock`, not yet released.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fhsm_rev_db_unlock(lock: *mut fhsm_rev_lock_t) {
+    if !lock.is_null() {
+        // SAFETY: the caller's contract
+        drop(unsafe { Box::from_raw(lock) });
+    }
+}
+
 /// # Safety
 /// `d` is a database built by this ABI (or zeroed), `e` is readable, `err` as for load.
 #[unsafe(no_mangle)]

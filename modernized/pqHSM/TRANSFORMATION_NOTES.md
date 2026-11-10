@@ -1637,3 +1637,34 @@ No HIGH, four MEDIUM, four LOW, three nits; each checked against the code.
 - `test_pkiops*` linked against `pqhsm-pkiops` alone (no `tools/pkiops.c`, no `tools/cms_env.c`): `make tests` 106/106; `pki_artifacts` 21 DER files, 0 differ; openssl CLI 18 ok each. The `nm` checks find the Rust `Db::load` and `x509::issue` in `tools/fhsm-ca`.
 - Cargo: workspace 954 passed, 0 failed (new: `div074_lock` with the create race and a dangling link, `fhsm-ca`'s `--days` parser, `exports_are_pkiops_h` in place of the shim's rename test). Clippy `-D warnings` clean for the workspace.
 - Harness `p5s5` (`run10`, the final tree; `run9` before the review fixes the same but for the two `nm` checks): `p5s4`'s summary but the new rows, and run-to-run noise (corpus 9597 records; "C reading Rust-written" 2 lines, RSA-keyed token sizes).
+
+### Slice 6: the GUI stays C, on the Rust library (2026-11-11)
+
+**Decided** (user: "Keep C GUI on Rust (Recommended)"; GTK fetch: "Fetch once (Recommended)"). `tools/fhsm_gui.c` stays; `hybrid.mk` overrides `tools/fhsm-gui`'s recipe to link `libpqhsm_pkiops.a` in place of `tools/pkiops.c` and `tools/cms_env.c`, so every `pkiops_*` and `fhsm_rev_*` the window calls is Rust. GTK 4.18.6, Xvfb and D-Bus: 236 .debs (84 MB) from the image's snapshot (20261006T000000Z) in `netcache/gtkdebs`, checksums in `netcache/gtkdebs.sha256`, installed offline by harness step 12.
+
+**DIV-074 in the GUI.** The first edit to the legacy C on this branch, all of it under `PQHSM_REV_LOCK`, which only `hybrid.mk` sets; from this tree's Makefile the window is C's, stubs in place of the lock (`RESERVE_FIRST` 0). In the hybrid build: revoke locks from before its load to after its save (`run_revoke` split into `run_revoke` and `revoke_db`), CRL reserves its number under the lock and signs after it, as `fhsm-ca crl`, and OCSP takes a shared lock for its load. The lock is `pqhsm-pki`'s `fhsm_rev_db_lock`/`_unlock` (C ABI over `DbLock`; test `div074_lock_c_abi`), declared in `fhsm_gui.c` (a `shortcut:` comment) so `include/` stays C's. Jobs run on a `GTask` thread, so a 10 s wait does not block the main loop.
+
+**Review (architecture-critic, slice 6):** no HIGH.
+
+| # | Finding | Done |
+|---|---|---|
+| M1 | Revoke and publish whose CRL step was refused the lock said "…Nothing was changed." after its revocation was saved | Fixed: "Recorded, but not published: …", and the GUI shows the lock message's first line only. |
+| M2 | No automated test runs the GUI's new code; the smoke test only opens and closes the window | Accepted: the manual UAT below is the gate; the symbol checks are not evidence of locking. |
+| M3 | The harness's pure-C GUI was the baseline's `fhsm_gui.c`, not this branch's `#else` branch | Fixed: step 12 builds this branch's file with the legacy Makefile. |
+| L | After a reserved number was spent by a failed signing, the window still named the old next number | Fixed: the database view is refreshed. |
+| L | Symbol checks could pass on a failed build; nothing detected `pkiops.c` linked | Fixed: "absent" when not built; the build log is checked for `pkiops.c`/`cms_env.c`. |
+| L | dpkg's result unreported, no time bound; an unlisted .deb would install unchecked | Fixed: rc in `gui.txt`, `timeout 600`; `run.sh` refuses a .deb not in the checksum list. |
+| L | While waiting on the lock the status reads "Signing the CRL…" and close is ignored | Accepted: UAT step 6. |
+| L | The C prototypes are not checked against the Rust | Accepted: `shortcut:` comment. |
+| nits | display reads unlocked (atomic renames make them safe); scheduled_tasks.lock | Left; kept out of the commit. |
+
+**Manual UAT on the hybrid `tools/fhsm-gui`** (with `docs/FHSM_GUI.md`'s walkthrough; the harness cannot drive the window):
+1. `flock -x rev.db sleep 20` held, Revoke: waits about 10 s, refuses, the database unchanged. Released at about 5 s: recorded.
+2. The same for CRL; OCSP under `flock -s` does not wait, under `flock -x` waits and refuses.
+3. A GUI CRL beside `fhsm-ca crl`: distinct, increasing numbers.
+4. Revoke and publish with the lock held after the revoke (or a CA key that cannot sign): "Recorded, but not published: …", `crlNumber` advanced, the view shows the next number.
+5. Revoke on a new database name: the file appears; a failed CRL on a new name leaves one holding number 1.
+6. Close the window during a lock wait: ignored until the job ends, then closes cleanly.
+7. The pure-C build (`make gui`): the same steps show no waiting.
+
+**Evidence (slice 6).** Harness `run12` (the final tree): step 12 "install rc=0, 0 unconfigured; c build rc=0 smoke rc=0 (PASS); hybrid build rc=0 smoke rc=0 (PASS); hybrid link names pkiops.c/cms_env.c: 0, rust pkiops symbols 288, fhsm_rev_db_lock 1". The rest as `run10` but run-to-run noise (corpus 9426 records), and the module's `fhsm_rev_*/OCSP_*` count 28 (was 26): the two lock functions, which `pqhsm-module` carries with the rest of `pqhsm-pki`'s C ABI, local under `--exclude-libs,ALL` as those are. Transcripts identical to C less DIV-059/073-075; call log 940 records identical; `make tests` 106/106; `pki_artifacts` 0 differ. Cargo: workspace 955 passed, 0 failed (new: `div074_lock_c_abi`); clippy `-D warnings` clean. The window's own behaviour under the lock is the manual UAT above, not yet run.

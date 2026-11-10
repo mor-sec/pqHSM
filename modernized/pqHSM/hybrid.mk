@@ -128,7 +128,7 @@ tests/test_tpm: $(PQHSM_HOOKS_LIB)
 # pkiops.h, so they compile no tools/pkiops.c or tools/cms_env.c. The legacy recipes name
 # tools/pkiops.c literally, so each is overridden here: make warns "overriding recipe" once per
 # target. Not a target-specific PQHSM_LIB, as test_tpm's: it would reach $(LIB), a prerequisite
-# of test_pkiops*, if make built the module for them. tools/fhsm-gui stays pure C (slice 6).
+# of test_pkiops*, if make built the module for them. tools/fhsm-gui: slice 6, below.
 # From slice 1 a ported tool is pqhsm-cli's binary instead (PQHSM_CLI_BINS, below).
 PQHSM_PKIOPS_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_pkiops.a
 PQHSM_CLI_BINS    := tools/fhsm-csr tools/fhsm-token tools/fhsm-crypt tools/fhsm-sign tools/fhsm-ca
@@ -148,6 +148,14 @@ $(PQHSM_CLI_BINS): $(PQHSM_SRC)
 $(PQHSM_PKIOPS_BINS): $(PQHSM_PKIOPS_LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $(subst -,_,$@).c \
 	    $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(subst $(PQHSM_LIB),$(PQHSM_PKIOPS_LIB),$(LDFLAGS)) -ldl
+
+# Slice 6: the GUI stays C (user: "Keep C GUI on Rust (Recommended)") and links pqhsm-pkiops,
+# so every operation it runs is Rust; PQHSM_REV_LOCK gives its database jobs DIV-074's lock.
+tools/fhsm-gui: $(PQHSM_PKIOPS_LIB)
+	@pkg-config --exists gtk4 || { echo "fhsm-gui needs GTK 4: sudo apt install libgtk-4-dev" >&2; exit 2; }
+	$(CC) $(CFLAGS) -DPQHSM_REV_LOCK $(GTK_CFLAGS) -Itools -o $@ tools/fhsm_gui.c \
+	    $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) \
+	    $(subst $(PQHSM_LIB),$(PQHSM_PKIOPS_LIB),$(LDFLAGS)) $(GTK_LIBS) -ldl
 
 # REVOCATION_OBJ cannot be reassigned here: the legacy prerequisite lists are already expanded
 # (review H5). So the object it names is emptied, and the code comes from the staticlib.

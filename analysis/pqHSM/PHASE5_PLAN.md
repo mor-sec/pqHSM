@@ -45,7 +45,7 @@ At slice 5's exit no `tools/*.c` but `fhsm_gui.c` is compiled into a shipped too
 
 ## 4. Decided later, at its slice
 
-- **The GUI (slice 6).** `pqhsm-gui` on gtk4-rs needs gtk4-rs and its tree fetched (network approval) and the GTK 4 development libraries in the build image. The alternative is to keep `fhsm_gui.c` and link it against `pqhsm-pkiops`, so every operation it runs is Rust and only GTK glue stays C. Asked at slice 6, after slices 1 to 5 show what the GUI's 48 calls have become. Either way its exit is the brief's manual UAT (`docs/FHSM_GUI.md`, `tests/gui_smoke.sh`).
+- **The GUI (slice 6).** `pqhsm-gui` on gtk4-rs needs gtk4-rs and its tree fetched (network approval) and the GTK 4 development libraries in the build image. The alternative is to keep `fhsm_gui.c` and link it against `pqhsm-pkiops`, so every operation it runs is Rust and only GTK glue stays C. Asked at slice 6, after slices 1 to 5 show what the GUI's 48 calls have become. **Decided 2026-11-11** (user: "Keep C GUI on Rust (Recommended)"): `fhsm_gui.c` stays, linked against `pqhsm-pkiops` by `hybrid.mk`; GTK 4, Xvfb and D-Bus fetched once into `netcache/gtkdebs` (user: "Fetch once (Recommended)"; checksums in `netcache/gtkdebs.sha256`) for harness step 12. Either way its exit is the brief's manual UAT (`docs/FHSM_GUI.md`, `tests/gui_smoke.sh`).
 - **RULE-021/022 `fhsm-ca` parts** (the Phase 3 table): run at slice 5 over the database, with the clock pinned.
 
 ## 5. Exit criteria (the brief's), and where each is shown

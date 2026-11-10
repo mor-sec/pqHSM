@@ -313,6 +313,7 @@ struct job {
     int pop_valid;
     size_t out_len;
     fhsm_rev_db_t db; int have_db;  /* the database as the job left it */
+    int recorded, reserved;  /* DIV-074 (PQHSM_REV_LOCK): revocation saved; CRL number saved */
     int already; char already_date[16];
     fhsm_ocsp_stats_t stats;
     int verdict;                    /* 1 matches, 0 does not, -1 unreadable CMS */
@@ -471,6 +472,42 @@ static int db_save_e(const char *path, const fhsm_rev_db_t *d, struct p11_err *e
     return rc == FHSM_REV_OK ? 0 : err_set(e, rc, "%s", err);
 }
 
+/* pqHSM DIV-074, in the hybrid build only (modernized/pqHSM/hybrid.mk sets
+ * PQHSM_REV_LOCK): the database locked as fhsm-ca locks it, through the Rust
+ * library's fhsm_rev_db_lock, and a CRL's number reserved before it is
+ * signed. Built by this tree's Makefile, the window behaves as it always has. */
+#ifdef PQHSM_REV_LOCK
+/* shortcut: declared here, not in a header, to leave include/ as C's; they must
+ * match pki/src/ffi/c_abi.rs by hand until the GUI leaves C. */
+typedef struct fhsm_rev_lock fhsm_rev_lock_t;
+int fhsm_rev_db_lock(const char *path, int exclusive, fhsm_rev_lock_t **lock,
+                     char *err, size_t err_cap);
+void fhsm_rev_db_unlock(fhsm_rev_lock_t *lock);
+enum { RESERVE_FIRST = 1 };
+static int db_lock_e(const char *path, int exclusive, fhsm_rev_lock_t **lk, struct p11_err *e) {
+    char err[FHSM_REV_ERR_MAX] = "";
+    int rc = fhsm_rev_db_lock(path, exclusive, lk, err, sizeof err);
+    /* the first line only: the tool's "Nothing was changed" is not true of a
+     * Revoke and publish whose revocation was saved before its CRL waited */
+    char *nl = strchr(err, '\n');
+    if (nl) *nl = '\0';
+    return rc == FHSM_REV_OK ? 0 : err_set(e, rc, "%s", err);
+}
+static void db_unlock(fhsm_rev_lock_t *lk) { fhsm_rev_db_unlock(lk); }
+#else
+typedef void fhsm_rev_lock_t;
+enum { RESERVE_FIRST = 0 };
+static int db_lock_e(const char *path, int exclusive, fhsm_rev_lock_t **lk, struct p11_err *e) {
+    (void)path; (void)exclusive; (void)e;
+    *lk = NULL;
+    return 0;
+}
+static void db_unlock(fhsm_rev_lock_t *lk) { (void)lk; }
+#endif
+
+/* fhsm-ca revoke's load, check, add and save, under run_revoke's lock. */
+static void revoke_db(struct job *j, const fhsm_rev_entry_t *en);
+
 /* fhsm-ca revoke, minus the command line. */
 static void run_revoke(struct job *j) {
     fhsm_rev_entry_t en;
@@ -495,18 +532,25 @@ static void run_revoke(struct job *j) {
         return;
     }
 
+    fhsm_rev_lock_t *lk = NULL;
+    if ((j->rc = db_lock_e(j->db_path, 1, &lk, &j->e)) != 0) return;
+    revoke_db(j, &en);
+    db_unlock(lk);
+}
+
+static void revoke_db(struct job *j, const fhsm_rev_entry_t *en) {
     if ((j->rc = db_load_e(j->db_path, &j->db, &j->e)) != 0) return;
     j->have_db = 1;
     /* Already there: say so and change nothing -- re-revoking would duplicate
      * the entry in every future list or move its date. */
-    const fhsm_rev_entry_t *had = fhsm_rev_db_find(&j->db, en.serial, en.serial_len);
+    const fhsm_rev_entry_t *had = fhsm_rev_db_find(&j->db, en->serial, en->serial_len);
     if (had) {
         j->already = 1;
         memcpy(j->already_date, had->date, sizeof j->already_date);
         return;
     }
     char err[FHSM_REV_ERR_MAX] = "";
-    int rc = fhsm_rev_db_add(&j->db, &en, err, sizeof err);
+    int rc = fhsm_rev_db_add(&j->db, en, err, sizeof err);
     if (rc != FHSM_REV_OK) { j->rc = err_set(&j->e, rc, "%s", err); return; }
     j->rc = db_save_e(j->db_path, &j->db, &j->e);
 }
@@ -518,13 +562,19 @@ static void run_revoke(struct job *j) {
 static void run_crl(struct job *j) {
     uint8_t *ca = NULL; size_t ca_len = 0;
     if ((j->rc = read_der(j->ca_path, &ca, &ca_len, &j->e)) != 0) return;
-    if ((j->rc = db_load_e(j->db_path, &j->db, &j->e)) != 0) { g_free(ca); return; }
+    fhsm_rev_lock_t *lk = NULL;
+    if ((j->rc = db_lock_e(j->db_path, 1, &lk, &j->e)) != 0) { g_free(ca); return; }
+    if ((j->rc = db_load_e(j->db_path, &j->db, &j->e)) != 0) { db_unlock(lk); g_free(ca); return; }
     j->have_db = 1;
     j->db.crl_number++;
+    /* DIV-074: the number saved, and the lock let go, before the signing. */
+    if (RESERVE_FIRST) j->reserved = !(j->rc = db_save_e(j->db_path, &j->db, &j->e));
+    db_unlock(lk);
+    if (j->rc) { g_free(ca); return; }
     uint8_t *der = NULL; size_t n = 0;
     j->rc = pkiops_crl(j->session, j->label, ca, ca_len, &j->db, j->days, &der, &n, &j->e);
     g_free(ca);
-    if (!j->rc) j->rc = db_save_e(j->db_path, &j->db, &j->e);
+    if (!j->rc && !RESERVE_FIRST) j->rc = db_save_e(j->db_path, &j->db, &j->e);
     if (!j->rc) j->rc = write_out(j->out_path, der, n, j->pem, "X509 CRL", &j->e);
     j->out_len = n;
     free(der);
@@ -698,7 +748,14 @@ static void run_ocsp(struct job *j) {
         }
     }
     if (!j->rc) j->rc = read_der(j->req_path, &req, &req_len, &j->e);
-    if (!j->rc) { j->rc = db_load_e(j->db_path, &j->db, &j->e); j->have_db = !j->rc; }
+    if (!j->rc) {
+        fhsm_rev_lock_t *lk = NULL;
+        if ((j->rc = db_lock_e(j->db_path, 0, &lk, &j->e)) == 0) {
+            j->rc = db_load_e(j->db_path, &j->db, &j->e);
+            j->have_db = !j->rc;
+            db_unlock(lk);
+        }
+    }
     if (!j->rc) {
         uint8_t *resp = NULL; size_t rn = 0;
         j->rc = pkiops_ocsp(j->session, j->label, req, req_len, ca, ca_len,
@@ -805,6 +862,7 @@ static void run_job(GTask *task, gpointer src, gpointer data, GCancellable *c) {
          * finished until a list says so. */
         run_revoke(j);
         if (j->rc || j->already) break;
+        j->recorded = 1;
         fhsm_rev_db_free(&j->db);
         j->have_db = 0;
         run_crl(j);
@@ -1266,7 +1324,12 @@ static void job_done(GObject *src, GAsyncResult *res, gpointer ud) {
         break;
     }
     case J_CRL: {
-        if (j->rc) { status_err("Signing the CRL", &j->e); break; }
+        if (j->rc) {
+            /* DIV-074: a reserved number is spent; the next CRL is the one after it */
+            if (j->reserved) show_db(j);
+            status_err("Signing the CRL", &j->e);
+            break;
+        }
         show_db(j);
         char msg[1200];
         snprintf(msg, sizeof msg, "CRL number %llu, %zu revoked, valid %d days, "
@@ -1338,6 +1401,12 @@ static void job_done(GObject *src, GAsyncResult *res, gpointer ud) {
         break;
     }
     case J_REVOKE_PUBLISH: {
+        if (j->rc && RESERVE_FIRST && j->recorded) {
+            if (j->reserved) show_db(j);
+            status_err("Recorded, but not published", &j->e);
+            refresh_crl_status();
+            break;
+        }
         if (j->rc) { status_err("Revoking and publishing", &j->e); refresh_crl_status(); break; }
         char msg[1200];
         if (j->already)
