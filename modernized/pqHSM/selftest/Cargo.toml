@@ -17,6 +17,7 @@ dev-bypass = ["pqhsm-crypto/dev-bypass"]
 
 [dependencies]
 libc.workspace = true
+pqhsm-core = { path = "../core" }
 openssl-sys.workspace = true
 pqhsm-crypto = { path = "../crypto" }
 zeroize.workspace = true

@@ -115,7 +115,7 @@ fn locate() -> Option<Vec<u8>> {
 }
 
 fn bypass() -> bool {
-    cfg!(feature = "dev-bypass") && std::env::var_os(ALLOW_UNSIGNED).is_some()
+    cfg!(feature = "dev-bypass") && pqhsm_core::env(ALLOW_UNSIGNED).is_some()
 }
 
 /// One run of the check, recorded in `s` as C's statics were.

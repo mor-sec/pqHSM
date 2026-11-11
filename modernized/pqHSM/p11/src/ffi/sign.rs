@@ -466,7 +466,7 @@ unsafe fn emit(
 
 /// `resolve_mech`: GMAC read as CMAC while `FHSM_OPENSC_GMAC_ALIAS` is set.
 fn resolve(m: c_ulong) -> c_ulong {
-    if m == GMAC && std::env::var_os("FHSM_OPENSC_GMAC_ALIAS").is_some() {
+    if m == GMAC && pqhsm_core::env("FHSM_OPENSC_GMAC_ALIAS").is_some() {
         CMAC
     } else {
         m

@@ -82,7 +82,7 @@ pub fn atol(t: &[u8]) -> c_long {
 /// terminal, asked for there without echo; otherwise `missing` (C's message, whole) on stderr
 /// and exit 1. Wiped when dropped, which the caller does once the login has used it.
 pub fn pin(prog: &str, var: &str, what: &str, missing: &str) -> Zeroizing<Vec<u8>> {
-    if let Some(v) = std::env::var_os(var).filter(|v| !v.is_empty()) {
+    if let Some(v) = pqhsm_core::env(var).filter(|v| !v.is_empty()) {
         return Zeroizing::new(v.into_vec());
     }
     if io::stdin().is_terminal()

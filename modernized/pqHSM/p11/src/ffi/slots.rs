@@ -308,7 +308,7 @@ pub unsafe extern "C" fn pqhsm_C_GetTokenInfo(slot: c_ulong, info: *mut c_void) 
             }
         }
     }
-    let model: &[u8] = if std::env::var_os("FHSM_INTEGRITY_ALLOW_UNSIGNED").is_some() {
+    let model: &[u8] = if pqhsm_core::env("FHSM_INTEGRITY_ALLOW_UNSIGNED").is_some() {
         b"FreeHSM-TESTMODE"
     } else {
         b"FreeHSM-C-v1"

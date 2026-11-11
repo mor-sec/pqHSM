@@ -288,6 +288,7 @@ name = "pqhsm-cli"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "pqhsm-core",
  "pqhsm-pki",
  "pqhsm-pkiops",
  "zeroize",
@@ -306,6 +307,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "pqhsm-core",
  "proptest",
  "zeroize",
 ]
@@ -358,6 +360,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "openssl-sys",
+ "pqhsm-core",
  "pqhsm-crypto",
  "zeroize",
 ]
@@ -381,6 +384,7 @@ dependencies = [
  "openssl",
  "openssl-sys",
  "pqhsm-audit",
+ "pqhsm-core",
  "pqhsm-token",
  "tempfile",
  "zeroize",

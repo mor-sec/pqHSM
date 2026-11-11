@@ -108,7 +108,7 @@ fn platform() -> Arc<Platform> {
     Arc::new(Platform {
         tpm: super::c_abi::shared_tpm(),
         sealing_required: tpm::sealing_required_value(
-            std::env::var_os("FHSM_TPM_SEALING").as_deref(),
+            pqhsm_core::env("FHSM_TPM_SEALING").as_deref(),
         ),
         audit: Box::new(CAudit),
     })

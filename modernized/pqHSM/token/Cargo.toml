@@ -19,6 +19,7 @@ tool = []
 
 [dependencies]
 libc.workspace = true
+pqhsm-core = { path = "../core" }
 # The crypto seam without `ffi` (PHASE2_PLAN.md §6.1): `cargo test` and migrate-zero-dek use
 # libcrypto directly; with `ffi` the token calls the C fhsm_crypto functions instead.
 openssl-sys.workspace = true

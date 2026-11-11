@@ -107,7 +107,7 @@ fn open_audit() -> Result<(), u32> {
         env_nonempty("FHSM_AUDIT_LOG").unwrap_or_else(|| [&dir[..], b"/audit.log"].concat()),
         512,
     );
-    let sw = std::env::var_os("FHSM_AUDIT");
+    let sw = pqhsm_core::env("FHSM_AUDIT");
     let sw = sw.as_deref().map(OsStr::as_bytes);
     let want_off = matches!(sw, Some(b"off" | b"0"));
     // SAFETY: a constant the C translation unit defines from FHSM_AUDIT_MANDATORY
@@ -273,7 +273,7 @@ pub unsafe extern "C" fn pqhsm_C_GetInfo(info: *mut c_void) -> c_ulong {
         return ARGUMENTS_BAD.into();
     }
     // The integrity bypass says so in the field every consumer prints.
-    let desc: &[u8] = if std::env::var_os("FHSM_INTEGRITY_ALLOW_UNSIGNED").is_some() {
+    let desc: &[u8] = if pqhsm_core::env("FHSM_INTEGRITY_ALLOW_UNSIGNED").is_some() {
         b"FreeHSM C - TEST MODE, NOT PROD"
     } else {
         b"FreeHSM C PKCS#11 module"

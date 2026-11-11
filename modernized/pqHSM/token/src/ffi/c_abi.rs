@@ -29,8 +29,8 @@ fn shared_tpm_ref() -> &'static Arc<Tpm> {
         #[cfg(feature = "tpm-test-hooks")]
         {
             let var = |k: &str, default: &str| {
-                std::env::var(k)
-                    .ok()
+                pqhsm_core::env(k)
+                    .and_then(|v| v.into_string().ok())
                     .filter(|v| !v.is_empty())
                     .unwrap_or_else(|| default.into())
             };
@@ -118,7 +118,7 @@ pub unsafe extern "C" fn fhsm_tpm_unseal(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fhsm_token_tpm_required() -> c_int {
-    tpm::sealing_required_value(std::env::var_os("FHSM_TPM_SEALING").as_deref()).into()
+    tpm::sealing_required_value(pqhsm_core::env("FHSM_TPM_SEALING").as_deref()).into()
 }
 
 /// # Safety

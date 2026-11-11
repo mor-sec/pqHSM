@@ -19,6 +19,7 @@ dev-bypass = []
 
 [dependencies]
 libc.workspace = true
+pqhsm-core = { path = "../core" }
 # Links libcrypto: the secure heap is OpenSSL's, one per process, as in C.
 openssl-sys.workspace = true
 zeroize.workspace = true

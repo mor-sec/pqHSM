@@ -292,7 +292,7 @@ pub fn bounded(mut s: Vec<u8>, cap: usize) -> CString {
 /// An environment variable's bytes when set and non-empty, as C's `env && *env`.
 pub fn env_nonempty(name: &str) -> Option<Vec<u8>> {
     use std::os::unix::ffi::OsStringExt;
-    std::env::var_os(name)
+    pqhsm_core::env(name)
         .map(|v| v.into_vec())
         .filter(|v| !v.is_empty())
 }

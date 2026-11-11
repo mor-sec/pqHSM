@@ -26,7 +26,7 @@ const HEAP_VALUE_CAP: usize = 31;
 
 /// `FHSM_CONF` when set and not empty (tests), else [`DEFAULT_PATH`].
 pub fn path() -> PathBuf {
-    match std::env::var_os("FHSM_CONF") {
+    match pqhsm_core::env("FHSM_CONF") {
         Some(p) if !p.is_empty() => p.into(),
         _ => OsString::from(DEFAULT_PATH).into(),
     }

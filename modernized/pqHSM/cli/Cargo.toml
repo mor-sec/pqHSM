@@ -9,6 +9,7 @@ publish = false
 
 [dependencies]
 libc.workspace = true
+pqhsm-core = { path = "../core" }
 zeroize.workspace = true
 pqhsm-pkiops = { path = "../pkiops" }
 pqhsm-pki = { path = "../pki" }

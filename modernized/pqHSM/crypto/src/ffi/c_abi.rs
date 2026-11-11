@@ -302,7 +302,7 @@ impl Platform for OsPlatform {
     }
 
     fn var(&self, name: &str) -> Option<String> {
-        std::env::var_os(name).map(|v| v.to_string_lossy().into_owned())
+        pqhsm_core::env(name).map(|v| v.to_string_lossy().into_owned())
     }
 
     fn eprint(&mut self, text: &str) {
