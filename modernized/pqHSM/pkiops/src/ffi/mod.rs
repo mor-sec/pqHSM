@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use crate::calllog::{ARGS_CAP, attr_types, mech_name, user_name};
 use crate::ops::{self, Slot};
-use crate::{Error, FUNCTIONS, Intent, Need, SlotId, Slots};
+use crate::{EXTRA, Error, FUNCTIONS, Intent, Need, SlotId, Slots};
 
 pub(crate) type CK_ULONG = c_ulong;
 type CK_RV = c_ulong;
@@ -64,7 +64,12 @@ struct FunctionList {
     pfn: [*mut c_void; 68],
 }
 
-const N: usize = FUNCTIONS.len();
+const N: usize = FUNCTIONS.len() + EXTRA.len();
+
+/// [`FUNCTIONS`] then [`EXTRA`], in `REAL`'s order.
+fn all() -> impl Iterator<Item = &'static (&'static str, usize, Need)> {
+    FUNCTIONS.iter().chain(EXTRA.iter())
+}
 
 /// The module's own functions, indexed as [`FUNCTIONS`]. Null when not loaded or not given.
 static REAL: [AtomicPtr<c_void>; N] = [const { AtomicPtr::new(null_mut()) }; N];
@@ -76,8 +81,7 @@ unsafe impl Send for Log {}
 static LOG: Mutex<Log> = Mutex::new(Log(None, null_mut()));
 
 fn index(name: &str) -> usize {
-    FUNCTIONS
-        .iter()
+    all()
         .position(|f| f.0 == name)
         .expect("a function of FUNCTIONS")
 }
@@ -341,6 +345,16 @@ pub(crate) unsafe extern "C" fn w_verify_init(s: S, m: M, k: S) -> CK_RV {
     });
     rv
 }
+pub(crate) unsafe extern "C" fn w_verify(s: S, d: B, dn: S, sig: B, sn: S) -> CK_RV {
+    let t = Instant::now();
+    let rv = unsafe {
+        real!("Verify" as unsafe extern "C" fn(S, B, S, B, S) -> CK_RV)(s, d, dn, sig, sn)
+    };
+    logcall(c"C_Verify", rv, t, || {
+        format!("session {s}, {dn} bytes, {sn}-byte signature")
+    });
+    rv
+}
 pub(crate) unsafe extern "C" fn w_verify_update(s: S, d: B, dn: S) -> CK_RV {
     let t = Instant::now();
     let rv = unsafe { real!("VerifyUpdate" as unsafe extern "C" fn(S, B, S) -> CK_RV)(s, d, dn) };
@@ -517,7 +531,7 @@ fn load_module(path: *const c_char) -> Result<[*mut c_void; N], Error> {
                 format!("C_GetFunctionList failed (0x{rv:x})\n"),
             ));
         }
-        for (i, &(name, slot, need)) in FUNCTIONS.iter().enumerate() {
+        for (i, &(name, slot, need)) in all().enumerate() {
             // SAFETY: the module's table, v2.40's 68 slots at least.
             fns[i] = unsafe { (*fl).pfn[slot] };
             if fns[i].is_null() && need != Need::Optional {
@@ -531,7 +545,7 @@ fn load_module(path: *const c_char) -> Result<[*mut c_void; N], Error> {
     }
     // No C_GetFunctionList: not conforming, but some modules and test doubles export the
     // functions directly. The mechanism queries are not looked for on this path.
-    for (i, &(name, _, need)) in FUNCTIONS.iter().enumerate() {
+    for (i, &(name, _, need)) in all().enumerate() {
         if need == Need::ListOnly {
             continue;
         }

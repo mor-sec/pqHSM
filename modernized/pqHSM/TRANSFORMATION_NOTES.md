@@ -1762,3 +1762,34 @@ No unsound `unsafe`, no descriptor leak, no byte-level divergence found on the s
 | (unchecked) | Whether the token's TPM unseal can spawn a child after bind, inheriting the non-CLOEXEC sockets (as C's) | Open: the login, the only unseal, happens before bind |
 
 **Evidence (slice 1).** Harness `run17` (the final tree; `run16` before the review fixes, whole aggregate rows excused): step 5c "pqhsm-service: build rc=0, dynamic exports 1 (C_GetFunctionList 1), --profile same as C (all-mechanisms), run rc=0, against C: 139 rows, 102 same, 37 differ, every difference pending", C's two runs the same. The rest of the summary is `run15`'s but run-to-run noise ("C reading Rust-written" 2 or 4 lines, the corpus record count) and pkiops' two new symbols (290). Cargo: workspace 960 passed, 0 failed; clippy `-D warnings` clean. Legacy retired: none yet; C's service ships until the slice 5 cutover.
+
+### Slice 2: signing (2026-11-11)
+
+POST `/sign` and `/verify` under the policy, the SIGHUP reload, the refusal budget's charge, its file and the identity_limited record, the decisions taken before the slice, and DIV-001's service sites.
+
+| C (`service/fhsm_service.c`) | Rust (`service/src/`) |
+|---|---|
+| `find_key`, `do_sign`, `do_verify` (1338-1515) | `serve.rs`: `permitted_key`, `sign`, `verify`, `record` |
+| `policy_permits`, `policy_reload_if_asked` (251-279, 2184) | `state.rs`: `Policy::permits`, `Policy::reload_if_asked` (called by `listen.rs` before each private request, under a mutex as C's) |
+| `budget_charge`, `budget_save_locked` (666-684, 755-795) and identity_limited (1665-1685) | `state.rs`: `Budget::charge`, `Budget::save`; `serve.rs`: `serve` |
+| `C_FindObjects*`, `C_SignInit`/`C_Sign`, `C_VerifyInit`/`C_Verify` | `pqhsm-pkiops`: `ops::find_first`, `ops::sign_once`, `ops::verify_once`; `C_Verify` loaded as an optional extra (`EXTRA`, after the tools' table) |
+
+**Decided before the slice** (`PHASE6_PLAN.md` §6): DIV-078 (full tables: the identity table reuses the oldest idle entry, the budget gives up the fewest refusals; re-asked after the review), DIV-079 (a failed reload is audited, `request_refused` with reason `policy_reload_failed`), DIV-081 (the strict build refuses to start; RULE-065 re-asked with corrected facts). DIV-001's Phase 6 part: the sign, verify, `/token` and `/health` answers are withheld (500 `audit_failed`) when their record fails, and a failed SERVICE_START record stops start-up; the other records stay best effort. Recorded under "DIV-001 in Phase 6".
+
+**Not yet:** POST `/ocsp` (slice 3: 503 until then).
+
+**Proof.** Harness step 5c: the transcript's sign, verify, budget, reload and stopped rows now match C byte for byte, and `service_pending.txt` is down to the six OCSP rows, the audit lines of the OCSP signatures (slice 3) and DIV-079's record, and row 130 (DIV-080). Step 5c also starts the strict builds (C's and the hybrid's) with a missing policy (DIV-081). Unit tests: the full identity table and the budget's announcement and eviction (DIV-078, each failing under the first rules), `C_Verify`'s slot against the module's table. The DIV-001 sites are checked by reading: no transcript row can fail the log at the service's own record and not at the module's first.
+
+### Slice 2 review (architecture-critic, 2026-11-11)
+
+Checked and found right: the pool released on every path, the reload's lock as C's, no lock nesting, the verify split's bounds, the 8192-byte buffer, DIV-001's four withheld answers and the start-up stop, DIV-079's record, DIV-081's place, every new `unsafe` block.
+
+| # | Finding | Done |
+|---|---|---|
+| H1 | DIV-078's 503 `identity_table_full` is reached only through idle entries (at most 127 in flight); 128 clients calling `/health` every 30 s shut out every new one. The test used an illegal 256 workers | Re-asked: the oldest idle entry, not mid-burst first, is reused and counted (C's comment); test with 127 workers and 128 present entries |
+| M1 | A module with no `C_Verify` (loaded optional) aborts the daemon at the first permitted `/verify` | `verify_once` answers 0x54, so 500 `verify_failed` |
+| M2 | `/verify`'s rv cut to 32 bits: 0x1_0000_0000 would read as valid | The whole `CK_ULONG` compared; the record's rv set explicitly |
+| L1 | "Least time owed" can evict a heavy offender whose delay ran out | Re-asked: the fewest refusals after decay, oldest first; the test ages one out |
+| L2 | An oversized signature was cut to 8192 and answered 200 | 0x150, so 500 `sign_failed` |
+| L3 | `EXTRA`'s slot 49 unchecked | Test against `p11/src/ffi/tables.rs` |
+| L4 | The budget lock held across the save's fsync (as C's); a trailing slash in the tokens directory counted once where C counts it twice | Lock kept as C; the length check counts as C's `"%s/budget"` does |

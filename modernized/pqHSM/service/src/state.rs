@@ -3,9 +3,10 @@
 //! and the refusal budget (RULE-068). Each table is the C's size and is searched in the C's
 //! order, so which slot is reused when one is full matches too.
 
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError, RwLock};
 
 use pqhsm_pkiops::ops::{self, Session, Slot};
@@ -20,7 +21,8 @@ const BUDGET_MAX: usize = 256;
 const BUDGET_FREE: u32 = 4;
 const BUDGET_DECAY_S: i64 = 600;
 const BUDGET_CAP_S: i64 = 60;
-use crate::http::{ACTOR_MAX, MAX_KEY_LABEL};
+use crate::audit;
+use crate::http::{ACTOR_MAX, MAX_KEY_LABEL, Verdict, refuse};
 
 /// Set by SIGHUP; the next request on the private side reloads (slice 2).
 pub static RELOAD: AtomicBool = AtomicBool::new(false);
@@ -66,6 +68,7 @@ fn fgets_pieces(data: &[u8], cap: usize) -> impl Iterator<Item = &[u8]> {
 pub struct Policy {
     pub path: PathBuf,
     rules: RwLock<Vec<(Vec<u8>, Vec<u8>)>>,
+    reload_mu: Mutex<()>,
 }
 
 impl Policy {
@@ -73,7 +76,44 @@ impl Policy {
         Policy {
             path,
             rules: RwLock::new(Vec::new()),
+            reload_mu: Mutex::new(()),
         }
+    }
+
+    /// `policy_permits`: a rule naming exactly this subject and this key label.
+    pub fn permits(&self, subject: &[u8], key: &[u8]) -> bool {
+        let rules = self.rules.read().unwrap_or_else(PoisonError::into_inner);
+        rules.iter().any(|(s, k)| s == subject && k == key)
+    }
+
+    /// `policy_reload_if_asked`, before each private request: the reload a SIGHUP asked for,
+    /// once, while other workers wait (C's mutex). A failed one leaves the rules in force and,
+    /// unlike C's, is audited as well as printed (DIV-079); a good one is only printed, as C.
+    pub fn reload_if_asked(&self) {
+        if !RELOAD.load(Ordering::Acquire) {
+            return;
+        }
+        let _one = lock(&self.reload_mu);
+        if !RELOAD.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        let Some(n) = self.load() else {
+            let p = self.path.display();
+            errln!("fhsm-service: reloading {p} failed; the previous policy is still in force.");
+            audit::event(
+                audit::EV_REQUEST_REFUSED,
+                -1,
+                -1,
+                audit::ROLE_NONE,
+                audit::RV_FUNCTION_FAILED,
+                &[
+                    ("reason", b"policy_reload_failed"),
+                    ("path", self.path.as_os_str().as_bytes()),
+                ],
+            );
+            return;
+        };
+        errln!("fhsm-service: policy reloaded, {n} rule(s)");
     }
 
     /// `policy_load`: every rule or none; the count, or `None` with the reason on stderr. A
@@ -263,10 +303,11 @@ impl Idents {
         }
     }
 
-    /// `ident_enter`: `false` is a refusal (429 too_many_in_flight). While another identity is
-    /// present each is held to workers - 1. A full table admits uncounted, as C's does
-    /// (RULE-068's fail-open, decided in slice 2).
-    pub fn enter(&self, subject: &[u8], note: &mut Note) -> bool {
+    /// `ident_enter`: admitted and counted, or the refusal. While another identity is present
+    /// each is held to workers - 1. A table full of present entries gives the newcomer the idle
+    /// one seen longest ago, one not mid-burst first (DIV-078: what C's comment says; its code
+    /// admitted uncounted, past the cap).
+    pub fn enter(&self, subject: &[u8], note: &mut Note) -> Result<(), Verdict> {
         let now = mono_now();
         let mut t = lock(&self.t);
         let (mut mine, mut spare, mut others, mut oldest) = (None, None, 0, 0);
@@ -290,6 +331,11 @@ impl Idents {
         } else {
             self.workers
         };
+        if mine.is_none() && spare.is_none() {
+            spare = (0..t.len())
+                .filter(|&i| t[i].in_flight == 0)
+                .min_by_key(|&i| (t[i].limited, t[i].last_seen));
+        }
         match (mine, spare) {
             (Some(i), _) => {
                 let e = &mut t[i];
@@ -301,7 +347,7 @@ impl Idents {
                         note.log_refusal = true;
                     }
                     e.last_refusal = now;
-                    return false;
+                    return Err(refuse(429, "too_many_in_flight"));
                 }
                 if e.limited && now - e.last_refusal >= BURST_COOLDOWN_S {
                     note.log_resume = true;
@@ -320,9 +366,10 @@ impl Idents {
                     ..Ident::default()
                 };
             }
-            (None, None) => {}
+            // Unreachable: at most 127 requests are in flight (--pool-max) and the table holds 128.
+            (None, None) => return Err(refuse(503, "identity_table_full")),
         }
-        true
+        Ok(())
     }
 
     /// `ident_leave`.
@@ -372,10 +419,12 @@ struct Owed {
     count: u32,
     last: i64,
     used: bool,
+    announced: bool,
 }
 
-/// Refusals per identity, persisted in `$FHSM_TOKENS_DIR/budget`. Charging is slice 2's.
+/// Refusals per identity, persisted in `$FHSM_TOKENS_DIR/budget`.
 pub struct Budget {
+    path: Option<PathBuf>,
     t: Mutex<Vec<Owed>>,
 }
 
@@ -401,14 +450,21 @@ fn decayed(b: &Owed, now: i64) -> u32 {
     u64::from(b.count).saturating_sub(forgiven) as u32
 }
 
+/// The seconds `b` still has to wait.
+fn owed(b: &Owed, now: i64) -> i64 {
+    (delay_s(decayed(b, now)) - (now - b.last).max(0)).max(0)
+}
+
 impl Budget {
     /// `budget_load`: the entries saved in `dir/budget`, their decay restarted now. A missing
     /// file, or no directory, is an empty budget.
     pub fn load(dir: Option<&[u8]>) -> Budget {
         let mut t = vec![Owed::default(); BUDGET_MAX];
-        let data = dir.filter(|d| !d.is_empty()).and_then(|d| {
-            std::fs::read(Path::new(std::ffi::OsStr::from_bytes(d)).join("budget")).ok()
-        });
+        // C's 512-byte buffer: a longer path is no budget at all, neither read nor saved.
+        let path = dir
+            .filter(|d| !d.is_empty() && d.len() + b"/budget".len() < 512)
+            .map(|d| Path::new(std::ffi::OsStr::from_bytes(d)).join("budget"));
+        let data = path.as_ref().and_then(|p| std::fs::read(p).ok());
         let now = mono_now();
         let mut slot = 0;
         for line in fgets_pieces(data.as_deref().unwrap_or_default(), 600) {
@@ -441,13 +497,84 @@ impl Budget {
                 count: c,
                 last: now,
                 used: true,
+                announced: false,
             };
             slot += 1;
         }
         if slot > 0 {
             errln!("fhsm-service: refusal budget restored for {slot} identity(ies)");
         }
-        Budget { t: Mutex::new(t) }
+        Budget {
+            path,
+            t: Mutex::new(t),
+        }
+    }
+
+    /// `budget_charge`: one authorisation refusal against `subject`. `Some((count, delay))`
+    /// the first time it passes the free four, when identity_limited is written; the file is
+    /// saved on every charge past them. A full table gives up the entry owing least (DIV-078:
+    /// C counted nothing there).
+    pub fn charge(&self, subject: &[u8]) -> Option<(u32, i64)> {
+        let now = mono_now();
+        let mut t = lock(&self.t);
+        let (mut slot, mut spare) = (None, None);
+        for (i, b) in t.iter().enumerate() {
+            if !b.used {
+                spare.get_or_insert(i);
+            } else if b.subject == subject {
+                slot = Some(i);
+                break;
+            } else if spare.is_none() && decayed(b, now) == 0 {
+                spare = Some(i); // decayed to nothing: reusable
+            }
+        }
+        let i = slot.unwrap_or_else(|| {
+            let i = spare.unwrap_or_else(|| {
+                (0..t.len())
+                    .min_by_key(|&i| (decayed(&t[i], now), t[i].last))
+                    .unwrap_or(0)
+            });
+            t[i] = Owed {
+                subject: subject.to_vec(),
+                used: true,
+                ..Owed::default()
+            };
+            i
+        });
+        let b = &mut t[i];
+        b.count = decayed(b, now) + 1;
+        b.last = now;
+        let over = b.count > BUDGET_FREE;
+        let first = over && !b.announced;
+        b.announced = over;
+        let count = b.count;
+        if over {
+            // here and not at shutdown: a crash is the case the file exists for
+            self.save(&t);
+        }
+        first.then(|| (count, delay_s(count)))
+    }
+
+    /// `budget_save_locked`: every entry through `budget.tmp`, synced, renamed over.
+    fn save(&self, t: &[Owed]) {
+        let Some(path) = &self.path else {
+            return;
+        };
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(".tmp");
+        let mut text = b"# fhsm-service refusal budget v1 -- count<TAB>subject\n".to_vec();
+        for b in t.iter().filter(|b| b.used && b.count > 0) {
+            text.extend_from_slice(format!("{}\t", b.count).as_bytes());
+            text.extend_from_slice(&b.subject);
+            text.push(b'\n');
+        }
+        let written = std::fs::File::create(&tmp).and_then(|mut f| {
+            f.write_all(&text)?;
+            f.sync_all()
+        });
+        if written.is_err() || std::fs::rename(&tmp, path).is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
     }
 
     /// `budget_retry_after`: the seconds this identity still owes, 0 for none.
@@ -456,11 +583,7 @@ impl Budget {
         let t = lock(&self.t);
         t.iter()
             .find(|b| b.used && b.subject == subject)
-            .map_or(0, |b| {
-                let need = delay_s(decayed(b, now));
-                let since = (now - b.last).max(0);
-                (need - since).max(0)
-            })
+            .map_or(0, |b| owed(b, now))
     }
 }
 
@@ -494,11 +617,54 @@ mod tests {
     fn a_second_identity_holds_each_to_workers_minus_one() {
         let ids = Idents::new(2);
         let mut n = Note::default();
-        assert!(ids.enter(b"a", &mut n) && ids.enter(b"a", &mut n));
-        assert!(!ids.enter(b"a", &mut n) && n.log_refusal);
+        assert!(ids.enter(b"a", &mut n).is_ok() && ids.enter(b"a", &mut n).is_ok());
+        assert_eq!(
+            ids.enter(b"a", &mut n),
+            Err(refuse(429, "too_many_in_flight"))
+        );
+        assert!(n.log_refusal);
         ids.leave(b"a", true);
-        assert!(ids.enter(b"b", &mut n));
+        assert!(ids.enter(b"b", &mut n).is_ok());
         // a is at 1 in flight and b is present: the cap is now 1
-        assert!(!ids.enter(b"a", &mut n));
+        assert!(ids.enter(b"a", &mut n).is_err());
+    }
+
+    #[test]
+    fn a_table_of_present_identities_gives_up_the_oldest_idle_div078() {
+        let ids = Idents::new(POOL_MAX_LIMIT as usize);
+        let mut n = Note::default();
+        for i in 0..IDENT_MAX {
+            let s = format!("s{i}");
+            assert!(ids.enter(s.as_bytes(), &mut n).is_ok());
+            ids.leave(s.as_bytes(), true); // served: present for 30 s, so not reusable
+        }
+        lock(&ids.t)[0].limited = true; // mid-burst: given up last
+        assert!(ids.enter(b"new", &mut n).is_ok());
+        let t = lock(&ids.t);
+        let e = t.iter().find(|e| e.subject == b"new").expect("counted");
+        assert_eq!(e.in_flight, 1);
+        assert!(t.iter().any(|e| e.subject == b"s0") && !t.iter().any(|e| e.subject == b"s1"));
+    }
+
+    #[test]
+    fn the_budget_announces_past_four_and_a_full_table_gives_up_the_fewest_refusals_div078() {
+        let b = Budget::load(None);
+        for k in 1..=4 {
+            assert_eq!(b.charge(b"a"), None, "charge {k}");
+        }
+        assert_eq!(b.charge(b"a"), Some((5, 1)));
+        assert_eq!(b.charge(b"a"), None); // announced once per run past four
+        assert!(b.retry_after(b"a") > 0);
+        for i in 1..BUDGET_MAX {
+            b.charge(format!("s{i}").as_bytes());
+        }
+        // a has waited its delay out, so owes nothing like the rest; still never given up
+        lock(&b.t)[0].last -= 61;
+        assert_eq!(b.retry_after(b"a"), 0);
+        // full, nothing decayed: the newcomer takes the entry with fewest refusals, oldest first
+        assert_eq!(b.charge(b"new"), None);
+        let t = lock(&b.t);
+        assert!(t.iter().any(|e| e.subject == b"a" && e.count == 6));
+        assert!(t.iter().any(|e| e.subject == b"new") && !t.iter().any(|e| e.subject == b"s1"));
     }
 }

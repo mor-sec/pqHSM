@@ -1,42 +1,14 @@
-# service_rows.py: the transcript rows pqhsm-service is not yet expected to match. Slice 2
-# (sign, verify, the budget's charge, the SIGHUP reload) and slice 3 (OCSP) take theirs off.
+# service_rows.py: the transcript rows pqhsm-service is not yet expected to match. Slice 3
+# (OCSP) takes its rows off; the permanent ones are recorded divergences.
 # NAME<TAB>REGEX: only that row's lines matching REGEX are owed; the rest must match C now.
-66. sign, header names in lower case
-74. sign, no key
-75. sign, key twice
-77. sign, empty body
-78. sign, key not in the policy
-79. sign, key in the policy, absent
-80. sign
-81. verify, no key
-82. verify, no signature length
-83. verify, signature length twice
-84. verify, key twice
-90. verify, empty body
-91. verify, signature length covers the body
-92. verify the signature
-93. verify, other message
-94. verify, key not in the policy
-95. verify, a key not the signer's
-96. budget: refusal 1
-97. budget: refusal 2
-98. budget: refusal 3
-99. budget: refusal 4
-100. budget: refusal 5
-104. after SIGHUP with a new rule
-105. after SIGHUP with a malformed policy
 111. public: ocsp, empty body
 112. public: ocsp, not DER
 113. public: ocsp, revoked serial
 114. public: ocsp, good serial
-service main stopped, exit 0	policy reloaded|has no tab|reloading policy failed|refusal budget restored
 122. delegated: ocsp, revoked serial
 123. delegated: ocsp, good serial
-service deleg stopped, exit 0	refusal budget restored
-service tight stopped, exit 0	refusal budget restored
-service bare stopped, exit 0	refusal budget restored
-service peer stopped, exit 0	refusal budget restored
-audit, after setup	"event":"(sign|verify|identity_limited)"|"reason":"(?!request_timeout|key_length|bad_signature_length|wrong_method)[a-z_]+","route":"/(sign|verify)"
-budget file	CN=(web01|web02|prober)$
+# The OCSP responses' signatures (module sign records with no actor) are slice 3's; the failed
+# reload's record is DIV-079's, permanent.
+audit, after setup	"event":"sign","slot":-1,"session":[0-9]+,"role":"USER","actor":"",|"reason":"policy_reload_failed"
 # Permanent, by decision: C's own behaviour, which the Rust service does not keep.
 130. start: proxy uid 2^32

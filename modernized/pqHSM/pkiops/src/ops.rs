@@ -13,7 +13,7 @@ use crate::Error;
 use crate::ffi::{
     CK_ATTRIBUTE, CK_MECHANISM, CK_ULONG, w_close_session, w_find_objects, w_find_objects_final,
     w_find_objects_init, w_generate_key_pair, w_get_attribute_value, w_get_token_info, w_init_pin,
-    w_init_token, w_login, w_open_session, w_sign, w_sign_init,
+    w_init_token, w_login, w_open_session, w_sign, w_sign_init, w_verify, w_verify_init,
 };
 use crate::keys::{self, Alg};
 
@@ -50,8 +50,8 @@ handle!(
 
 pub(crate) const CKF_RW: CK_ULONG = 6;
 pub(crate) const CKU_USER: CK_ULONG = 1;
-pub(crate) const CKO_PUBLIC_KEY: CK_ULONG = 2;
-pub(crate) const CKO_PRIVATE_KEY: CK_ULONG = 3;
+pub const CKO_PUBLIC_KEY: CK_ULONG = 2;
+pub const CKO_PRIVATE_KEY: CK_ULONG = 3;
 pub(crate) const CKO_SECRET_KEY: CK_ULONG = 4;
 pub(crate) const CKA_CLASS: CK_ULONG = 0x000;
 pub(crate) const CKA_TOKEN: CK_ULONG = 0x001;
@@ -271,6 +271,93 @@ pub fn session_close(s: Session) {
 }
 
 // --- objects ------------------------------------------------------------------------------------
+
+/// The first object of class `cls` labelled `label`, as `pqhsm-service` looks a key up
+/// (`service/fhsm_service.c` `find_key`): `None` if there is none or the search fails.
+pub fn find_first(s: Session, cls: CK_ULONG, label: &[u8]) -> Option<ObjHandle> {
+    let c = cls;
+    let mut t = [at_ul(CKA_CLASS, &c), at(CKA_LABEL, label)];
+    // SAFETY: a template of 2 whose values outlive the search.
+    if unsafe { w_find_objects_init(s.0, t.as_mut_ptr(), 2) } != 0 {
+        return None;
+    }
+    let (mut h, mut n): (Handle, CK_ULONG) = (0, 0);
+    // SAFETY: room for one handle, and n writable. Its rv is C's to ignore: n stays 0.
+    unsafe {
+        w_find_objects(s.0, &mut h, 1, &mut n);
+        w_find_objects_final(s.0);
+    }
+    (n > 0).then_some(ObjHandle(h))
+}
+
+/// C_SignInit then one C_Sign into `cap` bytes, no size query; `Err` is the first failing rv.
+pub fn sign_once(
+    s: Session,
+    mech: CK_ULONG,
+    key: ObjHandle,
+    data: &[u8],
+    cap: usize,
+) -> Result<Vec<u8>, CK_ULONG> {
+    let mut m = CK_MECHANISM {
+        mechanism: mech,
+        p_parameter: null_mut(),
+        parameter_len: 0,
+    };
+    // SAFETY: a mechanism with no parameter.
+    let rv = unsafe { w_sign_init(s.0, &mut m, key.0) };
+    if rv != 0 {
+        return Err(rv);
+    }
+    let mut sig = vec![0u8; cap];
+    let mut n = cap as CK_ULONG;
+    let dn = data.len() as CK_ULONG;
+    // SAFETY: data readable, sig writable for n bytes; the module does not write data.
+    let rv = unsafe { w_sign(s.0, data.as_ptr().cast_mut(), dn, sig.as_mut_ptr(), &mut n) };
+    if rv != 0 {
+        return Err(rv);
+    }
+    if n as usize > cap {
+        return Err(0x150); // CKR_BUFFER_TOO_SMALL: a module that wrote past what it was given
+    }
+    sig.truncate(n as usize);
+    Ok(sig)
+}
+
+/// C_VerifyInit then one C_Verify; the first failing rv, or 0 (CKR_SIGNATURE_INVALID is a
+/// result the caller tells apart).
+pub fn verify_once(
+    s: Session,
+    mech: CK_ULONG,
+    key: ObjHandle,
+    data: &[u8],
+    sig: &[u8],
+) -> CK_ULONG {
+    // C_Verify is optional to the loader (the tools never call it): absent is unsupported.
+    if !crate::ffi::has("Verify") {
+        return 0x54; // CKR_FUNCTION_NOT_SUPPORTED
+    }
+    let mut m = CK_MECHANISM {
+        mechanism: mech,
+        p_parameter: null_mut(),
+        parameter_len: 0,
+    };
+    // SAFETY: a mechanism with no parameter.
+    let rv = unsafe { w_verify_init(s.0, &mut m, key.0) };
+    if rv != 0 {
+        return rv;
+    }
+    let (dn, sn) = (data.len() as CK_ULONG, sig.len() as CK_ULONG);
+    // SAFETY: both inputs readable; the module writes neither.
+    unsafe {
+        w_verify(
+            s.0,
+            data.as_ptr().cast_mut(),
+            dn,
+            sig.as_ptr().cast_mut(),
+            sn,
+        )
+    }
+}
 
 /// `p11_find_one_e`: exactly one object of class `cls` labelled `label`; two is an ambiguity
 /// the operator resolves, not one this picks from.

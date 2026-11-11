@@ -357,6 +357,15 @@ fn run(args: &[&[u8]]) -> c_int {
     if let Err(rc) = check_ocsp(&a, &ca_cert) {
         return rc;
     }
+    // SAFETY: a constant the link provides.
+    if unsafe { fhsm_build_fips_strict } != 0 {
+        // The composite mechanism is the only one the service signs with, and this build does
+        // not approve it: C started and refused every signature (DIV-081).
+        errw!(
+            "fhsm-service: this build is nist-approved-only, and the composite\n  ML-DSA-65+Ed25519 signature the service signs and verifies with\n  is not approved in it. Refusing to start a signing service that\n  could never sign.\n"
+        );
+        return 2;
+    }
     let policy = Policy::new(path(policy_file));
     let Some(n) = policy.load() else {
         errw!(
@@ -488,8 +497,13 @@ fn run(args: &[&[u8]]) -> c_int {
         };
     }
 
+    let unlink = |p: &[u8]| {
+        let c = std::ffi::CString::new(p).unwrap_or_default();
+        // SAFETY: a C string.
+        unsafe { libc::unlink(c.as_ptr()) };
+    };
     let ocsp_label = a.ocsp_label.map(<[u8]>::to_vec);
-    audit::event(
+    let started = audit::event(
         audit::EV_SERVICE_START,
         -1,
         -1,
@@ -505,6 +519,20 @@ fn run(args: &[&[u8]]) -> c_int {
             ("ocsp", ocsp_label.as_deref().unwrap_or(b"-")),
         ],
     );
+    if !started {
+        // DIV-001: a service whose start the log cannot hold would serve unrecorded.
+        errln!("fhsm-service: cannot write the audit log; not starting.");
+        for (fd, p) in [(lfd, Some(sock)), (pfd, a.pub_path)] {
+            if let (true, Some(p)) = (fd >= 0, p) {
+                // SAFETY: a listening descriptor nobody polls yet.
+                unsafe { libc::close(fd) };
+                unlink(p);
+            }
+        }
+        pqhsm_pkiops::ops::session_close(logged_in);
+        pqhsm_pkiops::close();
+        return 1;
+    }
     errln!(
         "fhsm-service: listening on {}, uid {} only, {} workers, pool ceiling {}",
         shown(sock),
@@ -566,11 +594,6 @@ fn run(args: &[&[u8]]) -> c_int {
     for t in pub_threads {
         let _ = t.join();
     }
-    let unlink = |p: &[u8]| {
-        let c = std::ffi::CString::new(p).unwrap_or_default();
-        // SAFETY: a C string.
-        unsafe { libc::unlink(c.as_ptr()) };
-    };
     // SAFETY: the listening descriptors, no longer polled.
     unsafe { libc::close(lfd) };
     if let (true, Some(p)) = (pfd >= 0, a.pub_path) {

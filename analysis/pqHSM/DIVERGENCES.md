@@ -846,16 +846,16 @@ The suspected-defect rules gated at Phase 5, decided before the phase starts (20
 
 ### DIV-078 · RULE-068 The identity and budget tables fail closed when full
 
-- **Status:** DECIDED (2026-11-11; user: "Fail closed (Recommended)").
-- **Legacy:** with no free slot in the in-flight table (128 entries) a request is admitted uncounted, past the fairness cap (`service/fhsm_service.c:537`); with no free slot in the budget table (256 entries) a refusal is not counted, past the refusal delay (`:773`). A flood of distinct subjects disables both controls.
-- **Target:** a full identity table refuses the request with 503 (audited, `identity_table_full`). A full budget table evicts the entry with the least refusal time owed and counts the new identity there.
-- **Expected harness diff:** none (no transcript row fills a table); unit tests for both.
+- **Status:** DECIDED (2026-11-11). First answered "Fail closed (Recommended)" on a question that said a flood of concurrent subjects fills the identity table; the slice 2 review (H1, L1) showed that wrong, and both halves were re-asked: identity table "Reuse oldest idle (Recommended)", budget table "Fewest refusals (Recommended)". These answers replace the first.
+- **Legacy:** the in-flight table (128 entries) cannot fill with requests in flight (at most 127: `--pool-max` covers every worker), only with idle entries served in the last 30 s, which are not reusable; then a new subject is admitted uncounted, past the fairness cap (`service/fhsm_service.c:537`), though C's own comment (`:420-424`) says the oldest is taken. With no free slot in the budget table (256 entries) a refusal is not counted, past the refusal delay (`:773`). Enough distinct subjects active disable both controls.
+- **Target:** a full identity table gives the newcomer the idle entry seen longest ago, one not mid-burst first, and counts it (C's comment). A full budget table gives up the entry with the fewest refusals after decay, ties to the one refused longest ago, and counts the newcomer there. (Built first as a 503 `identity_table_full` and as "least time owed"; the review showed the 503 shut out every new client while 128 others called `/health` every 30 s, and "least time owed" could evict a heavy offender whose delay had run out.)
+- **Expected harness diff:** none (no transcript row fills a table); unit tests for both, each failing under the first rules.
 
 ### DIV-079 · RULE-098 A failed policy reload is audited
 
 - **Status:** DECIDED (2026-11-11; user: "Audit it, keep old policy (Recommended)").
 - **Legacy:** a reload that fails (file missing, a malformed or too-long line, more than 512 rules) prints "reloading PATH failed; the previous policy is still in force." to stderr only (`service/fhsm_service.c:251-266`); the audit log does not record it.
-- **Target:** the same stderr line and one audit record (FAIL, reason `policy_reload_failed`, the path); the previous rules stay in force, as in C. A successful reload is not audited, as in C.
+- **Target:** the same stderr line and one audit record (`request_refused`, FAIL, reason `policy_reload_failed`, the path: an existing event, so the log format is unchanged); the previous rules stay in force, as in C. A successful reload is not audited, as in C. Built in slice 2.
 - **Expected harness diff:** the row "after SIGHUP with a malformed policy" gains that record in the audit rows.
 
 ### DIV-080 · RULE-067 `--proxy-uid` must be a real uid
@@ -870,4 +870,8 @@ The suspected-defect rules gated at Phase 5, decided before the phase starts (20
 - **Status:** DECIDED (2026-11-11; user: "Refuse to start (Recommended)"). Asked first as "Preserve C (500 per request)" on a question that overstated C ("always 500"); re-asked with the facts below, and this answer replaces the first.
 - **Legacy:** the service signs and verifies only with the composite mechanism (`CKM_COMPOSITE_`, `service/fhsm_service.c:1352-1515`), which the NIST-approved-only build refuses (RULE-065). That build's service starts and `/health` answers ok, but no signature is ever made: a permitted key that exists gets 500 (`sign_failed`, `verify_failed`, audited); an absent or unpermitted one gets 403 `not_authorised`, charged to the caller's refusal budget. Composite keys cannot be generated in that build, so a key is found only if another build made it or another key type carries the label.
 - **Target:** in the strict build the service refuses to start, after its arguments are checked and before the policy, the token or a socket: a message saying its signing mechanism is not approved in this build, and exit 2. `--profile` still answers (it returns before).
-- **Expected harness diff:** none in the all-mechanisms transcript; slice 2 adds the strict build's start-up row (C starts, Rust refuses).
+- **Expected harness diff:** none in the all-mechanisms transcript. Built in slice 2, with the strict build's start-up row in harness step 5c (both with a missing policy: C passes the point where Rust refuses and stops at the policy, exit 1; Rust refuses, exit 2).
+
+### DIV-001 in Phase 6
+
+**Built 2026-11-11 (slice 2):** `pqhsm-service`'s `audit::event` returns whether the record was written. Where an answer could be held back, it is: a `/sign` signature, a `/verify` verdict, the `/token` description and the `/health` "ok" are not sent when their record (EV_SIGN, EV_VERIFY, REQUEST_ACCEPTED) fails; the request is refused 500 `audit_failed` instead (its refusal record best effort). A service whose SERVICE_START record fails does not start: "cannot write the audit log; not starting.", the sockets closed and removed, exit 1. The refusal, identity, reload and stop records still discard the result, as Phase 4's `C_Finalize` does: the request is refused or the service is stopping either way. **Expected harness diff:** none. No transcript row makes the log fail at the service's own record: the module's records come first (its C_Initialize and C_Sign records fail closed since Phase 4), so reaching these sites needs a limit exact to the byte; they are checked by reading.

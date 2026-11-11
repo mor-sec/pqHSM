@@ -146,6 +146,7 @@ impl Listener {
             if self.public {
                 crate::serve::serve_public(fd);
             } else {
+                crate::svc().policy.reload_if_asked();
                 crate::serve::serve(fd);
             }
             close(fd);

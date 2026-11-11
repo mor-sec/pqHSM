@@ -152,6 +152,10 @@ pub const FUNCTIONS: [(&str, usize, Need); 31] = [
     ("Decrypt", 34, Need::Optional),
 ];
 
+/// Functions the tools' table (`tools/p11_util.h`) does not name, which `pqhsm-service` calls:
+/// loaded after [`FUNCTIONS`], each optional.
+pub const EXTRA: [(&str, usize, Need); 1] = [("Verify", 49, Need::Optional)];
+
 /// Which slot an operation wants when the caller names none (`enum pkiops_slot_intent`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
@@ -417,6 +421,25 @@ mod tests {
                     [b"--slot ", bad, b" is not a slot identifier.\n"].concat()
                 )
             );
+        }
+    }
+
+    /// EXTRA's slot numbers against the module's v2.40 table (`p11/src/ffi/tables.rs`): a wrong
+    /// one would call another function through C_Verify's type.
+    #[test]
+    fn extra_slots_match_the_modules_table() {
+        let t = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../p11/src/ffi/tables.rs"
+        ))
+        .expect("p11/src/ffi/tables.rs");
+        let words: Vec<&str> = t.split_whitespace().collect();
+        for (name, slot, _) in EXTRA {
+            let at = words
+                .iter()
+                .position(|w| *w == format!("C_{name}"))
+                .expect(name);
+            assert_eq!(words[at - 1], slot.to_string(), "{name}");
         }
     }
 

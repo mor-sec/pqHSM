@@ -18,19 +18,24 @@ unsafe extern "C" {
 }
 
 // `include/fhsm_audit.h`'s codes.
+pub const EV_SIGN: c_int = 42;
+pub const EV_VERIFY: c_int = 43;
 pub const EV_SERVICE_START: c_int = 80;
 pub const EV_SERVICE_STOP: c_int = 81;
 pub const EV_REQUEST_ACCEPTED: c_int = 82;
 pub const EV_REQUEST_REFUSED: c_int = 83;
 pub const EV_IDENTITY_RESUMED: c_int = 84;
+pub const EV_IDENTITY_LIMITED: c_int = 85;
 pub const ROLE_NONE: c_int = 0;
 pub const ROLE_USER: c_int = 2;
 pub const RV_OK: u32 = 0;
 pub const RV_FUNCTION_FAILED: u32 = 6;
+pub const RV_SIGNATURE_INVALID: u32 = 0xC0;
 
-/// `fhsm_audit_event`: the result is discarded, as each of C's call sites does (DIV-001's
-/// Phase 6 part is slice 2's). Keys and values hold no NUL: every one is a constant, a
-/// number, or a header value the reader checked byte by byte.
+/// `fhsm_audit_event`: whether the record was written. C discarded it at all 15 sites; here
+/// an answer that could not be recorded is not given (DIV-001), and a refusal's or a stop's
+/// record is still best effort (nothing to hold back). Keys and values hold no NUL: every one
+/// is a constant, a number, a path, or a header value the reader checked byte by byte.
 pub fn event(
     ev: c_int,
     slot: c_int,
@@ -38,7 +43,7 @@ pub fn event(
     role: c_int,
     rv: u32,
     params: &[(&str, &[u8])],
-) {
+) -> bool {
     let owned: Vec<(CString, CString)> = params
         .iter()
         .map(|(k, v)| {
@@ -53,7 +58,7 @@ pub fn event(
         .flat_map(|(k, v)| [k.as_ptr(), v.as_ptr()])
         .collect();
     // SAFETY: 2 * npairs valid C strings, alive for the call.
-    unsafe { pqhsm_audit_event_v(ev, slot, session, role, rv, kv.as_ptr(), owned.len()) };
+    unsafe { pqhsm_audit_event_v(ev, slot, session, role, rv, kv.as_ptr(), owned.len()) == RV_OK }
 }
 
 /// `fhsm_audit_set_actor` for this thread; `None` clears it.

@@ -514,6 +514,14 @@ printf '; pqhsm-service: %s, dynamic exports %s (C_GetFunctionList %s), --profil
   "$([ "$($AMH/service/pqhsm-service --profile 2>&1)" = "$($AMC/service/fhsm-service --profile 2>&1)" ] && echo "same as C ($($AMC/service/fhsm-service --profile))" || echo DIFF)" \
   "$(tail -1 /out/service_h.txt)" \
   "$(python3 -I /work/modernized/pqHSM/tests-support/hybrid/service_rows.py /out/service_c1.txt /out/service_h.txt /work/modernized/pqHSM/tests-support/hybrid/service_pending.txt)" >> /out/service.txt
+# Slice 2, DIV-081: the strict (default-profile) builds, started with a missing policy. C goes past
+# the point where Rust refuses and stops at the policy (exit 1); Rust refuses as strict (exit 2).
+{ make -s -C /tmp/cb service/fhsm-service && $M service/pqhsm-service; echo "build rc=$?"; } > /out/service_strict_build.log 2>&1
+for b in /tmp/cb/service/fhsm-service /work/service/pqhsm-service; do
+  d=$(mktemp -d); (cd $d && echo "profile $($b --profile 2>&1)"; timeout 20 $b --socket x.sock --policy missing 2>&1; echo "exit $?")
+done > /out/service_strict.txt 2>&1
+printf '; strict builds (%s): %s' "$(tail -1 /out/service_strict_build.log)" \
+  "$(grep -E '^(profile|exit)|nist-approved-only, and|cannot load the policy' /out/service_strict.txt | tr '\n' ' ')" >> /out/service.txt
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
 # Slice 4 on: the Rust fhsm-sign on either module, DIV-075 (cms-verify names its signer, --signer).
