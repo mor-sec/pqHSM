@@ -157,6 +157,18 @@ tools/fhsm-gui: $(PQHSM_PKIOPS_LIB)
 	    $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) \
 	    $(subst $(PQHSM_LIB),$(PQHSM_PKIOPS_LIB),$(LDFLAGS)) $(GTK_LIBS) -ldl
 
+# Phase 6 slice 0: pqhsm-service, built beside the C service (which ships until slice 3). It
+# links the module statically as C's does: its staticlib holds the module's crates and the
+# service, and $(LIB_OBJ) the C shims. pqhsm-pkiops reaches the module with dlopen(NULL), so
+# the binary exports C_GetFunctionList (it exports nothing else).
+PQHSM_SERVICE_LIB := $(PQHSM_DIR)/target/release/libpqhsm_service.a
+$(PQHSM_SERVICE_LIB): $(PQHSM_SRC)
+	cargo build --release --locked -p pqhsm-service --features dev-bypass --manifest-path $(PQHSM_DIR)/Cargo.toml
+
+service/pqhsm-service: $(PQHSM_DIR)/service/shim/main.c $(LIB_OBJ) $(REVOCATION_OBJ) $(PQHSM_SERVICE_LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(REVOCATION_OBJ) \
+	    $(subst $(PQHSM_LIB),$(PQHSM_SERVICE_LIB),$(LDFLAGS)) -Wl,--export-dynamic-symbol=C_GetFunctionList
+
 # REVOCATION_OBJ cannot be reassigned here: the legacy prerequisite lists are already expanded
 # (review H5). So the object it names is emptied, and the code comes from the staticlib.
 $(OBJDIR)/src/fhsm_revocation.o: $(PQHSM_EMPTY) $(PQHSM_LIB)

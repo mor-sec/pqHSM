@@ -496,6 +496,23 @@ printf 'pki tools characterise: %s, C run 1 %s, %s lines, run 2 vs run 1 %s' "$(
 # RULE-021/022 (PHASE5_PLAN.md §4): fhsm-ca's dates and CRL number, the C tools and the Rust.
 (cd $AMC && sh /work/modernized/pqHSM/tests-support/hybrid/rule021_dates.sh) > /out/rule021_c.txt 2>&1
 (cd $AMH && sh /work/modernized/pqHSM/tests-support/hybrid/rule021_dates.sh) > /out/rule021_h.txt 2>&1
+# 5c. Phase 6 slice 0 (PHASE6_PLAN.md §2): the service's golden transcript, twice on the
+#     all-mechanisms C tree to prove its masking (service_transcripts.sh). The two runs must match.
+{ (cd $AMC && make PROFILE=all-mechanisms service/fhsm-service); echo "build rc=$?"; } > /out/service_build.log 2>&1
+for n in 1 2; do (cd $AMC && sh /work/modernized/pqHSM/tests-support/hybrid/service_transcripts.sh > /out/service_c$n.txt 2>&1; echo "rc=$?" >> /out/service_c$n.txt); done
+printf 'service transcript: %s, C run 1 %s, %s rows, %s lines, run 2 vs run 1 %s' "$(tail -1 /out/service_build.log)" \
+  "$(tail -1 /out/service_c1.txt)" "$(grep -c '^== [0-9]' /out/service_c1.txt)" "$(wc -l < /out/service_c1.txt)" \
+  "$(cmp -s /out/service_c1.txt /out/service_c2.txt && echo same || echo "DIFF ($(diff /out/service_c1.txt /out/service_c2.txt | grep -c '^[<>]') lines)")" > /out/service.txt
+# The scaffold (slice 0): pqhsm-service links the module statically and loads it through its
+# own C_GetFunctionList (dlopen(NULL)), the binary's one dynamic export; --profile as C's.
+{ (cd $AMH && $M PROFILE=all-mechanisms service/pqhsm-service); echo "build rc=$?"; } > /out/service_h_build.log 2>&1
+(cd $AMH && export FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 &&
+  FHSM_SO_PIN=sopin1234 FHSM_PIN=userpin1234 tools/fhsm-token init --label s > /dev/null 2>&1;
+  service/pqhsm-service > /tmp/svc_load.txt 2>&1; rc=$?; tail -1 /tmp/svc_load.txt; echo "rc=$rc") > /out/service_h_load.txt 2>&1
+printf '; pqhsm-service: %s, dynamic exports %s (C_GetFunctionList %s), --profile %s, load: %s' "$(tail -1 /out/service_h_build.log)" \
+  "$(nm -D $AMH/service/pqhsm-service 2>/dev/null | grep -c ' T ')" "$(nm -D $AMH/service/pqhsm-service 2>/dev/null | grep -c ' T C_GetFunctionList$')" \
+  "$([ "$($AMH/service/pqhsm-service --profile 2>&1)" = "$($AMC/service/fhsm-service --profile 2>&1)" ] && echo "same as C ($($AMC/service/fhsm-service --profile))" || echo DIFF)" \
+  "$(tr '\n' ' ' < /out/service_h_load.txt | sed 's/ $//')" >> /out/service.txt
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
 # Slice 4 on: the Rust fhsm-sign on either module, DIV-075 (cms-verify names its signer, --signer).
@@ -780,6 +797,7 @@ rm -rf /tmp/wy /tmp/venv
   cat /out/p11_keys.txt; echo
   cat /out/p11_misc.txt; echo
   cat /out/pki_char.txt; echo
+  cat /out/service.txt; echo
   cat /out/audit_optional.txt
   echo "gen_token: $(grep -c 'gen_token build rc=0' /out/gen_token_build.log) build ok; C reads the Rust-written corpus: $(head -1 /out/tok_rust_written_corpus.txt)"
   same() { if cmp -s "$1" "$2"; then echo same; else echo "DIFF ($(diff "$1" "$2" | grep -c '^[<>]') lines)"; fi; }

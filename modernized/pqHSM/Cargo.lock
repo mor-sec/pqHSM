@@ -363,6 +363,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pqhsm-service"
+version = "0.1.0"
+dependencies = [
+ "pqhsm-module",
+ "pqhsm-pkiops",
+]
+
+[[package]]
 name = "pqhsm-token"
 version = "0.1.0"
 dependencies = [

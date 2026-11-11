@@ -9,7 +9,8 @@ license.workspace = true
 publish = false
 
 [lib]
-crate-type = ["staticlib"]
+# rlib as well: pqhsm-service links the module into its own staticlib (Phase 6).
+crate-type = ["staticlib", "rlib"]
 
 [features]
 # The test_tpm build only, into its own --target-dir (PHASE2_PLAN.md §3(d), review H6).
