@@ -71,7 +71,7 @@ impl Ocsp {
         let loaded = Db::load(&self.path);
         if let Err(e) = &loaded {
             // before the lock, as C: a stalled stderr must not hold every reader
-            errw!("fhsm-service: {}", e.msg);
+            errw!("pqhsm-service: {}", e.msg);
         }
         let mut r = self.rev.write().unwrap_or_else(PoisonError::into_inner);
         match loaded {

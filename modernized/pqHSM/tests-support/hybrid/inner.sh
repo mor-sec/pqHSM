@@ -3,6 +3,9 @@
 set -u
 cd /work
 M="make -f modernized/pqHSM/hybrid.mk"
+# DIV-084: Rust output with the pqHSM names mapped back to C's, before a comparison with C.
+RB="python3 -I /work/modernized/pqHSM/tests-support/hybrid/rename_back.py"
+$RB > /out/rename_back_selfcheck.txt 2>&1 || { cat /out/rename_back_selfcheck.txt; exit 1; }
 # Intended test changes, each under its DIV (PHASE4_PLAN.md §4.2); the copy is patched, the
 # original stays the C's. DIV-059: ulMinPinLen is 8.
 sed -i 's/ti\.ulMinPinLen != 4 ||/ti.ulMinPinLen != 8 ||/' tests/test_input_validation.c
@@ -236,6 +239,7 @@ for lib in /c/libfreehsm.so /work/libfreehsm.so; do
   tag=$([ "$lib" = /work/libfreehsm.so ] && echo hybrid || echo c)
   mkdir /tmp/p11lc
   FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_lifecycle $lib /tmp/p11lc > /out/p11_lifecycle_$tag.txt 2>&1; echo "rc=$?" >> /out/p11_lifecycle_$tag.txt
+  [ $tag = hybrid ] && $RB /out/p11_lifecycle_hybrid.txt
   python3 modernized/pqHSM/tests-support/hybrid/corpus_norm.py /tmp/p11lc > /out/p11_lifecycle_audit_$tag.txt
   mv /tmp/p11lc /tmp/p11lc_$tag
 done
@@ -491,7 +495,7 @@ printf 'pki tools characterise: %s, C run 1 %s, %s lines, run 2 vs run 1 %s' "$(
   revoked=$(grep -c '^[0-9A-F][0-9A-F] ' $D)
   for i in 1 2 3 4; do tools/fhsm-ca crl --label p --ca-cert $FHSM_TOKENS_DIR/ca.der --db $D \
     --out $FHSM_TOKENS_DIR/$i.crl 2> $FHSM_TOKENS_DIR/$i.err & done; wait
-  numbers=$(cat $FHSM_TOKENS_DIR/[1-4].err | sed -n 's/^fhsm-ca: CRL number \([0-9]*\),.*/\1/p' | sort -n | tr '\n' ' ')
+  numbers=$(cat $FHSM_TOKENS_DIR/[1-4].err | sed -n 's/^pqhsm-ca: CRL number \([0-9]*\),.*/\1/p' | sort -n | tr '\n' ' ')
   echo "12 revokes at once: $revoked kept; 4 CRLs at once: numbers ${numbers% }, database $(sed -n 's/^crlNumber //p' $D)") > /out/race_ca.txt 2>&1
 # RULE-021/022 (PHASE5_PLAN.md §4): fhsm-ca's dates and CRL number, the C tools and the Rust.
 (cd $AMC && sh /work/modernized/pqHSM/tests-support/hybrid/rule021_dates.sh) > /out/rule021_c.txt 2>&1
@@ -509,6 +513,7 @@ printf 'service transcript: %s, C run 1 %s, %s rows, %s lines, run 2 vs run 1 %s
 # slice's routes still owe.
 { (cd $AMH && $M PROFILE=all-mechanisms service/pqhsm-service); echo "build rc=$?"; } > /out/service_h_build.log 2>&1
 (cd $AMH && SVC=$AMH/service/pqhsm-service sh /work/modernized/pqHSM/tests-support/hybrid/service_transcripts.sh > /out/service_h.txt 2>&1; echo "rc=$?" >> /out/service_h.txt)
+$RB /out/service_h.txt
 printf '; pqhsm-service: %s, dynamic exports %s (C_GetFunctionList %s), --profile %s, run %s, against C: %s' "$(tail -1 /out/service_h_build.log)" \
   "$(nm -D $AMH/service/pqhsm-service 2>/dev/null | grep -c ' T ')" "$(nm -D $AMH/service/pqhsm-service 2>/dev/null | grep -c ' T C_GetFunctionList$')" \
   "$([ "$($AMH/service/pqhsm-service --profile 2>&1)" = "$($AMC/service/fhsm-service --profile 2>&1)" ] && echo "same as C ($($AMC/service/fhsm-service --profile))" || echo DIFF)" \
@@ -532,8 +537,20 @@ printf '; strict builds (%s): %s' "$(tail -1 /out/service_strict_build.log)" \
 suites() { echo "$(grep -E '^(PASS|FAIL) :' $1 | tr '\n' ' ')$(tail -1 $1)"; }
 printf '; shipped (the Rust binary as service/fhsm-service) %s; %s; legacy suites C: %s; Rust: %s' "$(tail -1 /out/service_ship.log)" \
   "$(tail -1 /out/service_parallel.txt)" "$(suites /out/service_suites_c.txt)" "$(suites /out/service_suites_h.txt)" >> /out/service.txt
+# Slice 4 (Q18, Q21): install-pqhsm, a release build from a copy of the all-mechanisms tree,
+# installed and run (install_check.sh); and the PQHSM_* names, with no FHSM_* set, reaching the
+# Rust tools.
+sh /work/modernized/pqHSM/tests-support/hybrid/install_check.sh install $AMH > /out/install_check.txt 2>&1
+sh /work/modernized/pqHSM/tests-support/hybrid/install_check.sh run >> /out/install_check.txt 2>&1
+d=$(mktemp -d)
+(cd $AMH && env -u FHSM_TOKENS_DIR -u FHSM_PIN -u FHSM_SO_PIN PQHSM_TOKENS_DIR=$d PQHSM_INTEGRITY_ALLOW_UNSIGNED=1 \
+  PQHSM_SO_PIN=sopin1234 PQHSM_PIN=userpin1234 sh -c 'tools/fhsm-token init --label envnames > /dev/null &&
+  tools/fhsm-csr keygen --label k --alg ecdsa-p256 > /dev/null; echo "rc=$?"') > /out/env_names.txt 2>&1
+printf '; %s; PQHSM_* names %s, token files %s' "$(tail -2 /out/install_check.txt | tr '\n' ';')" \
+  "$(tail -1 /out/env_names.txt)" "$(ls $d | wc -l)" >> /out/service.txt
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
+$RB /out/pki_char_h_on_c.txt /out/pki_char_h.txt
 # Slice 4 on: the Rust fhsm-sign on either module, DIV-075 (cms-verify names its signer, --signer).
 # Slice 5 on: the Rust fhsm-ca, DIV-073 (strict --days) and DIV-074 (the locked database refused).
 python3 -I /work/modernized/pqHSM/tests-support/hybrid/phase5_expect.py < /out/pki_char_c1.txt > /out/pki_char_c_expect_on_c.txt
@@ -664,6 +681,7 @@ if ls /cdebs/*.deb > /dev/null 2>&1; then
   CT=/work/modernized/pqHSM/tests-support/hybrid
   sh $CT/contract.sh /c/libfreehsm.so > /out/contract_c.txt 2>&1
   sh $CT/contract.sh /work/libfreehsm.so > /out/contract_hybrid.txt 2>&1
+  $RB /out/contract_hybrid.txt
   n=$(grep -c '^rc=' /out/contract_c.txt)
   printf 'contract: %s; C %s/%s rc=0, hybrid %s/%s rc=0; raw %s, less recorded DIVs %s\n' \
     "$(tail -1 /out/contract_install.log)" "$(grep -c '^rc=0$' /out/contract_c.txt)" $n \
@@ -737,6 +755,8 @@ fi
 #    never loads the provider (tests/wycheproof/adapters/_p11.py).
 if ls /debs/*.deb > /dev/null 2>&1; then
   { dpkg -i /debs/*.deb && sed '/^apt-get /d' scripts/ci_install_openssl_fips.sh | bash; echo "install rc=$?"; } > /out/fips_install.log 2>&1
+  # Slice 4: what step 5c installed (install-pqhsm, signed), run now that the provider it requires is here.
+  sh /work/modernized/pqHSM/tests-support/hybrid/install_check.sh run > /out/install_run.txt 2>&1; tail -1 /out/install_run.txt >> /out/fips.txt
   F=/fixture/fips
   rm -rf /tmp/tsan   # one tree copy at a time
   ok_lines() { sed 's/\x1b\[[0-9;]*m//g' "$1" | grep -aE '^ +(OK|NON) ' | sed -E 's/digest [0-9a-f]+/digest */'; }  # the run colours its marks

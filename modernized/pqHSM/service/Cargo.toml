@@ -17,6 +17,7 @@ crate-type = ["staticlib"]
 dev-bypass = ["pqhsm-module/dev-bypass"]
 
 [dependencies]
+pqhsm-core = { path = "../core" }
 pqhsm-module = { path = "../module" }
 pqhsm-pkiops = { path = "../pkiops" }
 pqhsm-pki = { path = "../pki", features = ["ffi"] }

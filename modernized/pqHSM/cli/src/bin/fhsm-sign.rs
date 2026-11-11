@@ -17,7 +17,7 @@ use pqhsm_pkiops::ops::{self, Session};
 use pqhsm_pkiops::sign::{self, Hash, Signing, Verdict, Verifying};
 use pqhsm_pkiops::{Error, Intent, close, open, parse_slot, strerror};
 
-const PROG: &str = "fhsm-sign";
+const PROG: &str = "pqhsm-sign";
 
 /// 1 MiB: large enough that the syscall and PKCS#11 crossing cost nothing measurable, small
 /// enough to sign from a pipe without buffering the whole stream.
@@ -82,7 +82,7 @@ fn say(parts: &[&[u8]]) {
 
 fn cannot(what: &[u8], path: &[u8], e: &io::Error) -> ! {
     say(&[
-        b"fhsm-sign: cannot ",
+        b"pqhsm-sign: cannot ",
         what,
         b" ",
         path,
@@ -129,7 +129,7 @@ fn parse(args: &[Vec<u8>]) -> Opts<'_> {
             (b"--slot", Some(v)) => o.slot = parse_slot(v).unwrap_or_else(|e| die(e)),
             _ if a.starts_with(b"--pin") => {
                 eprint!(
-                    "fhsm-sign: --pin is not accepted. Set FHSM_PIN instead:\n  an argument is visible in ps to every user on this machine.\n"
+                    "pqhsm-sign: --pin is not accepted. Set FHSM_PIN instead:\n  an argument is visible in ps to every user on this machine.\n"
                 );
                 exit(1);
             }
@@ -162,7 +162,7 @@ fn stream(r: &mut dyn Read, mut feed: impl FnMut(&[u8])) {
         }
         if n < CHUNK {
             if let Some(e) = e {
-                eprintln!("fhsm-sign: read failed: {}", strerror(&e));
+                eprintln!("pqhsm-sign: read failed: {}", strerror(&e));
                 exit(2);
             }
             break; // a short read means the end
@@ -176,7 +176,7 @@ fn open_session(module: &[u8], slot: c_long) -> Session {
         PROG,
         "FHSM_PIN",
         "user PIN",
-        "fhsm-sign: FHSM_PIN is not set.\n",
+        "pqhsm-sign: FHSM_PIN is not set.\n",
     );
     let module = CString::new(module).expect("no NUL in an argument");
     let sid = open(Some(&module), slot, Intent::WithToken).unwrap_or_else(|e| die(e));
@@ -200,7 +200,7 @@ fn emit(path: Option<&[u8]>, data: &[u8]) {
         let fd1 = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
         let mut w = BufWriter::with_capacity(STDIO_BUF, &*fd1);
         if let Err(e) = w.write_all(data) {
-            perror_exit("fhsm-sign: write", &e);
+            perror_exit("pqhsm-sign: write", &e);
         }
         let _ = w.flush(); // C ignores what fflush returns
         return;
@@ -208,15 +208,15 @@ fn emit(path: Option<&[u8]>, data: &[u8]) {
     let f = File::create(OsStr::from_bytes(p)).unwrap_or_else(|e| cannot(b"write", p, &e));
     let mut w = BufWriter::with_capacity(STDIO_BUF, f);
     if let Err(e) = w.write_all(data) {
-        perror_exit("fhsm-sign: write", &e);
+        perror_exit("pqhsm-sign: write", &e);
     }
     // fclose: the buffered bytes, then the descriptor, each failure C's "close".
     let f = w
         .into_inner()
-        .unwrap_or_else(|e| perror_exit("fhsm-sign: close", e.error()));
+        .unwrap_or_else(|e| perror_exit("pqhsm-sign: close", e.error()));
     // SAFETY: f's descriptor, closed once, here.
     if unsafe { libc::close(f.into_raw_fd()) } != 0 {
-        perror_exit("fhsm-sign: close", &io::Error::last_os_error());
+        perror_exit("pqhsm-sign: close", &io::Error::last_os_error());
     }
 }
 
@@ -233,7 +233,7 @@ fn cmd_sign(o: &Opts) -> i32 {
     drop(input);
     let sig = op.end().unwrap_or_else(|e| die(e));
     emit(o.out, &sig);
-    eprintln!("fhsm-sign: {}-byte detached signature.", sig.len());
+    eprintln!("pqhsm-sign: {}-byte detached signature.", sig.len());
     close_session(s);
     0
 }
@@ -244,12 +244,12 @@ fn read_sig(path: &[u8]) -> Vec<u8> {
     let mut buf = vec![0u8; SIG_ROOM];
     let (n, e) = fill(&mut f, &mut buf);
     let (lead, fault): (&[u8], &[u8]) = if e.is_some() {
-        (b"fhsm-sign: reading ", b" failed\n")
+        (b"pqhsm-sign: reading ", b" failed\n")
     } else if n == 0 {
-        (b"fhsm-sign: ", b" is empty\n")
+        (b"pqhsm-sign: ", b" is empty\n")
     } else if n == SIG_ROOM {
         (
-            b"fhsm-sign: ",
+            b"pqhsm-sign: ",
             b" is larger than any signature this tool produces\n",
         )
     } else {
@@ -278,13 +278,13 @@ fn cmd_verify(o: &Opts) -> i32 {
     // not verify" from "could not run".
     if !r.unwrap_or_else(|e| die(e)) {
         say(&[
-            b"fhsm-sign: the signature does not match this data under key \"",
+            b"pqhsm-sign: the signature does not match this data under key \"",
             label,
             b"\".\n",
         ]);
         return 4;
     }
-    eprintln!("fhsm-sign: signature verified.");
+    eprintln!("pqhsm-sign: signature verified.");
     0
 }
 
@@ -322,7 +322,7 @@ fn cmd_cms(o: &Opts) -> i32 {
     let der = sign::cms_sign(s, label, &cert, &dg[pick(Some(alg.info().digest))])
         .unwrap_or_else(|e| die(e));
     emit(o.out, &der);
-    eprintln!("fhsm-sign: {}-byte detached CMS SignedData.", der.len());
+    eprintln!("pqhsm-sign: {}-byte detached CMS SignedData.", der.len());
     close_session(s);
     0
 }
@@ -334,7 +334,7 @@ fn cmd_cms_verify(o: &Opts) -> i32 {
     let want = o.signer.map(|p| {
         let der = read_der(p);
         if sign::describe_cert(&der).is_none() {
-            say(&[b"fhsm-sign: ", p, b" is not a certificate\n"]);
+            say(&[b"pqhsm-sign: ", p, b" is not a certificate\n"]);
             exit(2);
         }
         (p, der)
@@ -347,12 +347,12 @@ fn cmd_cms_verify(o: &Opts) -> i32 {
     let k = pick(sign::cms_digest(&cms));
     match sign::cms_verify(&cms, &dg[k]).unwrap_or_else(|e| die(e)) {
         Verdict::Mismatch => {
-            eprintln!("fhsm-sign: the CMS does not match this data.");
+            eprintln!("pqhsm-sign: the CMS does not match this data.");
             4
         }
         Verdict::Unreadable => {
             say(&[
-                b"fhsm-sign: ",
+                b"pqhsm-sign: ",
                 cms_path,
                 b" is not a CMS this tool can read.\n",
                 b"  That is a different problem from a signature that does\n",
@@ -366,7 +366,7 @@ fn cmd_cms_verify(o: &Opts) -> i32 {
                 && der != signer
             {
                 say(&[
-                    b"fhsm-sign: the CMS is signed by ",
+                    b"pqhsm-sign: the CMS is signed by ",
                     &subject,
                     b",\n  not by the certificate in ",
                     p,
@@ -375,7 +375,7 @@ fn cmd_cms_verify(o: &Opts) -> i32 {
                 return 4;
             }
             say(&[
-                b"fhsm-sign: CMS verified.\n  signed by: ",
+                b"pqhsm-sign: CMS verified.\n  signed by: ",
                 &subject,
                 b"\n  certificate SHA-256: ",
                 fp.as_bytes(),

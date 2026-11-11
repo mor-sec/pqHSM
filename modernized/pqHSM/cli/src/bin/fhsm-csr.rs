@@ -12,7 +12,7 @@ use pqhsm_cli::{atoi, atol, fail, init, pin, write_der};
 use pqhsm_pkiops::keys::Alg;
 use pqhsm_pkiops::{Error, Intent, close, open, ops, parse_slot};
 
-const PROG: &str = "fhsm-csr";
+const PROG: &str = "pqhsm-csr";
 
 const USAGE: &str = concat!(
     "fhsm-csr --- certification requests and roots, with a key held in a PKCS#11 module\n\n",
@@ -81,7 +81,7 @@ fn main() {
             }
             _ if a == b"--pin" || a.starts_with(b"--pin=") => {
                 eprint!(
-                    "fhsm-csr: --pin is not accepted. Set FHSM_PIN instead:\n  an argument is visible in ps to every user on this machine.\n"
+                    "pqhsm-csr: --pin is not accepted. Set FHSM_PIN instead:\n  an argument is visible in ps to every user on this machine.\n"
                 );
                 exit(1);
             }
@@ -101,7 +101,7 @@ fn main() {
     if let Some(n) = alg_name {
         if cmd != b"keygen" {
             let mut w = io::stderr().lock();
-            let _ = w.write_all(b"fhsm-csr: --alg belongs to keygen. ");
+            let _ = w.write_all(b"pqhsm-csr: --alg belongs to keygen. ");
             let _ = w.write_all(cmd);
             let _ = w.write_all(
                 b" signs with the key's own\n  algorithm, chosen when the key was generated.\n",
@@ -115,7 +115,7 @@ fn main() {
         PROG,
         "FHSM_PIN",
         "user PIN",
-        "fhsm-csr: FHSM_PIN is not set.\n",
+        "pqhsm-csr: FHSM_PIN is not set.\n",
     );
     // An argument holds no NUL.
     let module = CString::new(module).expect("no NUL in an argument");
@@ -128,7 +128,7 @@ fn main() {
         let mut w = io::stderr().lock();
         let _ = w.write_all(
             format!(
-                "fhsm-csr: {} key pair \"",
+                "pqhsm-csr: {} key pair \"",
                 alg.info().name.to_str().expect("ASCII")
             )
             .as_bytes(),

@@ -86,7 +86,7 @@ fn handle(sig: c_int, h: libc::sighandler_t, flags: c_int) {
 
 fn perror(what: &str) {
     let e = std::io::Error::last_os_error();
-    errln!("fhsm-service: {what}: {}", pqhsm_pkiops::strerror(&e));
+    errln!("pqhsm-service: {what}: {}", pqhsm_pkiops::strerror(&e));
 }
 
 /// C's `fopen`/`fread(CA_CERT_MAX)`/`feof`: a file that is empty, or fills the buffer, is
@@ -247,33 +247,33 @@ fn check_ocsp(a: &Args, ca: &[u8]) -> Result<Option<ocsp::Ocsp>, c_int> {
         && a.pub_path.is_none()
     {
         return refuse(
-            "fhsm-service: the OCSP options need --public-socket.\n  A relying party has no client certificate to present,\n  so /ocsp is on the anonymous listener and nowhere\n  else. Refused rather than configured and unreachable.\n",
+            "pqhsm-service: the OCSP options need --public-socket.\n  A relying party has no client certificate to present,\n  so /ocsp is on the anonymous listener and nowhere\n  else. Refused rather than configured and unreachable.\n",
         );
     }
     if a.rev_db.is_some() != a.ocsp_label.is_some() {
         return refuse(
-            "fhsm-service: --revocation-db and --ocsp-label go\n  together. One without the other is a responder that\n  could answer but has nothing to answer from, or one\n  that has the answers and cannot sign them.\n",
+            "pqhsm-service: --revocation-db and --ocsp-label go\n  together. One without the other is a responder that\n  could answer but has nothing to answer from, or one\n  that has the answers and cannot sign them.\n",
         );
     }
     if a.rev_db.is_some() && a.ca_cert.is_none() {
         return refuse(
-            "fhsm-service: --revocation-db without --ca-cert.\n  A CertID identifies a certificate by hashes of its\n  issuer's name and key, so without the CA certificate\n  every question would be answered `unknown` -- which\n  is a working responder that is useless.\n",
+            "pqhsm-service: --revocation-db without --ca-cert.\n  A CertID identifies a certificate by hashes of its\n  issuer's name and key, so without the CA certificate\n  every question would be answered `unknown` -- which\n  is a working responder that is useless.\n",
         );
     }
     if a.responder.is_some() && a.rev_db.is_none() {
-        return refuse("fhsm-service: --responder-cert without a responder.\n");
+        return refuse("pqhsm-service: --responder-cert without a responder.\n");
     }
     let (Some(db), Some(label)) = (a.rev_db, a.ocsp_label) else {
         return Ok(None);
     };
     if db.len() >= 4096 || label.len() >= 128 {
-        return refuse("fhsm-service: OCSP path or label too long.\n");
+        return refuse("pqhsm-service: OCSP path or label too long.\n");
     }
     let mut responder_der = None;
     if let Some(rp) = a.responder {
         let Some(responder) = read_cert(&path(rp)) else {
             return refuse(&format!(
-                "fhsm-service: cannot read a certificate from {}\n",
+                "pqhsm-service: cannot read a certificate from {}\n",
                 shown(rp)
             ));
         };
@@ -282,14 +282,14 @@ fn check_ocsp(a: &Args, ca: &[u8]) -> Result<Option<ocsp::Ocsp>, c_int> {
         if let Err(e) =
             pqhsm_pki::revocation::check_responder(&responder, ca, Some(&rp), ca_path.as_deref())
         {
-            return refuse(&format!("fhsm-service: {}", e.msg));
+            return refuse(&format!("pqhsm-service: {}", e.msg));
         }
         responder_der = Some(responder);
     }
     // DIV-083: C starts, and then answers every request malformedRequest.
     if !pqhsm_pkiops::ca::is_certificate(ca) {
         return refuse(&format!(
-            "fhsm-service: {} is not a certificate.\n  The responder could answer no request.\n",
+            "pqhsm-service: {} is not a certificate.\n  The responder could answer no request.\n",
             a.ca_cert.map_or("the CA certificate".into(), shown)
         ));
     }
@@ -297,7 +297,7 @@ fn check_ocsp(a: &Args, ca: &[u8]) -> Result<Option<ocsp::Ocsp>, c_int> {
     let o = ocsp::Ocsp::new(label.to_vec(), path(db), a.ocsp_days as i32, responder_der);
     if !o.refresh() {
         return refuse(&format!(
-            "fhsm-service: refusing to start: the revocation\n  database at {} could not be read.\n",
+            "pqhsm-service: refusing to start: the revocation\n  database at {} could not be read.\n",
             shown(db)
         ));
     }
@@ -343,7 +343,7 @@ fn run(args: &[&[u8]]) -> c_int {
     };
     if a.ca_cert.is_some() && a.pub_path.is_none() {
         errw!(
-            "fhsm-service: --ca-cert without --public-socket.\n  The certificate is only served on the public\n  listener, so this asks for something nobody could\n  fetch. Refused rather than loaded and ignored.\n"
+            "pqhsm-service: --ca-cert without --public-socket.\n  The certificate is only served on the public\n  listener, so this asks for something nobody could\n  fetch. Refused rather than loaded and ignored.\n"
         );
         return 2;
     }
@@ -353,7 +353,7 @@ fn run(args: &[&[u8]]) -> c_int {
             Some(c) => c,
             None => {
                 errw!(
-                    "fhsm-service: cannot read a certificate from {}\n  (missing, empty, or larger than {CA_CERT_MAX} bytes).\n",
+                    "pqhsm-service: cannot read a certificate from {}\n  (missing, empty, or larger than {CA_CERT_MAX} bytes).\n",
                     shown(p)
                 );
                 return 2;
@@ -369,19 +369,19 @@ fn run(args: &[&[u8]]) -> c_int {
         // The composite mechanism is the only one the service signs with, and this build does
         // not approve it: C started and refused every signature (DIV-081).
         errw!(
-            "fhsm-service: this build is nist-approved-only, and the composite\n  ML-DSA-65+Ed25519 signature the service signs and verifies with\n  is not approved in it. Refusing to start a signing service that\n  could never sign.\n"
+            "pqhsm-service: this build is nist-approved-only, and the composite\n  ML-DSA-65+Ed25519 signature the service signs and verifies with\n  is not approved in it. Refusing to start a signing service that\n  could never sign.\n"
         );
         return 2;
     }
     let policy = Policy::new(path(policy_file));
     let Some(n) = policy.load() else {
         errw!(
-            "fhsm-service: cannot load the policy from {}.\n  Refusing to start: with no policy nothing is\n  authorised, and a service that answers every\n  request with a refusal is worse than one that\n  says why it will not run.\n",
+            "pqhsm-service: cannot load the policy from {}.\n  Refusing to start: with no policy nothing is\n  authorised, and a service that answers every\n  request with a refusal is worse than one that\n  says why it will not run.\n",
             policy.path.display()
         );
         return 1;
     };
-    errln!("fhsm-service: policy loaded, {n} rule(s)");
+    errln!("pqhsm-service: policy loaded, {n} rule(s)");
     let pub_workers = if a.pub_path.is_some() {
         a.pub_workers
     } else {
@@ -390,7 +390,7 @@ fn run(args: &[&[u8]]) -> c_int {
     // C's second check, --pool-max below --workers alone, cannot fire after this one.
     if a.pool_max < a.workers + pub_workers {
         errw!(
-            "fhsm-service: --pool-max ({}) is below the total\n  worker count ({} + {pub_workers} public).\n",
+            "pqhsm-service: --pool-max ({}) is below the total\n  worker count ({} + {pub_workers} public).\n",
             a.pool_max,
             a.workers
         );
@@ -407,7 +407,7 @@ fn run(args: &[&[u8]]) -> c_int {
         let total = a.queue_depth * listeners + 64 + a.workers + pub_workers;
         if total as u64 > rl.rlim_cur {
             errw!(
-                "fhsm-service: --queue-depth {} needs {total} descriptors{},\n  and the limit in force is {}. Past it accept() fails with\n  EMFILE and the connection is dropped without a 503 and\n  without a line -- the silent failure the queue exists to\n  replace. Raise LimitNOFILE or lower --queue-depth.\n",
+                "pqhsm-service: --queue-depth {} needs {total} descriptors{},\n  and the limit in force is {}. Past it accept() fails with\n  EMFILE and the connection is dropped without a 503 and\n  without a line -- the silent failure the queue exists to\n  replace. Raise LimitNOFILE or lower --queue-depth.\n",
                 a.queue_depth,
                 if listeners == 2 {
                     " (two listeners)"
@@ -421,7 +421,7 @@ fn run(args: &[&[u8]]) -> c_int {
     }
 
     // Before the socket exists, so no request is served against an empty budget.
-    let tokens_dir = std::env::var_os("FHSM_TOKENS_DIR");
+    let tokens_dir = pqhsm_core::env("FHSM_TOKENS_DIR");
     let budget = Budget::load(tokens_dir.as_deref().map(OsStr::as_bytes));
 
     let mut pipe = [-1; 2];
@@ -454,7 +454,7 @@ fn run(args: &[&[u8]]) -> c_int {
     if let Err(e) = pqhsm_pkiops::load(None) {
         let msg = e.c_msg().strip_suffix(b"\n").unwrap_or(e.c_msg());
         let mut w = std::io::stderr().lock();
-        let _ = w.write_all(b"fhsm-service: ");
+        let _ = w.write_all(b"pqhsm-service: ");
         let _ = w.write_all(msg);
         let _ = w.write_all(
             b". Nothing is\n  served without the module, and nothing is served\n  without the audit log it opens.\n",
@@ -468,13 +468,13 @@ fn run(args: &[&[u8]]) -> c_int {
         .collect();
     let slot = match &tokens[..] {
         [] => {
-            errln!("fhsm-service: no slot holds a token. Run `fhsm-token init` first.");
+            errln!("pqhsm-service: no slot holds a token. Run `fhsm-token init` first.");
             return 1;
         }
         [one] => one.id,
         many => {
             errln!(
-                "fhsm-service: {} slots hold a token; this service serves one.",
+                "pqhsm-service: {} slots hold a token; this service serves one.",
                 many.len()
             );
             return 1;
@@ -485,7 +485,7 @@ fn run(args: &[&[u8]]) -> c_int {
     };
 
     if sock.len() >= 108 {
-        errln!("fhsm-service: socket path is longer than 107 bytes.");
+        errln!("pqhsm-service: socket path is longer than 107 bytes.");
         return 2;
     }
     let lfd = match bind(sock, "") {
@@ -495,7 +495,7 @@ fn run(args: &[&[u8]]) -> c_int {
     let mut pfd = -1;
     if let Some(p) = a.pub_path {
         if p.len() >= 108 {
-            errln!("fhsm-service: --public-socket path is too long");
+            errln!("pqhsm-service: --public-socket path is too long");
             return 2;
         }
         pfd = match bind(p, "public") {
@@ -527,7 +527,7 @@ fn run(args: &[&[u8]]) -> c_int {
     );
     if !started {
         // DIV-001: a service whose start the log cannot hold would serve unrecorded.
-        errln!("fhsm-service: cannot write the audit log; not starting.");
+        errln!("pqhsm-service: cannot write the audit log; not starting.");
         for (fd, p) in [(lfd, Some(sock)), (pfd, a.pub_path)] {
             if let (true, Some(p)) = (fd >= 0, p) {
                 // SAFETY: a listening descriptor nobody polls yet.
@@ -540,7 +540,7 @@ fn run(args: &[&[u8]]) -> c_int {
         return 1;
     }
     errln!(
-        "fhsm-service: listening on {}, uid {} only, {} workers, pool ceiling {}",
+        "pqhsm-service: listening on {}, uid {} only, {} workers, pool ceiling {}",
         shown(sock),
         a.proxy_uid,
         a.workers,
@@ -565,18 +565,18 @@ fn run(args: &[&[u8]]) -> c_int {
     if let (Some(l), Some(p)) = (public, a.pub_path) {
         for _ in 0..a.pub_workers {
             let Ok(t) = std::thread::Builder::new().spawn(|| l.worker()) else {
-                errw!("fhsm-service: cannot start public worker\n");
+                errw!("pqhsm-service: cannot start public worker\n");
                 return 1;
             };
             pub_threads.push(t);
         }
         let Ok(t) = std::thread::Builder::new().spawn(|| l.acceptor()) else {
-            errw!("fhsm-service: cannot start the public acceptor\n");
+            errw!("pqhsm-service: cannot start the public acceptor\n");
             return 1;
         };
         pub_threads.push(t);
         errln!(
-            "fhsm-service: public listener on {}, {} worker(s), no identity required",
+            "pqhsm-service: public listener on {}, {} worker(s), no identity required",
             shown(p),
             a.pub_workers
         );
@@ -584,7 +584,7 @@ fn run(args: &[&[u8]]) -> c_int {
     let mut workers = Vec::new();
     for i in 0..a.workers {
         let Ok(t) = std::thread::Builder::new().spawn(|| private.worker()) else {
-            errw!("fhsm-service: cannot start worker {i}\n");
+            errw!("pqhsm-service: cannot start worker {i}\n");
             return 1;
         };
         workers.push(t);
@@ -621,7 +621,7 @@ fn run(args: &[&[u8]]) -> c_int {
     );
     unlink(sock);
     pqhsm_pkiops::close();
-    errln!("fhsm-service: stopped");
+    errln!("pqhsm-service: stopped");
     0
 }
 

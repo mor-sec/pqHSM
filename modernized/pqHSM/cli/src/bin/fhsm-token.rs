@@ -11,7 +11,7 @@ use pqhsm_cli::{fail, init, pin};
 use pqhsm_pkiops::ops;
 use pqhsm_pkiops::{Error, Intent, close, open, parse_slot};
 
-const PROG: &str = "fhsm-token";
+const PROG: &str = "pqhsm-token";
 
 const USAGE: &str = concat!(
     "fhsm-token --- provision a token\n\n",
@@ -98,7 +98,7 @@ fn cmd_init(module: &CString, slot: c_long, label: &[u8], force: bool) -> i32 {
         "FHSM_SO_PIN",
         "Security Officer PIN",
         concat!(
-            "fhsm-token: FHSM_SO_PIN is not set.\n",
+            "pqhsm-token: FHSM_SO_PIN is not set.\n",
             "  The Security Officer PIN initialises the token and can reset the\n",
             "  user PIN. It is read from the environment, never from an argument.\n",
         ),
@@ -108,7 +108,7 @@ fn cmd_init(module: &CString, slot: c_long, label: &[u8], force: bool) -> i32 {
         "FHSM_PIN",
         "new user PIN",
         concat!(
-            "fhsm-token: FHSM_PIN is not set.\n",
+            "pqhsm-token: FHSM_PIN is not set.\n",
             "  init sets the user PIN as well, so both are needed. Setting only\n",
             "  the SO PIN would leave a token no application can log into.\n",
         ),
@@ -134,14 +134,14 @@ fn cmd_init(module: &CString, slot: c_long, label: &[u8], force: bool) -> i32 {
     };
     if let Some(which) = which {
         eprint!(
-            "fhsm-token: {which} outside the token's accepted length ({lo}..{hi} characters).\n  Nothing was changed. If you pasted a placeholder from a\n  manual, that is the usual cause.\n"
+            "pqhsm-token: {which} outside the token's accepted length ({lo}..{hi} characters).\n  Nothing was changed. If you pasted a placeholder from a\n  manual, that is the usual cause.\n"
         );
         close();
         return 1;
     }
     if label.len() > 32 {
         eprintln!(
-            "fhsm-token: --label is at most 32 characters (PKCS#11 pads it to exactly that)."
+            "pqhsm-token: --label is at most 32 characters (PKCS#11 pads it to exactly that)."
         );
         close();
         return 1;
@@ -153,7 +153,7 @@ fn cmd_init(module: &CString, slot: c_long, label: &[u8], force: bool) -> i32 {
         && ti.initialised != 0
     {
         say(&[
-            format!("fhsm-token: slot {sid} already holds an initialised token (\"").as_bytes(),
+            format!("pqhsm-token: slot {sid} already holds an initialised token (\"").as_bytes(),
             ops::text(&ti.label),
             b"\").\n  Re-initialising DESTROYS every key on it. If that is what you\n  want, pass --force. If you meant to look, use `fhsm-token info`.\n",
         ]);
@@ -164,7 +164,7 @@ fn cmd_init(module: &CString, slot: c_long, label: &[u8], force: bool) -> i32 {
     drop((so, user));
     close();
     say(&[
-        format!("fhsm-token: slot {sid} initialised as \"").as_bytes(),
+        format!("pqhsm-token: slot {sid} initialised as \"").as_bytes(),
         label,
         b"\", user PIN set.\n  Next: fhsm-csr keygen --label NAME\n",
     ]);
@@ -194,7 +194,7 @@ fn main() {
             }
             _ if a.starts_with(b"--pin") || a.starts_with(b"--so-pin") => {
                 eprint!(
-                    "fhsm-token: PINs are not accepted as arguments. Set\n  FHSM_SO_PIN and FHSM_PIN instead: an argument is visible in\n  ps to every user on this machine.\n"
+                    "pqhsm-token: PINs are not accepted as arguments. Set\n  FHSM_SO_PIN and FHSM_PIN instead: an argument is visible in\n  ps to every user on this machine.\n"
                 );
                 exit(1);
             }

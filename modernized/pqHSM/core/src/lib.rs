@@ -36,5 +36,12 @@ mod env_tests {
         assert_eq!(super::env_in("FHSM_CONF", both), Some("old".into()));
         assert_eq!(super::env_in("FHSM_MODE", both), None);
         assert_eq!(super::env_in("CREDENTIALS_DIRECTORY", both), None);
+        // set but empty, the new name still wins: each caller then applies C's own test
+        let empty = |k: &str| match k {
+            "PQHSM_PIN" => Some("".into()),
+            "FHSM_PIN" => Some("old".into()),
+            _ => None,
+        };
+        assert_eq!(super::env_in("FHSM_PIN", empty), Some("".into()));
     }
 }

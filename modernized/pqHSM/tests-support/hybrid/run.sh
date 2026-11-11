@@ -14,7 +14,7 @@ OUT=$(mkdir -p "$2" && cd "$2" && pwd)
 IMAGE=${PQHSM_RUST_IMAGE:-localhost/pqhsm-rust:1.99.1}
 REGISTRY=${CARGO_REGISTRY_CACHE:-$OUT/cargo-registry}
 mkdir -p "$OUT/work" "$OUT/results" "$REGISTRY"
-tar -C "$REPO" --exclude=./analysis --exclude=./netcache --exclude=./.obj --exclude=./modernized/pqHSM/target -cf - . \
+tar -C "$REPO" --exclude=./analysis --exclude=./netcache --exclude=./.obj --exclude=./modernized/pqHSM/target --exclude=./modernized/pqHSM/target-release -cf - . \
     | tar -C "$OUT/work" -xf -
 # seccomp=unconfined: only for `setarch -R` in the TSan step (personality(ADDR_NO_RANDOMIZE)).
 # FIPS_DEBS: a directory holding the openssl, libssl3t64 and openssl-provider-fips .debs of the

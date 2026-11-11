@@ -1823,3 +1823,41 @@ Checked and found equivalent: the refresh against in-flight answers (the read gu
 | L3 | A `--ca-cert` that does not parse starts, then every answer is malformedRequest (as C) | DIV-083 (user, 2026-11-12: "Refuse to start (Recommended)"): refused at start-up when OCSP is configured, exit 2; transcript row 135 |
 
 **Evidence (slices 2 and 3).** Harness `run21` (the final tree; `run18` DIV-080's row, `run19` slice 2, `run20` the strict row corrected): step 5c "against C: 146 rows, 144 same, 2 differ, every difference pending" (DIV-079, DIV-080); rows 131-134 good then revoked after `fhsm-ca revoke`, tryLater `30030a0103`, internalError `30030a0102`; "strict builds: C ... cannot load the policy ... exit 1, Rust ... nist-approved-only ... exit 2" (DIV-081); "shipped (the Rust binary as service/fhsm-service) rc=0"; "parallel run: PASS: 420 requests to both, 420 answered alike, 0 unanswered, 60/60 signature pairs valid on both sides, the re-read seen: True, exit C 0 Rust 0, audit records gained 636 vs 636 same"; the legacy suites `service_guards.sh`, `service_budget.sh`, `service_public.sh` "PASS : 0 failure(s)" each, on C and on Rust. The rest of the summary as `run17`, less the known noise (C reading Rust-written tokens: 2 or 4 lines; pkiops symbols 292 with the new primitives). Cargo: 964 passed, 0 failed; clippy clean.
+
+### Slice 4: rename and packaging (2026-11-12)
+
+Decisions (brief Q18, Q19, Q21, all the user's, "(Recommended)" each): pqhsm names with fhsm compatibility; the pqHSM CK_INFO, slot and token strings; `pqhsm-X:` message prefixes; NOTICE kept and the brand assets dropped; the service in `$(PREFIX)/libexec`.
+
+| What | Where |
+|---|---|
+| `PQHSM_X` read first, `FHSM_X` its fallback, at every Rust read of an `FHSM_*` name | `core/src/lib.rs`: `pqhsm_core::env`; its callers in crypto, p11, token, selftest, cli, service |
+| CK_INFO, slot and token strings (DIV-084) | `p11/src/ffi/slots.rs` (`MANUFACTURER`, shared with `lifecycle.rs`), `lifecycle.rs` |
+| Message prefixes `pqhsm-X:` (109); usage text and hints keep `fhsm-*` | `cli/src/bin/*.rs` (`PROG`), `service/src/*.rs` |
+| `install-pqhsm`: a signed release build (no dev-bypass, `PQHSM_FEATURES=`, `target-release`); `libpqhsm.so` with `libfreehsm.so` a link (soname unchanged), `pqhsm-*` with `fhsm-*` links, `pqhsm-audit` with `freehsm-audit`; the service and its unit (`/etc/systemd/system`, ExecStart rewritten) in an all-mechanisms build only (DIV-081); each old name replaced by one rename | `hybrid.mk` |
+| NOTICE: a pqHSM section, the eight crates linked and their licences, openssl-sys's MIT notice as `LICENSES/MIT.txt`; `docs/assets/` and `docs/SIMORGH_LABS_BRAND_REFERENCE.md` removed | `NOTICE`, `LICENSES/MIT.txt`, `docs/ROADMAP.md` |
+| The harness maps the new names back before each comparison with C that they reach (p11 lifecycle, the PKI tools' transcripts, DIV-074's check, the service rows, the contract tests) | `tests-support/hybrid/rename_back.py` (self-check first in `inner.sh`) |
+| `install-pqhsm` from a copy of the all-mechanisms tree, twice, then the installed tools, module and service run with no bypass; refused in the harness's dev-bypass tree; the PQHSM_* names alone reach the tools | `tests-support/hybrid/install_check.sh`, `inner.sh` step 5c |
+
+Not changed (not in Q18, or data): the config file and state paths (`freehsm.conf`, `/var/lib/freehsm`, the `freehsm` user: renaming them would orphan installed tokens), the `x-fhsm-*` headers, the budget file's header, the `fhsm-pin` credential name, the module's `[freehsm-c]` message tag. Three legacy assertions on "Simorgh Labs" (`tests/integration_pkcs11.sh:125,164`, `tests/coverage_matrix.sh:212`) run in neither the harness nor `make tests`; slice 5 rewrites them.
+
+### Slice 4 review (architecture-critic, 2026-11-12)
+
+Checked and found as decided: the strings and prefixes, every `FHSM_*` read through the helper, plain `getenv` in C (no `secure_getenv`), the unit sed, the recursive install, setcap surviving a rename, consumers loading through the link.
+
+| # | Finding | Done |
+|---|---|---|
+| H1 | `install-pqhsm` installed the harness's dev-bypass module and service (DIV-034's seams) | The features are `PQHSM_FEATURES` (dev-bypass by default, the harness's); install-pqhsm refuses unless it is empty, and a release build has its own target dir (`target-release`, ignored, outside the harness copy) |
+| M1 | The mapping mapped every `pqhsm-X`, so a hint changed to the new name compared equal | Only the prefix with its colon; self-check |
+| M2 | Text-mode padding ate separators and hid untrimmed fields | Plain words in text; padding only inside hex, and only where C's string fits the field |
+| M3 | The installed service could not start: a strict build refuses (DIV-081), and nothing was signed | The library and the service signed (`sign_module.sh`); the service installed in an all-mechanisms build only; `install_check.sh run` runs the installed tools and service with no bypass. A signed module requires the FIPS provider, which this harness has only with `FIPS_DEBS` (absent from the runs of this slice, so step 9 was skipped in them): without it each stops at the provider, which `C_Initialize` reaches only after the integrity check passes, so the signing is proved that far; with it (step 9) the service must answer `/health` |
+| M4 | The unit went where systemd never reads; its header pointed to the unrenamed unit | `UNITDIR ?= /etc/systemd/system`; the header line rewritten |
+| M5 | NOTICE named every crate in Cargo.lock and shipped no MIT text | The eight linked crates and their licences; `LICENSES/MIT.txt` |
+| L1 | An empty `PQHSM_X` overrides `FHSM_X` | Kept (it is "when set"); in DIV-084, and a test |
+| L2 | `PQHSM_X` from the manager's environment beats the unit's `Environment=FHSM_X` | In DIV-084; renaming the unit's variable is the user's call (open) |
+| L3 | The generic `pqHSM` rule matched inside paths, words and URI values | Word boundaries in text; self-check |
+| L4 | `rename_back.py` truncated before mapping; its status unchecked | Mapped, then written; the self-check stops the harness if it fails |
+| L5 | `libfreehsm.so` absent between `mv` and `ln`; idempotence untested | A hard link, then the old name replaced by one rename; installed twice in the harness, the library checked a regular file |
+| L6 | The soname stays `libfreehsm.so`, so the link cannot go after one release without breaking binaries linked to it | Open: for the user before slice 5 |
+| L7 | `setcap cap_ipc_lock` on a library is inert (predates the slice) | Open: `LimitMEMLOCK=` in the unit, slice 5 |
+| L8 | No uninstall for the new layout; `pin_prompt.py` left `PQHSM_PIN` | `pin_prompt.py` strips both; uninstall open for slice 5 |
+| L9 | The Rust files carry no copyright or SPDX header; install ships neither LICENSE nor NOTICE | Open: a `REUSE.toml` annotation for `modernized/**` and installing them, slice 5 |

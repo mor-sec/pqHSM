@@ -13,7 +13,7 @@ import sys
 
 pin = sys.argv[1].encode()
 cmd = sys.argv[2:]
-env = {k: v for k, v in os.environ.items() if k != "FHSM_PIN"}
+env = {k: v for k, v in os.environ.items() if k not in ("FHSM_PIN", "PQHSM_PIN")}
 pid, fd = pty.fork()
 if pid == 0:
     os.execvpe(cmd[0], cmd, env)

@@ -187,7 +187,8 @@ struct SlotInfo {
     firmware: [u8; 2],
 }
 
-const MANUFACTURER: &[u8] = b"Simorgh Labs";
+/// Q18 (DIV-084): C says "Simorgh Labs".
+pub(crate) const MANUFACTURER: &[u8] = b"pqHSM";
 /// `CKF_TOKEN_PRESENT`: every configured slot, blank or not (the SoftHSMv2 convention C keeps,
 /// so `pkcs11-tool` reaches `C_InitToken`).
 const TOKEN_PRESENT: c_ulong = 0x1;
@@ -209,7 +210,7 @@ pub unsafe extern "C" fn pqhsm_C_GetSlotInfo(slot: c_ulong, info: *mut c_void) -
     } else {
         "uninitialized"
     };
-    let desc = format!("FreeHSM slot {slot} ({state})");
+    let desc = format!("pqHSM slot {slot} ({state})");
     let i = info.cast::<SlotInfo>();
     // SAFETY: by the caller's contract, a writable CK_SLOT_INFO; fields only, as C wrote them
     unsafe {
@@ -309,9 +310,9 @@ pub unsafe extern "C" fn pqhsm_C_GetTokenInfo(slot: c_ulong, info: *mut c_void) 
         }
     }
     let model: &[u8] = if pqhsm_core::env("FHSM_INTEGRITY_ALLOW_UNSIGNED").is_some() {
-        b"FreeHSM-TESTMODE"
+        b"pqHSM-TESTMODE"
     } else {
-        b"FreeHSM-C-v1"
+        b"pqHSM-v1"
     };
     let i = info.cast::<TokenInfo>();
     // SAFETY: by the caller's contract, a writable CK_TOKEN_INFO; fields only, as C wrote them

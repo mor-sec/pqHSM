@@ -274,15 +274,15 @@ pub unsafe extern "C" fn pqhsm_C_GetInfo(info: *mut c_void) -> c_ulong {
     }
     // The integrity bypass says so in the field every consumer prints.
     let desc: &[u8] = if pqhsm_core::env("FHSM_INTEGRITY_ALLOW_UNSIGNED").is_some() {
-        b"FreeHSM C - TEST MODE, NOT PROD"
+        b"pqHSM - TEST MODE, NOT PROD"
     } else {
-        b"FreeHSM C PKCS#11 module"
+        b"pqHSM PKCS#11 module"
     };
     let i = info.cast::<Info>();
     // SAFETY: by the caller's contract, a writable CK_INFO; fields only, as C wrote them
     unsafe {
         (*i).cryptoki = [3, 2];
-        pack_field(&mut (*i).manufacturer, b"Simorgh Labs");
+        pack_field(&mut (*i).manufacturer, slots::MANUFACTURER);
         (*i).flags = 0;
         pack_field(&mut (*i).description, desc);
         (*i).library = VERSION;

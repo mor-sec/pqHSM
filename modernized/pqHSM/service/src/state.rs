@@ -99,7 +99,7 @@ impl Policy {
         }
         let Some(n) = self.load() else {
             let p = self.path.display();
-            errln!("fhsm-service: reloading {p} failed; the previous policy is still in force.");
+            errln!("pqhsm-service: reloading {p} failed; the previous policy is still in force.");
             audit::event(
                 audit::EV_REQUEST_REFUSED,
                 -1,
@@ -113,7 +113,7 @@ impl Policy {
             );
             return;
         };
-        errln!("fhsm-service: policy reloaded, {n} rule(s)");
+        errln!("pqhsm-service: policy reloaded, {n} rule(s)");
     }
 
     /// `policy_load`: every rule or none; the count, or `None` with the reason on stderr. A
@@ -132,20 +132,20 @@ impl Policy {
                 continue;
             }
             let Some(tab) = line.iter().position(|&c| c == b'\t') else {
-                errln!("fhsm-service: {p}:{lineno} has no tab; a rule is SUBJECT<TAB>KEY-LABEL");
+                errln!("pqhsm-service: {p}:{lineno} has no tab; a rule is SUBJECT<TAB>KEY-LABEL");
                 return None;
             };
             let (subj, key) = (&line[..tab], &line[tab + 1..]);
             if subj.is_empty() || key.is_empty() || key.contains(&b'\t') {
-                errln!("fhsm-service: {p}:{lineno} is malformed");
+                errln!("pqhsm-service: {p}:{lineno} is malformed");
                 return None;
             }
             if subj.len() >= ACTOR_MAX || key.len() >= MAX_KEY_LABEL {
-                errln!("fhsm-service: {p}:{lineno} is too long");
+                errln!("pqhsm-service: {p}:{lineno} is too long");
                 return None;
             }
             if staged.len() >= POLICY_MAX {
-                errln!("fhsm-service: {p} has more than {POLICY_MAX} rules");
+                errln!("pqhsm-service: {p} has more than {POLICY_MAX} rules");
                 return None;
             }
             staged.push((subj.to_vec(), key.to_vec()));
@@ -219,7 +219,7 @@ pub fn login_once(slot: Slot, pin_file: Option<&Path>) -> Option<Session> {
             Some(d) => Path::new(&d).join("fhsm-pin"),
             None => {
                 errw!(
-                    "fhsm-service: no PIN source. Either run under systemd with\n  LoadCredentialEncrypted=fhsm-pin:... so that\n  $CREDENTIALS_DIRECTORY/fhsm-pin exists, or pass --pin-file PATH\n  for a test rig. There is no third option, and none that reads\n  the environment: see docs/DAEMON_PIN.md.\n"
+                    "pqhsm-service: no PIN source. Either run under systemd with\n  LoadCredentialEncrypted=fhsm-pin:... so that\n  $CREDENTIALS_DIRECTORY/fhsm-pin exists, or pass --pin-file PATH\n  for a test rig. There is no third option, and none that reads\n  the environment: see docs/DAEMON_PIN.md.\n"
                 );
                 return None;
             }
@@ -229,7 +229,7 @@ pub fn login_once(slot: Slot, pin_file: Option<&Path>) -> Option<Session> {
         Ok(f) => f,
         Err(e) => {
             errln!(
-                "fhsm-service: cannot read the PIN from {}: {}",
+                "pqhsm-service: cannot read the PIN from {}: {}",
                 path.display(),
                 pqhsm_pkiops::strerror(&e)
             );
@@ -241,7 +241,7 @@ pub fn login_once(slot: Slot, pin_file: Option<&Path>) -> Option<Session> {
     let n = std::io::Read::read(&mut f, &mut pin[..]).unwrap_or(0);
     drop(f);
     if n == 0 {
-        errln!("fhsm-service: the PIN file is empty.");
+        errln!("pqhsm-service: the PIN file is empty.");
         return None;
     }
     let mut pin_len = n;
@@ -251,7 +251,7 @@ pub fn login_once(slot: Slot, pin_file: Option<&Path>) -> Option<Session> {
     let s = match ops::session_open(slot) {
         Ok(s) => s,
         Err(rv) => {
-            errln!("fhsm-service: C_OpenSession failed (0x{rv:x})");
+            errln!("pqhsm-service: C_OpenSession failed (0x{rv:x})");
             return None;
         }
     };
@@ -260,7 +260,7 @@ pub fn login_once(slot: Slot, pin_file: Option<&Path>) -> Option<Session> {
     if rv != 0 {
         ops::session_close(s);
         errw!(
-            "fhsm-service: C_Login failed (0x{rv:x}). Not retrying: the token locks\n  after a handful of consecutive failures, and a restart loop would\n  spend them. Fix the credential and start again.\n"
+            "pqhsm-service: C_Login failed (0x{rv:x}). Not retrying: the token locks\n  after a handful of consecutive failures, and a restart loop would\n  spend them. Fix the credential and start again.\n"
         );
         return None;
     }
@@ -502,7 +502,7 @@ impl Budget {
             slot += 1;
         }
         if slot > 0 {
-            errln!("fhsm-service: refusal budget restored for {slot} identity(ies)");
+            errln!("pqhsm-service: refusal budget restored for {slot} identity(ies)");
         }
         Budget {
             path,

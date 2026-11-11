@@ -19,7 +19,7 @@ use pqhsm_pkiops::sign::pem_body;
 use pqhsm_pkiops::{Error, Intent, close, open, parse_slot};
 use zeroize::Zeroizing;
 
-const PROG: &str = "fhsm-ca";
+const PROG: &str = "pqhsm-ca";
 
 /// `slurp`'s buffer: a larger file is cut here, and then fails to parse, as in C.
 const SLURP_MAX: usize = 262_144;
@@ -99,7 +99,7 @@ fn die(e: Error) -> ! {
 
 /// `db_load`'s and `db_save`'s exit: the library's diagnostic, and its status.
 fn die_rev(e: RevError) -> ! {
-    say(&[b"fhsm-ca: ", e.msg.as_bytes()]);
+    say(&[b"pqhsm-ca: ", e.msg.as_bytes()]);
     exit(e.code)
 }
 
@@ -133,7 +133,7 @@ fn parse_days(t: &[u8]) -> c_int {
 
 fn check_days(days: c_int) {
     if days <= 0 {
-        eprintln!("fhsm-ca: --days must be positive.");
+        eprintln!("pqhsm-ca: --days must be positive.");
         exit(2);
     }
 }
@@ -143,28 +143,28 @@ fn user_pin() -> Zeroizing<Vec<u8>> {
         PROG,
         "FHSM_PIN",
         "user PIN",
-        "fhsm-ca: FHSM_PIN is not set.\n",
+        "pqhsm-ca: FHSM_PIN is not set.\n",
     )
 }
 
 /// `slurp`: at most [`SLURP_MAX`] bytes of `p` (fread's: an error ends the read), PEM decoded.
 fn slurp(p: &[u8]) -> Vec<u8> {
     let Ok(mut f) = File::open(path(p)) else {
-        say(&[b"fhsm-ca: cannot read ", p, b"\n"]);
+        say(&[b"pqhsm-ca: cannot read ", p, b"\n"]);
         exit(2);
     };
     let mut buf = vec![0u8; SLURP_MAX];
     let (n, _) = fill(&mut f, &mut buf);
     buf.truncate(n);
     if n == 0 {
-        say(&[b"fhsm-ca: ", p, b" is empty\n"]);
+        say(&[b"pqhsm-ca: ", p, b" is empty\n"]);
         exit(2);
     }
     // Accept PEM as well as DER: an operator who received a PEM request should not have to
     // convert it first.
     if n > 11 && buf.starts_with(b"-----BEGIN ") {
         return pem_body(&buf).unwrap_or_else(|| {
-            say(&[b"fhsm-ca: ", p, b" looks like PEM but did not parse\n"]);
+            say(&[b"pqhsm-ca: ", p, b" looks like PEM but did not parse\n"]);
             exit(2)
         });
     }
@@ -263,7 +263,7 @@ fn parse<'a>(
         }
         if a.starts_with(b"--pin") {
             eprint!(
-                "fhsm-ca: --pin is not accepted. Set FHSM_PIN instead:\n  an argument is visible in ps to every user on this machine.\n"
+                "pqhsm-ca: --pin is not accepted. Set FHSM_PIN instead:\n  an argument is visible in ps to every user on this machine.\n"
             );
             exit(1);
         }
@@ -285,7 +285,7 @@ fn cmd_issue(args: &[Vec<u8>]) -> i32 {
             // inside its DN.
             (b"--crl-url", Some(v)) => {
                 if crl_urls.len() == CRL_URLS_MAX {
-                    eprintln!("fhsm-ca: at most {CRL_URLS_MAX} --crl-url entries");
+                    eprintln!("pqhsm-ca: at most {CRL_URLS_MAX} --crl-url entries");
                     exit(1);
                 }
                 crl_urls.push(Some(v));
@@ -296,7 +296,7 @@ fn cmd_issue(args: &[Vec<u8>]) -> i32 {
                     b"ocsp-responder" => OCSP_RESPONDER,
                     _ => {
                         say(&[
-                            b"fhsm-ca: --profile ",
+                            b"pqhsm-ca: --profile ",
                             v,
                             b" is not a profile.\n  end-entity      the default\n  ocsp-responder  a delegated OCSP responder\n",
                         ]);
@@ -323,7 +323,7 @@ fn cmd_issue(args: &[Vec<u8>]) -> i32 {
     };
     if profile == OCSP_RESPONDER && days > 90 {
         eprint!(
-            "fhsm-ca: NOTE -- {days} days for a delegated responder.\n  It carries id-pkix-ocsp-nocheck, so revoking it is not something\n  a verifier will observe: for the whole of that period, whoever\n  holds the key can answer for this CA. Short validity is the only\n  control that remains. Issuing anyway.\n"
+            "pqhsm-ca: NOTE -- {days} days for a delegated responder.\n  It carries id-pkix-ocsp-nocheck, so revoking it is not something\n  a verifier will observe: for the whole of that period, whoever\n  holds the key can answer for this CA. Short validity is the only\n  control that remains. Issuing anyway.\n"
         );
     }
 
@@ -343,7 +343,7 @@ fn cmd_issue(args: &[Vec<u8>]) -> i32 {
     };
     let Some(der) = ca::issue(s, label, &i).unwrap_or_else(|e| die(e)) else {
         eprint!(
-            "fhsm-ca: the request's signature does not match the key it carries.\n  Nothing was issued. Either the request was altered after signing,\n  or whoever produced it does not hold the private key it asks to\n  have certified.\n"
+            "pqhsm-ca: the request's signature does not match the key it carries.\n  Nothing was issued. Either the request was altered after signing,\n  or whoever produced it does not hold the private key it asks to\n  have certified.\n"
         );
         return 4;
     };
@@ -373,7 +373,7 @@ fn cmd_revoke(args: &[Vec<u8>]) -> i32 {
     // fhsm_rev_entry_t's 64 bytes
     let Some(serial_bytes) = rev::hex_to_bytes(serial, 64) else {
         eprint!(
-            "fhsm-ca: --serial must be an even number of hex digits,\n  exactly as the certificate carries it. openssl x509\n  -noout -serial prints it in that form.\n"
+            "pqhsm-ca: --serial must be an even number of hex digits,\n  exactly as the certificate carries it. openssl x509\n  -noout -serial prints it in that form.\n"
         );
         return 2;
     };
@@ -381,7 +381,7 @@ fn cmd_revoke(args: &[Vec<u8>]) -> i32 {
     if let Some(r) = reason {
         code = rev::reason_code(r);
         if code == -2 {
-            say(&[b"fhsm-ca: unknown reason \"", r, b"\".\n  Accepted: "]);
+            say(&[b"pqhsm-ca: unknown reason \"", r, b"\".\n  Accepted: "]);
             eprint!(
                 "{}.\n  removeFromCRL is not accepted: it belongs to delta CRLs,\n  which this tool does not produce.\n",
                 rev::reason_list()
@@ -392,14 +392,14 @@ fn cmd_revoke(args: &[Vec<u8>]) -> i32 {
     let date = match when {
         Some(w) if rev::date_to_time(w).is_some() => w.to_vec(),
         Some(_) => {
-            eprintln!("fhsm-ca: --date must be YYYYMMDDHHMMSSZ, in UTC.");
+            eprintln!("pqhsm-ca: --date must be YYYYMMDDHHMMSSZ, in UTC.");
             return 2;
         }
         // SAFETY: time(NULL).
         None => match rev::time_to_date(unsafe { libc::time(std::ptr::null_mut()) }) {
             Some(d) => d.into_bytes(),
             None => {
-                eprintln!("fhsm-ca: unrepresentable date");
+                eprintln!("pqhsm-ca: unrepresentable date");
                 return 2;
             }
         },
@@ -411,7 +411,7 @@ fn cmd_revoke(args: &[Vec<u8>]) -> i32 {
     // date. Leading zeros are ignored on both sides, as the responder compares.
     if let Some(had) = d.find(&serial_bytes) {
         say(&[
-            b"fhsm-ca: serial ",
+            b"pqhsm-ca: serial ",
             serial,
             b" is already revoked, on ",
             &had.date,
@@ -424,13 +424,13 @@ fn cmd_revoke(args: &[Vec<u8>]) -> i32 {
         date,
         reason: code,
     }) {
-        say(&[b"fhsm-ca: ", e.msg.as_bytes()]);
+        say(&[b"pqhsm-ca: ", e.msg.as_bytes()]);
         return e.code;
     }
     db_save(db, &d);
     drop(held);
     eprint!(
-        "fhsm-ca: recorded. {} revoked in total.\n  Nothing is signed yet -- run `fhsm-ca crl` to publish a\n  list that says so.\n",
+        "pqhsm-ca: recorded. {} revoked in total.\n  Nothing is signed yet -- run `fhsm-ca crl` to publish a\n  list that says so.\n",
         d.entries.len()
     );
     0
@@ -471,7 +471,7 @@ fn cmd_crl(args: &[Vec<u8>]) -> i32 {
 
     write_der(PROG, &der, c.out, c.pem, "X509 CRL");
     eprintln!(
-        "fhsm-ca: CRL number {}, {} revoked, valid {days} days.",
+        "pqhsm-ca: CRL number {}, {} revoked, valid {days} days.",
         d.crl_number,
         d.entries.len()
     );
@@ -502,7 +502,7 @@ fn cmd_ocsp_respond(args: &[Vec<u8>]) -> i32 {
     let ca_der = slurp(ca_p);
     // Checked here, before the delegation check reads its subject.
     if !ca::is_certificate(&ca_der) {
-        eprintln!("fhsm-ca: --ca-cert is not a certificate.");
+        eprintln!("pqhsm-ca: --ca-cert is not a certificate.");
         return 2;
     }
     // By default the CA answers for itself; a delegate only when a verifier would accept it.
@@ -512,7 +512,7 @@ fn cmd_ocsp_respond(args: &[Vec<u8>]) -> i32 {
             let r = slurp(rp);
             if let Err(e) = rev::check_responder(&r, &ca_der, Some(&lossy(rp)), Some(&lossy(ca_p)))
             {
-                say(&[b"fhsm-ca: ", e.msg.as_bytes()]);
+                say(&[b"pqhsm-ca: ", e.msg.as_bytes()]);
                 return e.code;
             }
             r
@@ -539,14 +539,14 @@ fn cmd_ocsp_respond(args: &[Vec<u8>]) -> i32 {
     let (resp, st) = match ca::ocsp(s, label, &q) {
         Ok(v) => v,
         Err(e) => {
-            say(&[b"fhsm-ca: ", e.c_msg()]);
+            say(&[b"pqhsm-ca: ", e.c_msg()]);
             close_session(s);
             return e.code;
         }
     };
     write_der(PROG, &resp, c.out, false, "");
     eprintln!(
-        "fhsm-ca: {} asked, {} ours ({} revoked), {} unknown, valid {days} days{}.",
+        "pqhsm-ca: {} asked, {} ours ({} revoked), {} unknown, valid {days} days{}.",
         st.asked,
         st.ours,
         st.revoked,

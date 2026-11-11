@@ -370,6 +370,7 @@ name = "pqhsm-service"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "pqhsm-core",
  "pqhsm-module",
  "pqhsm-pki",
  "pqhsm-pkiops",

@@ -3,8 +3,7 @@
 Authoritative, living roadmap. Provenance: the phased plan from the planning
 session, reconciled against what has actually shipped, plus the commercial-HSM
 design notes (`docs/DESIGN_NOTES_COMMERCIAL_HSM.md`), the rebrand plan
-(`../REBRAND_CHECKLIST.md`), the brand reference
-(`docs/SIMORGH_LABS_BRAND_REFERENCE.md`), the pkcs11-check campaign
+(`../REBRAND_CHECKLIST.md`), the pkcs11-check campaign
 (`docs/PKCS11_CHECK_CAMPAIGN.md` + `PKCS11_CHECK_FINDINGS.md`), and the
 the CC/CMVP evidence checklist (`docs/CST_LAB_SUBMISSION_CHECKLIST.md`, kept
 as a methodological reference — no submission is planned).

@@ -15,7 +15,7 @@ use pqhsm_pkiops::objects::{self, Key, OBJS_ALL, OBJS_CERTS, OBJS_KEYS, Object};
 use pqhsm_pkiops::ops::{self, text};
 use pqhsm_pkiops::{Error, Intent, close, envelope, open, parse_slot};
 
-const PROG: &str = "fhsm-crypt";
+const PROG: &str = "pqhsm-crypt";
 
 const USAGE: &str = concat!(
     "fhsm-crypt --- keys that do not sign, and the objects on the token\n\n",
@@ -160,7 +160,7 @@ fn main() {
             }
             _ if a == b"--pin" || a.starts_with(b"--pin=") => {
                 eprint!(
-                    "fhsm-crypt: --pin is not accepted. Set FHSM_PIN instead:\n  an argument is visible in ps to every user on this machine.\n"
+                    "pqhsm-crypt: --pin is not accepted. Set FHSM_PIN instead:\n  an argument is visible in ps to every user on this machine.\n"
                 );
                 exit(1);
             }
@@ -175,7 +175,7 @@ fn main() {
         b"cert" => OBJS_CERTS,
         _ => {
             say(&[
-                b"fhsm-crypt: --class takes key, cert or all, not \"",
+                b"pqhsm-crypt: --class takes key, cert or all, not \"",
                 cls_name,
                 b"\"\n",
             ]);
@@ -197,14 +197,14 @@ fn main() {
         usage();
     }
     if alg_name.is_some() && !is_keygen {
-        eprintln!("fhsm-crypt: --alg belongs to keygen.");
+        eprintln!("pqhsm-crypt: --alg belongs to keygen.");
         exit(1);
     }
     let mut skey = Skey::Aes256;
     if is_keygen {
         let Some(n) = alg_name else {
             eprintln!(
-                "fhsm-crypt: keygen needs --alg: {}",
+                "pqhsm-crypt: keygen needs --alg: {}",
                 SKEY_LIST.to_str().expect("ASCII")
             );
             exit(1);
@@ -219,7 +219,7 @@ fn main() {
         let rc = match envelope::encrypt_file_for_cert(path(cert), path(i), path(o)) {
             Ok(()) => {
                 say(&[
-                    b"fhsm-crypt: ",
+                    b"pqhsm-crypt: ",
                     i,
                     b" encrypted for the holder of ",
                     cert,
@@ -238,7 +238,7 @@ fn main() {
         PROG,
         "FHSM_PIN",
         "user PIN",
-        "fhsm-crypt: FHSM_PIN is not set.\n",
+        "pqhsm-crypt: FHSM_PIN is not set.\n",
     );
     // An argument holds no NUL.
     let module = CString::new(module).expect("no NUL in an argument");
@@ -267,7 +267,7 @@ fn main() {
                     Some(k) => (b" encrypted for \"", k),
                     None => (b" decrypted with \"", &used),
                 };
-                say(&[b"fhsm-crypt: ", i, verb, name, b"\" into ", o, b"\n"]);
+                say(&[b"pqhsm-crypt: ", i, verb, name, b"\" into ", o, b"\n"]);
                 0
             }
         };
@@ -281,7 +281,7 @@ fn main() {
         let v = objects::objects(s, OBJS_KEYS).unwrap_or_else(|e| die(e));
         if v.iter().any(|o| text(&o.label) == label) {
             say(&[
-                b"fhsm-crypt: a key labelled \"",
+                b"pqhsm-crypt: a key labelled \"",
                 label,
                 b"\" is already on the token\n",
             ]);
@@ -295,7 +295,7 @@ fn main() {
         };
         say(&[
             format!(
-                "fhsm-crypt: {} {kind} \"",
+                "pqhsm-crypt: {} {kind} \"",
                 skey.info().name.to_str().expect("ASCII")
             )
             .as_bytes(),
@@ -346,7 +346,7 @@ fn main() {
             shown += 1;
         }
         if shown == 0 && rc == 0 {
-            say(&[b"fhsm-crypt: nothing labelled \"", label, b"\"\n"]);
+            say(&[b"pqhsm-crypt: nothing labelled \"", label, b"\"\n"]);
             rc = 3;
         }
     } else if is_list {
@@ -369,7 +369,7 @@ fn main() {
                 OBJS_KEYS => b"key",
                 _ => b"object",
             };
-            say(&[b"fhsm-crypt: no ", what, b" labelled \"", label, b"\"\n"]);
+            say(&[b"pqhsm-crypt: no ", what, b" labelled \"", label, b"\"\n"]);
             rc = 3;
         } else if !yes {
             out.extend(format!("would destroy {n} object{} labelled \"", plural(n)).as_bytes());
@@ -380,7 +380,7 @@ fn main() {
             }
             flush_tty(&mut out);
             eprintln!(
-                "fhsm-crypt: nothing destroyed. Add --yes to destroy {}; it cannot be undone.",
+                "pqhsm-crypt: nothing destroyed. Add --yes to destroy {}; it cannot be undone.",
                 if n == 1 { "it" } else { "them" }
             );
             rc = 1;
@@ -394,7 +394,7 @@ fn main() {
                 }
                 let class = o.cls.name().to_str().expect("ASCII");
                 say(&[
-                    format!("fhsm-crypt: destroyed {class} {} \"", o.handle).as_bytes(),
+                    format!("pqhsm-crypt: destroyed {class} {} \"", o.handle).as_bytes(),
                     label,
                     b"\"\n",
                 ]);

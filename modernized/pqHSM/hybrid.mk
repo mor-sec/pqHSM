@@ -37,7 +37,12 @@
 include Makefile
 
 PQHSM_DIR  := modernized/pqHSM
-PQHSM_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_module.a
+# The harness builds with dev-bypass (DIV-034's environment seams); `PQHSM_FEATURES=` is the
+# release build install-pqhsm requires, in its own target dir so neither is taken for the other.
+PQHSM_FEATURES ?= dev-bypass
+PQHSM_TARGET := $(PQHSM_DIR)/target$(if $(PQHSM_FEATURES),,-release)
+PQHSM_FEAT   := $(if $(PQHSM_FEATURES),--features $(PQHSM_FEATURES)) --target-dir $(PQHSM_TARGET)
+PQHSM_LIB  := $(PQHSM_TARGET)/release/libpqhsm_module.a
 # tests/test_tpm only: the same staticlib with the FHSM_TPM_CMD seam, built into its own
 # target dir so the shipped one is never the hooks build (review H6).
 PQHSM_HOOKS_LIB := $(PQHSM_DIR)/target-hooks/release/libpqhsm_module.a
@@ -46,7 +51,7 @@ PQHSM_EMPTY := $(PQHSM_DIR)/module/empty.c
 PQHSM_KAT_SHIM := $(PQHSM_DIR)/crypto/shim/kat_results.c
 PQHSM_DIGEST_SHIM := $(PQHSM_DIR)/selftest/shim/integrity_digest.c
 # Cargo is incremental, so depending on every source is cheap and never misses one (review L2).
-PQHSM_SRC  := $(shell find $(PQHSM_DIR) -path $(PQHSM_DIR)/target -prune -o -path $(PQHSM_DIR)/target-hooks -prune \
+PQHSM_SRC  := $(shell find $(PQHSM_DIR) -path $(PQHSM_DIR)/target -prune -o -path $(PQHSM_DIR)/target-hooks -prune -o -path $(PQHSM_DIR)/target-release -prune \
                 -o \( -name '*.rs' -o -name Cargo.toml \) -print) $(PQHSM_DIR)/Cargo.lock
 # From `rustc --print native-static-libs`, less -lgcc_s: -static-libgcc links the unwinder
 # from libgcc_eh.a instead, and --as-needed drops the rest, so the module's NEEDED list stays
@@ -57,7 +62,7 @@ LDFLAGS += -static-libgcc -Wl,--exclude-libs,ALL $(PQHSM_LIB) \
            -Wl,--push-state,--as-needed $(PQHSM_NATIVE) -Wl,--pop-state
 
 $(PQHSM_LIB): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-module --features dev-bypass --manifest-path $(PQHSM_DIR)/Cargo.toml
+	cargo build --release --locked -p pqhsm-module $(PQHSM_FEAT) --manifest-path $(PQHSM_DIR)/Cargo.toml
 
 $(PQHSM_HOOKS_LIB): $(PQHSM_SRC)
 	cargo build --release --locked -p pqhsm-module --features tpm-test-hooks,dev-bypass \
@@ -130,19 +135,19 @@ tests/test_tpm: $(PQHSM_HOOKS_LIB)
 # target. Not a target-specific PQHSM_LIB, as test_tpm's: it would reach $(LIB), a prerequisite
 # of test_pkiops*, if make built the module for them. tools/fhsm-gui: slice 6, below.
 # From slice 1 a ported tool is pqhsm-cli's binary instead (PQHSM_CLI_BINS, below).
-PQHSM_PKIOPS_LIB  := $(PQHSM_DIR)/target/release/libpqhsm_pkiops.a
+PQHSM_PKIOPS_LIB  := $(PQHSM_TARGET)/release/libpqhsm_pkiops.a
 PQHSM_CLI_BINS    := tools/fhsm-csr tools/fhsm-token tools/fhsm-crypt tools/fhsm-sign tools/fhsm-ca
 PQHSM_PKIOPS_BINS := $(filter-out $(PQHSM_CLI_BINS),$(TOOLS)) tests/test_pkiops tests/test_pkiops_algs \
                      tests/test_pkiops_objects tests/test_pkiops_secret tests/test_pkiops_envelope \
                      tests/test_pkiops_envelope_rsa
 
 $(PQHSM_PKIOPS_LIB): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-pkiops --manifest-path $(PQHSM_DIR)/Cargo.toml
+	cargo build --release --locked -p pqhsm-pkiops --target-dir $(PQHSM_TARGET) --manifest-path $(PQHSM_DIR)/Cargo.toml
 
 # The Rust tools, built by cargo and copied to the C names; they keep the legacy prerequisites.
 $(PQHSM_CLI_BINS): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-cli --bin $(notdir $@) --manifest-path $(PQHSM_DIR)/Cargo.toml
-	cp $(PQHSM_DIR)/target/release/$(notdir $@) $@
+	cargo build --release --locked -p pqhsm-cli --bin $(notdir $@) --target-dir $(PQHSM_TARGET) --manifest-path $(PQHSM_DIR)/Cargo.toml
+	cp $(PQHSM_TARGET)/release/$(notdir $@) $@
 
 # The main source is the target's name with _ for -: tools/fhsm-csr is tools/fhsm_csr.c.
 $(PQHSM_PKIOPS_BINS): $(PQHSM_PKIOPS_LIB)
@@ -161,9 +166,9 @@ tools/fhsm-gui: $(PQHSM_PKIOPS_LIB)
 # links the module statically as C's does: its staticlib holds the module's crates and the
 # service, and $(LIB_OBJ) the C shims. pqhsm-pkiops reaches the module with dlopen(NULL), so
 # the binary exports C_GetFunctionList (it exports nothing else).
-PQHSM_SERVICE_LIB := $(PQHSM_DIR)/target/release/libpqhsm_service.a
+PQHSM_SERVICE_LIB := $(PQHSM_TARGET)/release/libpqhsm_service.a
 $(PQHSM_SERVICE_LIB): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-service --features dev-bypass --manifest-path $(PQHSM_DIR)/Cargo.toml
+	cargo build --release --locked -p pqhsm-service $(PQHSM_FEAT) --manifest-path $(PQHSM_DIR)/Cargo.toml
 
 service/pqhsm-service: $(PQHSM_DIR)/service/shim/main.c $(LIB_OBJ) $(REVOCATION_OBJ) $(PQHSM_SERVICE_LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(REVOCATION_OBJ) \
@@ -183,3 +188,40 @@ FORCE:
 $(OBJDIR)/src/fhsm_revocation.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Phase 6 slice 4 (Q18, Q21): the pqHSM layout over the legacy install, which installs the module
+# under its C name and freehsm-audit. The module becomes libpqhsm.so with libfreehsm.so a link
+# (its soname stays libfreehsm.so, so consumers linked to either load it); the tools pqhsm-* with
+# fhsm-* links for one release; the service $(PREFIX)/libexec/pqhsm-service and its unit, with
+# ExecStart to match, when the build's service can start (all-mechanisms: DIV-081). A release
+# build only, signed (review H1, M3), from a clean checkout:
+#   make -f modernized/pqHSM/hybrid.mk PQHSM_FEATURES= PROFILE=... install-pqhsm
+# Each old name is replaced by its link in one rename, so it is never missing (review L5).
+# shortcut: a target of its own beside `install`, whose recipe hybrid.mk cannot extend; it
+# becomes `install` at the cutover (slice 5).
+UNITDIR ?= /etc/systemd/system
+PQHSM_RELINK = ln -sfn $(2) $(dir $(1)).$(notdir $(1)).tmp && mv -Tf $(dir $(1)).$(notdir $(1)).tmp $(1)
+.PHONY: install-pqhsm
+install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) tools/freehsm-audit service/pqhsm-service
+	@[ -z "$(PQHSM_FEATURES)" ] || { echo "install-pqhsm: refused: built with $(PQHSM_FEATURES), the harness's seams (DIV-034). From a clean checkout: make -f $(PQHSM_DIR)/hybrid.mk PQHSM_FEATURES= install-pqhsm" >&2; exit 1; }
+	scripts/sign_module.sh $(LIB) || [ $$? = 3 ]
+	$(MAKE) -f $(PQHSM_DIR)/hybrid.mk install
+	ln -f $(LIBDIR)/$(LIB) $(LIBDIR)/libpqhsm.so
+	$(call PQHSM_RELINK,$(LIBDIR)/$(LIB),libpqhsm.so)
+	for t in $(notdir $(PQHSM_CLI_BINS)); do \
+	    install -o root -g root -m 0755 tools/$$t $(PREFIX)/bin/pq$${t#f} && \
+	    ln -sfn pq$${t#f} $(PREFIX)/bin/.$$t.tmp && mv -Tf $(PREFIX)/bin/.$$t.tmp $(PREFIX)/bin/$$t || exit 1; \
+	done
+	ln -f $(PREFIX)/bin/freehsm-audit $(PREFIX)/bin/pqhsm-audit
+	$(call PQHSM_RELINK,$(PREFIX)/bin/freehsm-audit,pqhsm-audit)
+	@if [ "$(PROFILE_CANON)" = all-mechanisms ]; then \
+	    set -e; scripts/sign_module.sh service/pqhsm-service || [ $$? = 3 ]; \
+	    install -d -o root -g root -m 755 $(PREFIX)/libexec $(UNITDIR); \
+	    install -o root -g root -m 0755 service/pqhsm-service $(PREFIX)/libexec/pqhsm-service; \
+	    sed -e 's|^ExecStart=/usr/libexec/fhsm-service|ExecStart=$(PREFIX)/libexec/pqhsm-service|' \
+	        -e 's|^#   install -m 0644 systemd/fhsm-service.service /etc/systemd/system/|#   installed by: make -f $(PQHSM_DIR)/hybrid.mk install-pqhsm|' \
+	        systemd/fhsm-service.service > $(UNITDIR)/pqhsm-service.service; \
+	    grep -q '^ExecStart=$(PREFIX)/libexec/pqhsm-service ' $(UNITDIR)/pqhsm-service.service; \
+	    echo "[install] $(PREFIX)/libexec/pqhsm-service, $(UNITDIR)/pqhsm-service.service"; \
+	else echo "[install] the service is not installed: a $(PROFILE_CANON) build's refuses to start (DIV-081)"; fi
+	@echo "[install] pqHSM layout: $(LIBDIR)/libpqhsm.so, $(PREFIX)/bin/pqhsm-*"
