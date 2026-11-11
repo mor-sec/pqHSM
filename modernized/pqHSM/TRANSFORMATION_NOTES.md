@@ -1818,7 +1818,7 @@ Checked and found equivalent: the refresh against in-flight answers (the read gu
 | M1 | The re-read on change was pinned nowhere; the unit test could not fail on it | The test reads the contents after each change; a transcript row and the parallel run revoke a serial under the running service |
 | M2 | tryLater and internalError reached by no row | Two transcript rows |
 | M3 | The override could leave a stale binary either way | FORCE; the harness compares the shipped binary with `pqhsm-service` |
-| L1 | Change detection in whole seconds and size (as C): a same-size fix within the second is missed | Open: a DIV, for the user (adding the inode and nanoseconds only adds reloads) |
+| L1 | Change detection in whole seconds and size (as C): a same-size fix within the second is missed | DIV-082 (user, 2026-11-12: "Add inode + nanoseconds (Recommended)"): the inode and the mtime's nanoseconds compared too; the unit test rewrites the file at the same size within the second |
 | L2 | The parse error printed under the write lock | Printed before it, as C |
 | L3 | A `--ca-cert` that does not parse starts, then every answer is malformedRequest (as C) | Open: a DIV, for the user (refuse at start-up when OCSP is configured) |
 

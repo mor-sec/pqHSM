@@ -24,13 +24,13 @@ const MALFORMED: i32 = 1;
 const INTERNAL: i32 = 2;
 const TRY_LATER: i32 = 3;
 
-/// The database in force, and the file's mtime and size when it was last read.
+/// The database in force, and the file's stamp (inode, mtime to the nanosecond, size; DIV-082)
+/// when it was last read.
 #[derive(Default)]
 struct Rev {
     db: Db,
     ok: bool,
-    mtime: i64,
-    size: i64,
+    stamp: [i64; 4],
 }
 
 pub struct Ocsp {
@@ -54,17 +54,17 @@ impl Ocsp {
     }
 
     /// `rev_db_refresh`: whether a usable database is in force. Re-read only when the file's
-    /// mtime or size changed; a missing file is an empty database; a file that does not parse
+    /// stamp changed (C: whole-second mtime and size; DIV-082); a missing file is an empty database; a file that does not parse
     /// is reported once and the previous database kept, if there was one.
     pub fn refresh(&self) -> bool {
-        let (mtime, size) = match std::fs::metadata(&self.path) {
-            Ok(m) => (m.mtime(), m.size() as i64),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (0, 0),
+        let stamp = match std::fs::metadata(&self.path) {
+            Ok(m) => [m.ino() as i64, m.mtime(), m.mtime_nsec(), m.size() as i64],
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => [0; 4],
             Err(_) => return false,
         };
         {
             let r = self.rev.read().unwrap_or_else(PoisonError::into_inner);
-            if r.ok && r.mtime == mtime && r.size == size {
+            if r.ok && r.stamp == stamp {
                 return true;
             }
         }
@@ -79,12 +79,11 @@ impl Ocsp {
                 *r = Rev {
                     db,
                     ok: true,
-                    mtime,
-                    size,
+                    stamp,
                 }
             }
             // not the same broken file again on every request
-            Err(_) => (r.mtime, r.size) = (mtime, size),
+            Err(_) => r.stamp = stamp,
         }
         r.ok
     }
@@ -177,6 +176,16 @@ mod tests {
         std::fs::write(&p, "garbage\n").unwrap();
         assert!(o.refresh(), "a broken file keeps the last good database");
         assert!(has(&o, 0x0B));
+        // DIV-082: a fix of the same size within the same second is still read
+        let put = |text: &str| {
+            std::fs::write(d.join("t"), text).unwrap();
+            std::fs::rename(d.join("t"), &p).unwrap();
+        };
+        put("xxxxxxxxxxxxxxxxxxxx\n");
+        assert!(o.refresh() && !has(&o, 0x0C));
+        put("0C 20260103000000Z -\n");
+        assert!(o.refresh() && has(&o, 0x0C), "the fix, same size, read");
+        put("garbage\n");
         let first = Ocsp::new(b"ca".to_vec(), p.clone(), 7, None);
         assert!(
             !first.refresh(),
