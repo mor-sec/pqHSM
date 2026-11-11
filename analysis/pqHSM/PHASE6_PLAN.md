@@ -1,6 +1,6 @@
 # Phase 6 plan: HTTP service and cutover
 
-Status: **DRAFT 2026-11-11**, for approval (user: "Draft Phase 6 plan (Recommended)"). Phase 5 stays open until the GUI's manual UAT is reported. Brief: `MODERNIZATION_BRIEF.md` Phase 6. Method: `/modernize-transform`, slice by slice, as in Phases 2 to 5: C goldens first, the Rust against them, a harness run clean apart from recorded divergences, an architecture-critic review per slice, commit.
+Status: **APPROVED 2026-11-11** (user: "Approve, std HTTP (Recommended)"; drafted on "Draft Phase 6 plan (Recommended)"). Phase 5 stays open until the GUI's manual UAT is reported. Brief: `MODERNIZATION_BRIEF.md` Phase 6. Method: `/modernize-transform`, slice by slice, as in Phases 2 to 5: C goldens first, the Rust against them, a harness run clean apart from recorded divergences, an architecture-critic review per slice, commit.
 
 ## 1. Scope
 
@@ -43,7 +43,7 @@ The C service stays the shipped binary until slice 3's exit. Each slice adds rou
 
 | When | Decision | Recommendation |
 |---|---|---|
-| With this plan | **HTTP layer:** axum/hyper as the brief says, or a hand-written reader on std (`UnixListener`, threads) as in C | **std, no new crates.** The transcripts are the exit criterion, and C's reader defines them (header order, error bodies, limits, deadlines). The acceptor and worker model maps to threads one to one. hyper would answer some malformed requests itself, differently. Recorded against the brief's D9, as Phase 5 recorded its loader |
+| With this plan (**decided 2026-11-11: std**, user: "Approve, std HTTP (Recommended)") | **HTTP layer:** axum/hyper as the brief says, or a hand-written reader on std (`UnixListener`, threads) as in C | **std, no new crates.** The transcripts are the exit criterion, and C's reader defines them (header order, error bodies, limits, deadlines). The acceptor and worker model maps to threads one to one. hyper would answer some malformed requests itself, differently. Recorded against the brief's D9, as Phase 5 recorded its loader |
 | Before slice 2 | RULE-068: the identity and budget tables fail open when full (`:537`, `:773`) | fail closed: 503 when the identity table is full; a full budget table evicts the entry with the least refusal time owed |
 | Before slice 2 | RULE-098: a failed policy reload goes to stderr only | also audit it (one record); keep the old policy, as C does |
 | Before slice 2 | RULE-065: the strict build's service always signs with the composite mechanism, so `/sign` is 500 | refuse to start in the strict build, with a message, rather than serve a route that always fails |
