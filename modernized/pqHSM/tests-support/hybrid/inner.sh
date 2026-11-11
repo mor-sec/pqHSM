@@ -503,16 +503,17 @@ for n in 1 2; do (cd $AMC && sh /work/modernized/pqHSM/tests-support/hybrid/serv
 printf 'service transcript: %s, C run 1 %s, %s rows, %s lines, run 2 vs run 1 %s' "$(tail -1 /out/service_build.log)" \
   "$(tail -1 /out/service_c1.txt)" "$(grep -c '^== [0-9]' /out/service_c1.txt)" "$(wc -l < /out/service_c1.txt)" \
   "$(cmp -s /out/service_c1.txt /out/service_c2.txt && echo same || echo "DIFF ($(diff /out/service_c1.txt /out/service_c2.txt | grep -c '^[<>]') lines)")" > /out/service.txt
-# The scaffold (slice 0): pqhsm-service links the module statically and loads it through its
-# own C_GetFunctionList (dlopen(NULL)), the binary's one dynamic export; --profile as C's.
+# pqhsm-service links the module statically and loads it through its own C_GetFunctionList
+# (dlopen(NULL)), the binary's one dynamic export; --profile as C's. Slice 1 on: the same
+# transcript against it, row by row against C run 1; service_pending.txt names the rows a later
+# slice's routes still owe.
 { (cd $AMH && $M PROFILE=all-mechanisms service/pqhsm-service); echo "build rc=$?"; } > /out/service_h_build.log 2>&1
-(cd $AMH && export FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 &&
-  FHSM_SO_PIN=sopin1234 FHSM_PIN=userpin1234 tools/fhsm-token init --label s > /dev/null 2>&1;
-  service/pqhsm-service > /tmp/svc_load.txt 2>&1; rc=$?; tail -1 /tmp/svc_load.txt; echo "rc=$rc") > /out/service_h_load.txt 2>&1
-printf '; pqhsm-service: %s, dynamic exports %s (C_GetFunctionList %s), --profile %s, load: %s' "$(tail -1 /out/service_h_build.log)" \
+(cd $AMH && SVC=$AMH/service/pqhsm-service sh /work/modernized/pqHSM/tests-support/hybrid/service_transcripts.sh > /out/service_h.txt 2>&1; echo "rc=$?" >> /out/service_h.txt)
+printf '; pqhsm-service: %s, dynamic exports %s (C_GetFunctionList %s), --profile %s, run %s, against C: %s' "$(tail -1 /out/service_h_build.log)" \
   "$(nm -D $AMH/service/pqhsm-service 2>/dev/null | grep -c ' T ')" "$(nm -D $AMH/service/pqhsm-service 2>/dev/null | grep -c ' T C_GetFunctionList$')" \
   "$([ "$($AMH/service/pqhsm-service --profile 2>&1)" = "$($AMC/service/fhsm-service --profile 2>&1)" ] && echo "same as C ($($AMC/service/fhsm-service --profile))" || echo DIFF)" \
-  "$(tr '\n' ' ' < /out/service_h_load.txt | sed 's/ $//')" >> /out/service.txt
+  "$(tail -1 /out/service_h.txt)" \
+  "$(python3 -I /work/modernized/pqHSM/tests-support/hybrid/service_rows.py /out/service_c1.txt /out/service_h.txt /work/modernized/pqHSM/tests-support/hybrid/service_pending.txt)" >> /out/service.txt
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
 # Slice 4 on: the Rust fhsm-sign on either module, DIV-075 (cms-verify names its signer, --signer).

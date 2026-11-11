@@ -233,20 +233,35 @@ pub fn token_init(slot: Slot, so: &[u8], user: &[u8], label: &[u8]) -> Result<()
 
 /// `pkiops_session_user`: a read-write session, logged in as the user.
 pub fn session_user(slot: Slot, pin: &[u8]) -> Result<Session, Error> {
-    let slot = slot.0;
-    let mut s: Handle = 0;
-    // SAFETY: s is writable; no application callback.
-    let rv = unsafe { w_open_session(slot, CKF_RW, null_mut(), null_mut(), &mut s) };
+    let s = session_open(slot)
+        .map_err(|rv| Error::new(2, format!("C_OpenSession failed (0x{rv:x})\n")))?;
+    let rv = login_user(s, pin);
     if rv != 0 {
-        return Err(Error::new(2, format!("C_OpenSession failed (0x{rv:x})\n")));
-    }
-    // SAFETY: pin.len() readable bytes; the module does not write through it.
-    let rv = unsafe { w_login(s, CKU_USER, pin.as_ptr().cast_mut(), pin.len() as CK_ULONG) };
-    if rv != 0 {
-        session_close(Session(s));
+        session_close(s);
         return Err(Error::new(2, format!("C_Login failed (0x{rv:x})\n")));
     }
-    Ok(Session(s))
+    Ok(s)
+}
+
+/// C_OpenSession, read-write; `Err` is the module's `CK_RV`.
+pub fn session_open(slot: Slot) -> Result<Session, CK_ULONG> {
+    let mut s: Handle = 0;
+    // SAFETY: s is writable; no application callback.
+    let rv = unsafe { w_open_session(slot.0, CKF_RW, null_mut(), null_mut(), &mut s) };
+    if rv == 0 { Ok(Session(s)) } else { Err(rv) }
+}
+
+/// C_Login as the user; the module's `CK_RV`.
+pub fn login_user(s: Session, pin: &[u8]) -> CK_ULONG {
+    // SAFETY: pin.len() readable bytes; the module does not write through it.
+    unsafe {
+        w_login(
+            s.0,
+            CKU_USER,
+            pin.as_ptr().cast_mut(),
+            pin.len() as CK_ULONG,
+        )
+    }
 }
 
 /// `pkiops_session_close`.

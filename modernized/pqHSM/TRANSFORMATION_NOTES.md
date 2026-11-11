@@ -1722,3 +1722,43 @@ Masked: the token serial, the uid, the work directory, and a held identity's Ret
 | (link "never built") | The reviewer's checkout had no `libpqhsm_service.a` | It was built and run in the image before the review, and in `run14` |
 
 **Evidence (slice 0).** Harness `run15` (the final tree; `run14` before the review fixes, 114 rows): step 5c "service transcript: build rc=0, C run 1 rc=0, 129 rows, 1136 lines, run 2 vs run 1 same; pqhsm-service: build rc=0, dynamic exports 1 (C_GetFunctionList 1), --profile same as C (all-mechanisms), load: the module answered through the program's C_GetFunctionList; slice 0 serves nothing rc=2". The rest of the summary is `run13`'s but run-to-run noise ("C reading Rust-written" 2 lines). Two local runs of the final transcript, alongside a harness run loading the machine, were identical too. Cargo: workspace 955 passed, 0 failed; clippy `-D warnings` clean.
+
+### Slice 1: start-up and the read-only side (2026-11-11)
+
+`pqhsm-service` now runs as a service: the arguments and usage (`usage.txt`, C's text extracted from its literals), the start-up order and the one-shot PIN login (RULE-097), both listeners behind SO_PEERCRED (RULE-067), the acceptor and its workers (first-byte 408, queue-full 503, burst compression), the request reader, `/health`, `/token`, and `/certificates` on the public listener. Messages still say `fhsm-service` (the rename is slice 4).
+
+| C (`service/fhsm_service.c`) | Rust (`service/src/`) |
+|---|---|
+| `usage`, `main`'s argument loop and start-up checks (2325-2620) | `lib.rs`: `parse`, `num` (C's `strtol` through `pqhsm_pkiops::strtol`), `check_ocsp`, `run` |
+| `main`'s start-up and shutdown (2620-2812) | `lib.rs`: `run`, `bind`, `handle` (sigaction), the stop pipe in `listen.rs` |
+| `read_request`, `wait_readable`, `respond_with`, `refuse_now` (955-1335, 2129) | `http.rs` (`c_str` stands for `strstr`'s stop at a NUL) |
+| `listener_t`, `acceptor`, `worker`, `burst_*`, `ready_push` (2036-2324) | `listen.rs`: `Listener` |
+| `serve`, `serve_public` (1516-1745, 1941-2035) | `serve.rs` |
+| `policy_load`, the pool, `login_once`, `ident_*`, `budget_load`/`_retry_after` (160-830, 1746-1815) | `state.rs` (`fgets_pieces` reads as `fgets` does, a long line in pieces) |
+| `C_*` calls | `pqhsm-pkiops`: `load(None)`, `ffi::slots`, `ops::token_info`, and two new primitives `ops::session_open` and `ops::login_user` (`session_user` now uses them) |
+| `fhsm_audit_event`, `fhsm_audit_set_actor` | `audit.rs`: the module's own `pqhsm_audit_event_v`, the same log and thread actor |
+
+**Not yet:** POST `/sign` and `/verify` answer 404 `unknown_route` and POST `/ocsp` 503 until slices 2 and 3; the budget is loaded and enforced but not charged, and SIGHUP sets the reload flag that slice 2 reads. RULE-068's tables stay fail-open as C's until it is decided (before slice 2).
+
+**Proof.** The slice 0 transcript run on `service/pqhsm-service` (harness step 5c) and compared row by row with C's run 1 (`service_rows.py`). `service_pending.txt` names the rows a later slice owes: whole rows for sign, verify, the budget's refusals, the SIGHUP reload and OCSP; for the six aggregate rows (the five "stopped" rows and the audit records) only the lines matching a pattern (the reload and budget-restored log lines; sign, verify and `identity_limited` records and the route refusals of `/sign` and `/verify`), so the rest of each, the start and stop audit, every accepted and refused record, the bursts, "listening on", "stopped" and the exit status, must match now (105 of the 149 audit lines). A row that differs outside the list, or matches inside it, is UNEXPECTED. A mutated `window_s` and a misspelled "stopped" were both caught. Unit tests: the reader's refusals (NUL included), `fgets` pieces, the budget's delay and decay, the fairness cap, the argument parser.
+
+**Deviations.** DIV-076 (an acceptor that fails takes the other with it; errno read before the burst flush) and DIV-077 (a directory as `--policy` is refused), both PROPOSED, from the review. Not C's to the byte, and recorded rather than matched: `/token` drops trailing NULs as well as spaces from the label (only a label holding a NUL shows it); paths print through `Path::display` (non-UTF-8 bytes as U+FFFD); the slot is found through `pkiops::ffi::slots` (C_GetSlotList twice and C_GetTokenInfo, where C makes one call into 16 slots); C's second pool check (`--pool-max` below `--workers` alone) cannot fire after its first and is not ported; a failed C_Initialize prints pkiops' message with C's sentence after it.
+
+### Slice 1 review (architecture-critic, 2026-11-11)
+
+No unsound `unsafe`, no descriptor leak, no byte-level divergence found on the slice's paths (the reader, the responses, the usage text, the argument edge cases, the start-up messages and exit codes, the pool and the fairness table, the acceptor's compaction, the shutdown order).
+
+| # | Finding | Done |
+|---|---|---|
+| H1 | The aggregate rows (the audit records, the five "stopped" rows) were excused whole, so the slice's own audit trail, start and stop output and exit status were never compared | `service_pending.txt` entries take a pattern; only the owed lines are excused (Proof above) |
+| M1 | The acceptor tests errno after the burst flush's audit write; one SIGHUP can then stop the daemon with exit 0, or leave the public listener dead and the shutdown hung (inherited) | DIV-076 |
+| M2 | `eprintln!`/`println!` panic on a write error (EPIPE with SIGPIPE ignored): abort where C's fprintf carries on | `errw!`/`errln!`/`outln!`, which ignore the error, everywhere |
+| L1 | A failed thread spawn panicked | `thread::Builder`, C's "cannot start …" and exit 1 |
+| L2 | `--ca-cert`/`--responder-cert` read whole (`/dev/zero`) | Read through `take(65536)`; C's bound kept |
+| L3 | `--policy DIR` refused where C starts with no rules | DIV-077 |
+| L4 | `--proxy-uid` past `u32` truncates (4294967296 admits uid 0), inherited | Open: to RULE-067 with the slice 2 decisions |
+| L5 | A second `strtol` with hand-set errno | `pqhsm_pkiops::strtol`; two `unsafe` blocks gone |
+| Nits | A second 64 KiB body buffer; `write_all` that writes once; constants twice; the label's NULs; `Path::display` | Body read in place; `write_once`; `http.rs`' constants shared; the last two recorded above |
+| (unchecked) | Whether the token's TPM unseal can spawn a child after bind, inheriting the non-CLOEXEC sockets (as C's) | Open: the login, the only unseal, happens before bind |
+
+**Evidence (slice 1).** Harness `run17` (the final tree; `run16` before the review fixes, whole aggregate rows excused): step 5c "pqhsm-service: build rc=0, dynamic exports 1 (C_GetFunctionList 1), --profile same as C (all-mechanisms), run rc=0, against C: 139 rows, 102 same, 37 differ, every difference pending", C's two runs the same. The rest of the summary is `run15`'s but run-to-run noise ("C reading Rust-written" 2 or 4 lines, the corpus record count) and pkiops' two new symbols (290). Cargo: workspace 960 passed, 0 failed; clippy `-D warnings` clean. Legacy retired: none yet; C's service ships until the slice 5 cutover.

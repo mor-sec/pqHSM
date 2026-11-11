@@ -1,0 +1,83 @@
+fhsm-service --- signs and verifies over a local socket (#111)
+
+  fhsm-service --socket PATH --proxy-uid N
+
+  --socket PATH    unix socket to listen on. Created with mode 0660;
+                   put the proxy in the group and nobody else.
+  --proxy-uid N    the uid the reverse proxy runs as. Required, with no
+                   default: SO_PEERCRED is the whole enforcement, and a
+                   guard whose value was guessed is not a guard.
+  --workers N      concurrent request handlers (default 4).
+  --pool-max N     ceiling on pooled sessions (default 32, module cap
+                   127). Grown lazily: an idle session still costs
+                   ~29 KiB resident, so they are opened on demand.
+  --policy PATH    authorisation policy: SUBJECT<TAB>KEY-LABEL per
+                   line. Required. Reloaded on SIGHUP, taking effect
+                   on the next request; a failed reload keeps the
+                   rules already in force.
+  Fairness: while another identity has a request in flight, each is
+  held to --workers minus one, so a client cannot take every worker.
+  A single client is never capped, and the refusal is 429.
+
+  --queue-depth N  connections the acceptor will hold while they have
+                   said nothing (default 256, per listener). Holding one
+                   costs a descriptor and ~0.4 kB; committing a worker to
+                   it costs 19.7 kB and a client's latency, which is why
+                   the acceptor holds it instead. Past the depth the
+                   answer is 503 with Retry-After. Refused at start if
+                   the descriptor limit cannot cover it -- past that the
+                   failure is EMFILE, which nobody is told about.
+
+  --public-socket PATH
+                   a second socket that requires no identity, for the
+                   things a relying party asks anonymously: GET
+                   /certificates and POST /ocsp. No policy, no refusal
+                   budget, no audit line per request -- see the notes in
+                   the source for why each is absent. Off unless given.
+  --public-workers N   threads for it (default 2). Separate from
+                   --workers so anonymous traffic cannot starve the
+                   authenticated side.
+  --ca-cert FILE   the certificate GET /certificates returns, and the
+                   issuer POST /ocsp matches CertIDs against. Only
+                   meaningful with --public-socket.
+
+  --revocation-db FILE
+                   the database `fhsm-ca revoke` writes. Re-read when
+                   the file changes, checked once per query: a
+                   responder that held it would keep answering `good`
+                   for a certificate revoked an hour ago, which is the
+                   failure OCSP exists to prevent.
+  --ocsp-label NAME    the key that signs responses. Required with
+                   --revocation-db, and --ca-cert is required with
+                   both: a CertID identifies by issuer name and key.
+  --responder-cert FILE
+                   sign as a delegated responder (RFC 6960 4.2.2.2)
+                   rather than as the CA. Its extendedKeyUsage and
+                   issuer are checked at start, not per request.
+  --ocsp-days N    nextUpdate, in days (default 7).
+                   POST only: the RFC 6960 A.1 GET form would need a
+                   base64 decoder this daemon does not have.
+
+  --profile        print the profile this binary was built with and
+                   exit. The service links the module statically, so
+                   the answer is about this binary and no other.
+
+  --pin-file PATH  read the token PIN from PATH instead of from
+                   $CREDENTIALS_DIRECTORY/fhsm-pin. For test rigs; a
+                   deployment uses LoadCredentialEncrypted=.
+
+  The token directory comes from FHSM_TOKENS_DIR, as everywhere else.
+  The PIN is never taken from an argument or an inherited environment
+  variable -- see docs/DAEMON_PIN.md for why the environment is as bad
+  as the command line here.
+
+  POST /verify checks a signature against the same key, with the body
+  carrying the signature followed by the message and
+  X-FHSM-Signature-Length saying where to cut. 200 only when it
+  verifies, 422 when it does not -- so a caller that reads the status
+  and ignores the body is right by default.
+
+  /token reads the token's public description; POST /sign signs a
+  request body with the key named by X-FHSM-Key, if the policy file
+  pairs it with the caller's subject. /certificates and /ocsp are on
+  the public listener, not here.
