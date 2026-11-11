@@ -203,7 +203,8 @@ fn parse<'a>(args: &[&'a [u8]]) -> Parsed<'a> {
             true
         } else {
             let (field, lo, hi) = match opt {
-                b"--proxy-uid" => (&mut a.proxy_uid, 0, i64::MAX),
+                // a real uid: C took any long and truncated it, so 2^32 was root (DIV-080)
+                b"--proxy-uid" => (&mut a.proxy_uid, 0, u32::MAX as i64 - 1),
                 b"--workers" => (&mut a.workers, 1, 256),
                 b"--pool-max" => (&mut a.pool_max, 1, POOL_MAX_LIMIT),
                 b"--public-workers" => (&mut a.pub_workers, 1, 256),
@@ -617,6 +618,10 @@ mod tests {
         assert_eq!(with("1", &["--workers", ""]), None); // 0 is out of range
         assert_eq!(with("12x", &[]), None);
         assert_eq!(with("-1", &[]), None);
+        assert_eq!(with("4294967294", &[]), Some((4294967294, 4)));
+        assert_eq!(with("4294967295", &[]), None); // (uid_t)-1
+        assert_eq!(with("4294967296", &[]), None); // C: uid 0
+        assert_eq!(with("99999999999999999999", &[]), None);
         assert_eq!(with("1", &["--workers", "257"]), None);
         assert_eq!(with("1", &["--ocsp-days", "366"]), None);
         assert_eq!(with("1", &["--bogus", "x"]), None);

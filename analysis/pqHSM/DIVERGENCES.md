@@ -832,14 +832,42 @@ The suspected-defect rules gated at Phase 5, decided before the phase starts (20
 
 ### DIV-076 · RULE-097 An acceptor's failure stops the service, and errno is read before the burst flush
 
-- **Status:** PROPOSED (2026-11-11, Phase 6 slice 1 review M1); built in `pqhsm-service`, reverted if declined.
-- **Legacy:** the acceptor calls `poll`, then `burst_flush` (which may write an audit record), then tests `errno != EINTR` (`service/fhsm_service.c:2216-2218`). A SIGHUP interrupts `poll` with EINTR, and an audit write that leaves errno set turns that into a failure: the acceptor leaves. If it is the private one, the service shuts down in order and exits 0, so `Restart=on-failure` does not restart it; if it is the public one, that listener stops serving silently, and at shutdown the main thread waits forever joining a public acceptor that never saw a stop (`:2789-2795`).
+- **Status:** DECIDED (2026-11-11; user: "Keep the fix (Recommended)"), from the Phase 6 slice 1 review M1; built in `pqhsm-service`.
+- **Legacy:** the acceptor calls `poll`, then `burst_flush` (which may write an audit record), then tests `errno != EINTR` (`service/fhsm_service.c:2216-2218`). A SIGHUP interrupts `poll` with EINTR, and an audit write that leaves errno set turns that into a failure: the acceptor leaves (the trigger is read from the code, not reproduced). If it is the private one and there is no public listener, the service shuts down in order and exits 0, so `Restart=on-failure` does not restart it; with a public listener, the main thread then waits forever joining the public acceptor, which polls only the stop pipe and never saw a stop (`:2789-2795`): nothing is served privately and the process never exits. If it is the public one, that listener stops serving silently while the private side carries on.
 - **Target:** errno is taken straight after `poll`. An acceptor that leaves for any reason writes a byte to the stop pipe, so the other leaves too and the service stops in order (SERVICE_STOP, "stopped") rather than half-serving or hanging.
 - **Expected harness diff:** none; no transcript row interrupts an acceptor mid-burst.
 
 ### DIV-077 · RULE-068 `--policy` naming a directory is refused
 
-- **Status:** PROPOSED (2026-11-11, Phase 6 slice 1 review L3); built in `pqhsm-service`, reverted if declined.
+- **Status:** DECIDED (2026-11-11; user: "Keep the refusal (Recommended)"), from the Phase 6 slice 1 review L3; built in `pqhsm-service`.
 - **Legacy:** `policy_load` opens the path with `fopen(path, "r")`, which succeeds on a directory on Linux; the first `fgets` fails (EISDIR) and reads as end of file, so the service prints "policy loaded, 0 rule(s)" and starts with every request refused (`service/fhsm_service.c:184-247`). A reload from a directory installs an empty policy the same way.
 - **Target:** a policy that cannot be read, a directory included, is refused as a missing one is: "cannot load the policy from PATH" and exit 1 at start (slice 2: a failed reload keeps the rules in force).
 - **Expected harness diff:** none; no transcript row passes a directory.
+
+### DIV-078 · RULE-068 The identity and budget tables fail closed when full
+
+- **Status:** DECIDED (2026-11-11; user: "Fail closed (Recommended)").
+- **Legacy:** with no free slot in the in-flight table (128 entries) a request is admitted uncounted, past the fairness cap (`service/fhsm_service.c:537`); with no free slot in the budget table (256 entries) a refusal is not counted, past the refusal delay (`:773`). A flood of distinct subjects disables both controls.
+- **Target:** a full identity table refuses the request with 503 (audited, `identity_table_full`). A full budget table evicts the entry with the least refusal time owed and counts the new identity there.
+- **Expected harness diff:** none (no transcript row fills a table); unit tests for both.
+
+### DIV-079 · RULE-098 A failed policy reload is audited
+
+- **Status:** DECIDED (2026-11-11; user: "Audit it, keep old policy (Recommended)").
+- **Legacy:** a reload that fails (file missing, a malformed or too-long line, more than 512 rules) prints "reloading PATH failed; the previous policy is still in force." to stderr only (`service/fhsm_service.c:251-266`); the audit log does not record it.
+- **Target:** the same stderr line and one audit record (FAIL, reason `policy_reload_failed`, the path); the previous rules stay in force, as in C. A successful reload is not audited, as in C.
+- **Expected harness diff:** the row "after SIGHUP with a malformed policy" gains that record in the audit rows.
+
+### DIV-080 · RULE-067 `--proxy-uid` must be a real uid
+
+- **Status:** DECIDED (2026-11-11; user: "Bound to a real uid (Recommended)"), from the Phase 6 slice 1 review L4.
+- **Legacy:** `--proxy-uid` is parsed with `strtol` and checked only for ≥ 0 (`service/fhsm_service.c:2432-2433`), then cast to `uid_t` (`:2751`): `4294967296` makes uid 0 (root) the only peer admitted while the start-up line says "uid 4294967296 only", and an overflowing value (LONG_MAX) becomes 4294967295, `(uid_t)-1`.
+- **Target:** 0 to 4294967294 only; anything else is a usage error (the usage text, exit 2), as the other bad numbers are.
+- **Expected harness diff:** the new golden row "start: proxy uid 2^32" (C goes on to the missing policy, exit 1; Rust prints the usage, exit 2), listed as permanent in `service_pending.txt`.
+
+### DIV-081 · RULE-065 The strict build's service refuses to start
+
+- **Status:** DECIDED (2026-11-11; user: "Refuse to start (Recommended)"). Asked first as "Preserve C (500 per request)" on a question that overstated C ("always 500"); re-asked with the facts below, and this answer replaces the first.
+- **Legacy:** the service signs and verifies only with the composite mechanism (`CKM_COMPOSITE_`, `service/fhsm_service.c:1352-1515`), which the NIST-approved-only build refuses (RULE-065). That build's service starts and `/health` answers ok, but no signature is ever made: a permitted key that exists gets 500 (`sign_failed`, `verify_failed`, audited); an absent or unpermitted one gets 403 `not_authorised`, charged to the caller's refusal budget. Composite keys cannot be generated in that build, so a key is found only if another build made it or another key type carries the label.
+- **Target:** in the strict build the service refuses to start, after its arguments are checked and before the policy, the token or a socket: a message saying its signing mechanism is not approved in this build, and exit 2. `--profile` still answers (it returns before).
+- **Expected harness diff:** none in the all-mechanisms transcript; slice 2 adds the strict build's start-up row (C starts, Rust refuses).

@@ -38,3 +38,5 @@ service bare stopped, exit 0	refusal budget restored
 service peer stopped, exit 0	refusal budget restored
 audit, after setup	"event":"(sign|verify|identity_limited)"|"reason":"(?!request_timeout|key_length|bad_signature_length|wrong_method)[a-z_]+","route":"/(sign|verify)"
 budget file	CN=(web01|web02|prober)$
+# Permanent, by decision: C's own behaviour, which the Rust service does not keep.
+130. start: proxy uid 2^32

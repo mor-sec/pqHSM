@@ -298,6 +298,10 @@ start peer c.sock --proxy-uid $((ME + 1)) --pin-file pin --policy policy --publi
 crlf "GET /health HTTP/1.1\r\n$ID\r\n" | req "another proxy uid: private" c.sock
 crlf "GET /health HTTP/1.1\r\n\r\n" | req "another proxy uid: public" cq.sock
 stop peer
+# RULE-067: a --proxy-uid past 32 bits. C truncates 2^32 to uid 0 and goes on (here to the
+# missing policy); DIV-080 refuses it as a usage error. After every other numbered row, so
+# service_pending.txt's row names keep their numbers.
+runx "proxy uid 2^32" --socket x.sock --proxy-uid 4294967296 --policy missing
 
 # --- what the service wrote to the audit log (ts and MACs normalised) ---------------------------
 echo "== audit, after setup"
