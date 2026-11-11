@@ -19,6 +19,6 @@ dev-bypass = ["pqhsm-module/dev-bypass"]
 [dependencies]
 pqhsm-module = { path = "../module" }
 pqhsm-pkiops = { path = "../pkiops" }
-pqhsm-pki = { path = "../pki" }
+pqhsm-pki = { path = "../pki", features = ["ffi"] }
 libc.workspace = true
 zeroize.workspace = true

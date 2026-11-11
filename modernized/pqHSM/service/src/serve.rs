@@ -356,9 +356,11 @@ pub fn serve_public(fd: c_int) {
             http::respond_bytes(fd, "application/pkix-cert", cc, &s.ca_cert);
         }
     } else if r.target == b"/ocsp" {
-        if s.ocsp_label.is_none() {
+        let Some(o) = &s.ocsp else {
             respond(fd, 404, "no responder configured\n");
-        } else if r.method != b"POST" {
+            return;
+        };
+        if r.method != b"POST" {
             respond_with(
                 fd,
                 405,
@@ -366,8 +368,7 @@ pub fn serve_public(fd: c_int) {
                 "Allow: POST\r\n",
             );
         } else {
-            // shortcut: answering is slice 3's; until then a POST is refused.
-            respond(fd, 503, "refused\n");
+            o.answer(fd, &r.body, &s.ca_cert);
         }
     } else {
         respond(fd, 404, "refused\n");

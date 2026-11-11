@@ -518,10 +518,20 @@ printf '; pqhsm-service: %s, dynamic exports %s (C_GetFunctionList %s), --profil
 # the point where Rust refuses and stops at the policy (exit 1); Rust refuses as strict (exit 2).
 { make -s -C /tmp/cb service/fhsm-service && $M service/pqhsm-service; echo "build rc=$?"; } > /out/service_strict_build.log 2>&1
 for b in /tmp/cb/service/fhsm-service /work/service/pqhsm-service; do
-  d=$(mktemp -d); (cd $d && echo "profile $($b --profile 2>&1)"; timeout 20 $b --socket x.sock --policy missing 2>&1; echo "exit $?")
+  d=$(mktemp -d); (cd $d && echo "profile $($b --profile 2>&1)"; timeout 20 $b --socket x.sock --proxy-uid 0 --policy missing 2>&1; echo "exit $?")
 done > /out/service_strict.txt 2>&1
 printf '; strict builds (%s): %s' "$(tail -1 /out/service_strict_build.log)" \
   "$(grep -E '^(profile|exit)|nist-approved-only, and|cannot load the policy' /out/service_strict.txt | tr '\n' ' ')" >> /out/service.txt
+# Slice 3 (PHASE6_PLAN.md §3): the hybrid build ships the Rust service as service/fhsm-service;
+# the parallel run (one stream to both, copies of one token); the legacy service suites,
+# unchanged, on the C service ($AMC) and on the shipped Rust one ($AMH).
+{ (cd $AMH && $M PROFILE=all-mechanisms service/fhsm-service && cmp service/fhsm-service service/pqhsm-service); echo "rc=$?"; } > /out/service_ship.log 2>&1
+(cd $AMC && python3 -I /work/modernized/pqHSM/tests-support/hybrid/parallel_run.py $AMC/service/fhsm-service $AMH/service/pqhsm-service > /out/service_parallel.txt 2>&1)
+(cd $AMC && make -k PROFILE=all-mechanisms service-guards service-budget service-public > /out/service_suites_c.txt 2>&1; echo "rc=$?" >> /out/service_suites_c.txt)
+(cd $AMH && $M -k PROFILE=all-mechanisms service-guards service-budget service-public > /out/service_suites_h.txt 2>&1; echo "rc=$?" >> /out/service_suites_h.txt)
+suites() { echo "$(grep -E '^(PASS|FAIL) :' $1 | tr '\n' ' ')$(tail -1 $1)"; }
+printf '; shipped (the Rust binary as service/fhsm-service) %s; %s; legacy suites C: %s; Rust: %s' "$(tail -1 /out/service_ship.log)" \
+  "$(tail -1 /out/service_parallel.txt)" "$(suites /out/service_suites_c.txt)" "$(suites /out/service_suites_h.txt)" >> /out/service.txt
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
 # Slice 4 on: the Rust fhsm-sign on either module, DIV-075 (cms-verify names its signer, --signer).

@@ -1793,3 +1793,33 @@ Checked and found right: the pool released on every path, the reload's lock as C
 | L2 | An oversized signature was cut to 8192 and answered 200 | 0x150, so 500 `sign_failed` |
 | L3 | `EXTRA`'s slot 49 unchecked | Test against `p11/src/ffi/tables.rs` |
 | L4 | The budget lock held across the save's fsync (as C's); a trailing slash in the tokens directory counted once where C counts it twice | Lock kept as C; the length check counts as C's `"%s/budget"` does |
+
+### Slice 3: the OCSP responder, shipped, and the parallel run (2026-11-11)
+
+| C (`service/fhsm_service.c`) | Rust (`service/src/`) |
+|---|---|
+| `rev_db_refresh` and its globals (858-930) | `ocsp.rs`: `Ocsp::refresh` (mtime and size, a broken file keeping the last good database, as C) |
+| `ocsp_sign_cb`, `respond_ocsp`, `do_ocsp` (1816-1939) | `ocsp.rs`: `Ocsp::answer`, `status`; `pqhsm_pki::revocation::answer` and `ffi::x509::ocsp_for` encode, `ops::sign_once` signs |
+| the `/ocsp` branch of `serve_public` (1988-2010), start-up (2535-2556) | `serve.rs`: `serve_public`; `lib.rs`: `check_ocsp` returns the responder, `--ocsp-days` kept |
+| `make service/fhsm-service` | `hybrid.mk`: the Rust service copied to `service/fhsm-service` every time (FORCE), so `service-guards`, `service-budget` and `service-public` run it |
+
+**Q20 (decided, user: "Keep 'good', document (Recommended)"):** a serial of this CA not in the database answers "good", and every serial does while the file is missing (a first run). RFC 6960 4.2.1 allows it for a CA that keeps no issuance record, and `fhsm-ca` keeps none; "unknown" would need one. No DIV.
+
+**Proof.** Harness step 5c: every transcript row matches C but the two permanent ones (DIV-079's record, DIV-080's row), with four new rows after row 130 for the database re-read and the tryLater and internalError responses; `parallel_run.py`, one stream of 240 requests to both services over copies of one token (OCSP compared by what openssl reads, the database changed half way, signatures cross-verified, both audit logs' new records compared); the legacy `service_guards.sh`, `service_budget.sh` and `service_public.sh` on the C service and on the shipped Rust one. Unit test: the database read, re-read on change, and a broken file keeping the last good one.
+
+### Slice 3 review (architecture-critic, 2026-11-11)
+
+Checked and found equivalent: the refresh against in-flight answers (the read guard across the signature, as C), the lock order, the error mapping, the sign callback's buffer and rv, the start-up messages and exit codes, `$<` under the override.
+
+| # | Finding | Done |
+|---|---|---|
+| H1 | Neither exit check ran: no caller of `parallel_run.py`, the legacy suites never run on the Rust binary; the override's comment named an install rule that does not install the service | Harness step 5c runs both and checks the shipped binary is the Rust one; the comment corrected (the install rule is slice 4's) |
+| H2 | `parallel_run.py` could pass vacuously (setup failure exit 0, "no response" equal on both sides, OCSP bodies by length only) and its audit check could never pass (each side's socket names in SERVICE_START) | PASS/FAIL and exit 1; unanswered requests counted; OCSP by content, certificates and status-only responses byte for byte; per-side directories with the same socket names; only the records each log gained, at least one |
+| M1 | The re-read on change was pinned nowhere; the unit test could not fail on it | The test reads the contents after each change; a transcript row and the parallel run revoke a serial under the running service |
+| M2 | tryLater and internalError reached by no row | Two transcript rows |
+| M3 | The override could leave a stale binary either way | FORCE; the harness compares the shipped binary with `pqhsm-service` |
+| L1 | Change detection in whole seconds and size (as C): a same-size fix within the second is missed | Open: a DIV, for the user (adding the inode and nanoseconds only adds reloads) |
+| L2 | The parse error printed under the write lock | Printed before it, as C |
+| L3 | A `--ca-cert` that does not parse starts, then every answer is malformedRequest (as C) | Open: a DIV, for the user (refuse at start-up when OCSP is configured) |
+
+**Evidence (slices 2 and 3).** Harness `run21` (the final tree; `run18` DIV-080's row, `run19` slice 2, `run20` the strict row corrected): step 5c "against C: 146 rows, 144 same, 2 differ, every difference pending" (DIV-079, DIV-080); rows 131-134 good then revoked after `fhsm-ca revoke`, tryLater `30030a0103`, internalError `30030a0102`; "strict builds: C ... cannot load the policy ... exit 1, Rust ... nist-approved-only ... exit 2" (DIV-081); "shipped (the Rust binary as service/fhsm-service) rc=0"; "parallel run: PASS: 420 requests to both, 420 answered alike, 0 unanswered, 60/60 signature pairs valid on both sides, the re-read seen: True, exit C 0 Rust 0, audit records gained 636 vs 636 same"; the legacy suites `service_guards.sh`, `service_budget.sh`, `service_public.sh` "PASS : 0 failure(s)" each, on C and on Rust. The rest of the summary as `run17`, less the known noise (C reading Rust-written tokens: 2 or 4 lines; pkiops symbols 292 with the new primitives). Cargo: 964 passed, 0 failed; clippy clean.

@@ -303,6 +303,26 @@ stop peer
 # service_pending.txt's row names keep their numbers.
 runx "proxy uid 2^32" --socket x.sock --proxy-uid 4294967296 --policy missing
 
+# Slice 3 review (M1, M2): the database re-read when it changes (RULE-024), and the two status
+# responses no row above reaches: tryLater when the database cannot be stat'ed (its directory
+# turned into a file under the running service: ENOTDIR, as root too), internalError when the
+# responder's key is not on the token (start-up does not look for it).
+ocsp_row() {
+  { crlf "POST /ocsp HTTP/1.1\r\nContent-Length: $(wc -c < good.req)\r\n\r\n"; cat good.req; } | req "$1" $2
+  openssl ocsp -respin r.out.body -resp_text -noverify 2>&1 | grep -E "Response Status|Cert Status|Serial Number: 0" | sed 's/^ */   ocsp| /' | mask
+}
+mkdir rd && cp rev.db rd/rev.db
+start ocspx o.sock $U --public-socket oq.sock --ca-cert ca.der --revocation-db rd/rev.db --ocsp-label ca
+ocsp_row "re-read: serial 0B before" oq.sock
+$CA revoke --db rd/rev.db --serial 0B --reason superseded --date 20260102000000Z > /dev/null 2>&1
+ocsp_row "re-read: serial 0B after fhsm-ca revokes it" oq.sock
+rm -rf rd && : > rd
+ocsp_row "database unreachable: tryLater" oq.sock
+stop ocspx
+start ocspk k.sock $U --public-socket kq.sock --ca-cert ca.der --revocation-db rev.db --ocsp-label nosuchkey
+ocsp_row "responder key absent: internalError" kq.sock
+stop ocspk
+
 # --- what the service wrote to the audit log (ts and MACs normalised) ---------------------------
 echo "== audit, after setup"
 python3 -I $H/corpus_norm.py "$FHSM_TOKENS_DIR" | tail -n +$((audit_from + 1)) | sed 's/^/   /' | mask

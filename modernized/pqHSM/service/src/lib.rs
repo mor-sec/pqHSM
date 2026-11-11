@@ -28,6 +28,7 @@ macro_rules! outln {
 mod audit;
 mod http;
 mod listen;
+mod ocsp;
 mod serve;
 mod state;
 
@@ -54,7 +55,7 @@ pub struct Svc {
     pub idents: Idents,
     pub budget: Budget,
     pub ca_cert: Vec<u8>,
-    pub ocsp_label: Option<Vec<u8>>,
+    pub ocsp: Option<ocsp::Ocsp>,
 }
 
 static SVC: OnceLock<Svc> = OnceLock::new();
@@ -155,6 +156,7 @@ struct Args<'a> {
     pool_max: i64,
     pub_workers: i64,
     queue_depth: i64,
+    ocsp_days: i64,
 }
 
 enum Parsed<'a> {
@@ -176,6 +178,7 @@ fn parse<'a>(args: &[&'a [u8]]) -> Parsed<'a> {
         pool_max: 32,
         pub_workers: 2,
         queue_depth: 256,
+        ocsp_days: 7,
         ..Args::default()
     };
     let mut i = 0;
@@ -209,8 +212,7 @@ fn parse<'a>(args: &[&'a [u8]]) -> Parsed<'a> {
                 b"--pool-max" => (&mut a.pool_max, 1, POOL_MAX_LIMIT),
                 b"--public-workers" => (&mut a.pub_workers, 1, 256),
                 b"--queue-depth" => (&mut a.queue_depth, 1, 65536),
-                // nextUpdate: checked as C's, used by slice 3's responder
-                b"--ocsp-days" => (&mut 0, 1, 365),
+                b"--ocsp-days" => (&mut a.ocsp_days, 1, 365),
                 _ => return Parsed::Usage,
             };
             num(val, lo, hi).map(|v| *field = v).is_some()
@@ -234,8 +236,9 @@ fn shown(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
-/// The checks C makes on the OCSP options before anything starts; the exit status on refusal.
-fn check_ocsp(a: &Args, ca: &[u8]) -> Result<(), c_int> {
+/// The checks C makes on the OCSP options before anything starts, and the responder they
+/// configure (none without `--revocation-db`); the exit status on refusal.
+fn check_ocsp(a: &Args, ca: &[u8]) -> Result<Option<ocsp::Ocsp>, c_int> {
     let refuse = |msg: &str| {
         errw!("{msg}");
         Err(2)
@@ -261,11 +264,12 @@ fn check_ocsp(a: &Args, ca: &[u8]) -> Result<(), c_int> {
         return refuse("fhsm-service: --responder-cert without a responder.\n");
     }
     let (Some(db), Some(label)) = (a.rev_db, a.ocsp_label) else {
-        return Ok(());
+        return Ok(None);
     };
     if db.len() >= 4096 || label.len() >= 128 {
         return refuse("fhsm-service: OCSP path or label too long.\n");
     }
+    let mut responder_der = None;
     if let Some(rp) = a.responder {
         let Some(responder) = read_cert(&path(rp)) else {
             return refuse(&format!(
@@ -280,22 +284,17 @@ fn check_ocsp(a: &Args, ca: &[u8]) -> Result<(), c_int> {
         {
             return refuse(&format!("fhsm-service: {}", e.msg));
         }
+        responder_der = Some(responder);
     }
     // Read now, so an unreadable database stops the start; a missing one is an empty one.
-    // A stat failure other than ENOENT refuses without a reason, as C's.
-    let read = match std::fs::metadata(path(db)) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => false,
-        _ => pqhsm_pki::revocation::Db::load(&path(db))
-            .inspect_err(|e| errw!("fhsm-service: {}", e.msg))
-            .is_ok(),
-    };
-    if !read {
+    let o = ocsp::Ocsp::new(label.to_vec(), path(db), a.ocsp_days as i32, responder_der);
+    if !o.refresh() {
         return refuse(&format!(
             "fhsm-service: refusing to start: the revocation\n  database at {} could not be read.\n",
             shown(db)
         ));
     }
-    Ok(())
+    Ok(Some(o))
 }
 
 /// The binary's `main` (`service/shim/main.c`).
@@ -354,9 +353,10 @@ fn run(args: &[&[u8]]) -> c_int {
             }
         },
     };
-    if let Err(rc) = check_ocsp(&a, &ca_cert) {
-        return rc;
-    }
+    let ocsp = match check_ocsp(&a, &ca_cert) {
+        Ok(o) => o,
+        Err(rc) => return rc,
+    };
     // SAFETY: a constant the link provides.
     if unsafe { fhsm_build_fips_strict } != 0 {
         // The composite mechanism is the only one the service signs with, and this build does
@@ -502,7 +502,6 @@ fn run(args: &[&[u8]]) -> c_int {
         // SAFETY: a C string.
         unsafe { libc::unlink(c.as_ptr()) };
     };
-    let ocsp_label = a.ocsp_label.map(<[u8]>::to_vec);
     let started = audit::event(
         audit::EV_SERVICE_START,
         -1,
@@ -516,7 +515,7 @@ fn run(args: &[&[u8]]) -> c_int {
                 "certificate",
                 if ca_cert.is_empty() { b"-" } else { b"loaded" },
             ),
-            ("ocsp", ocsp_label.as_deref().unwrap_or(b"-")),
+            ("ocsp", ocsp.as_ref().map_or(&b"-"[..], |o| &o.label)),
         ],
     );
     if !started {
@@ -547,7 +546,7 @@ fn run(args: &[&[u8]]) -> c_int {
         idents: Idents::new(a.workers as usize),
         budget,
         ca_cert,
-        ocsp_label,
+        ocsp,
     });
 
     let depth = a.queue_depth as usize;

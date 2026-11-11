@@ -1,14 +1,7 @@
-# service_rows.py: the transcript rows pqhsm-service is not yet expected to match. Slice 3
-# (OCSP) takes its rows off; the permanent ones are recorded divergences.
-# NAME<TAB>REGEX: only that row's lines matching REGEX are owed; the rest must match C now.
-111. public: ocsp, empty body
-112. public: ocsp, not DER
-113. public: ocsp, revoked serial
-114. public: ocsp, good serial
-122. delegated: ocsp, revoked serial
-123. delegated: ocsp, good serial
-# The OCSP responses' signatures (module sign records with no actor) are slice 3's; the failed
-# reload's record is DIV-079's, permanent.
-audit, after setup	"event":"sign","slot":-1,"session":[0-9]+,"role":"USER","actor":"",|"reason":"policy_reload_failed"
-# Permanent, by decision: C's own behaviour, which the Rust service does not keep.
+# service_rows.py: the transcript rows where pqhsm-service may differ from C. Since Phase 6
+# slice 3 each one is a recorded divergence, permanent by decision.
+# NAME<TAB>REGEX: only that row's lines matching REGEX are owed; the rest must match C.
+# DIV-079: a failed policy reload is audited.
+audit, after setup	"reason":"policy_reload_failed"
+# DIV-080: --proxy-uid must be a real uid.
 130. start: proxy uid 2^32

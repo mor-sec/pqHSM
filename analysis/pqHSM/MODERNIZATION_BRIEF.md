@@ -512,7 +512,7 @@ unticked box blocks that phase.
 **Before Phase 6**
 - [ ] **Q18 Rename surface.** Library filename (`libpqhsm.so` plus a `libfreehsm.so` compatibility symlink?), binary names (`pqhsm-*`), `CK_INFO` manufacturer and library strings, and env var prefixes (`FHSM_*`). This is the second rebrand; `REBRAND_CHECKLIST.md` records the first one's friction.
 - [ ] **Q19 Licence.** Keep `NOTICE` and the attributions (Apache-2.0 §4), and drop the FreeHSM and Simorgh Labs brand assets (§6).
-- [ ] **Q20 OCSP for unknown serials (RULE-023/054).** Today any unlisted serial, and every serial when the DB is missing, answers "good". Keep that, or answer "unknown", which needs an issuance record?
+- [x] **Q20 OCSP for unknown serials (RULE-023/054).** Decided 2026-11-11 (user: "Keep 'good', document (Recommended)"): unlisted serials and a missing database answer "good", as C; documented in Phase 6 slice 3. Today any unlisted serial, and every serial when the DB is missing, answers "good". Keep that, or answer "unknown", which needs an issuance record?
 - [ ] **Q21 Service deployment.** Where is `pqhsm-service` installed (today no install rule produces the `ExecStart` binary)? What is the CI duration (preflight open item)?
 
 **Standing (every phase):** the remaining "Decide" rules in §5 are settled per phase in

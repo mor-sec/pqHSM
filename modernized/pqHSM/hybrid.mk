@@ -169,6 +169,15 @@ service/pqhsm-service: $(PQHSM_DIR)/service/shim/main.c $(LIB_OBJ) $(REVOCATION_
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(REVOCATION_OBJ) \
 	    $(subst $(PQHSM_LIB),$(PQHSM_SERVICE_LIB),$(LDFLAGS)) -Wl,--export-dynamic-symbol=C_GetFunctionList
 
+# Slice 3: the hybrid build ships the Rust service under the C name, so `service-guards`,
+# `service-budget` and `service-public` run it (the install rule is slice 4's, Q21). Copied
+# every time: the Makefile's prerequisites stay on the target, so a C binary built since by
+# plain make would otherwise look up to date.
+service/fhsm-service: service/pqhsm-service FORCE
+	cp $< $@
+.PHONY: FORCE
+FORCE:
+
 # REVOCATION_OBJ cannot be reassigned here: the legacy prerequisite lists are already expanded
 # (review H5). So the object it names is emptied, and the code comes from the staticlib.
 $(OBJDIR)/src/fhsm_revocation.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
