@@ -286,6 +286,13 @@ fn check_ocsp(a: &Args, ca: &[u8]) -> Result<Option<ocsp::Ocsp>, c_int> {
         }
         responder_der = Some(responder);
     }
+    // DIV-083: C starts, and then answers every request malformedRequest.
+    if !pqhsm_pkiops::ca::is_certificate(ca) {
+        return refuse(&format!(
+            "fhsm-service: {} is not a certificate.\n  The responder could answer no request.\n",
+            a.ca_cert.map_or("the CA certificate".into(), shown)
+        ));
+    }
     // Read now, so an unreadable database stops the start; a missing one is an empty one.
     let o = ocsp::Ocsp::new(label.to_vec(), path(db), a.ocsp_days as i32, responder_der);
     if !o.refresh() {

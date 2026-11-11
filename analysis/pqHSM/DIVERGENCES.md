@@ -879,6 +879,13 @@ The suspected-defect rules gated at Phase 5, decided before the phase starts (20
 - **Target:** the inode and the nanosecond part of the mtime are compared too. It only adds reloads: `fhsm-ca` writes by rename, so each of its writes has a new inode.
 - **Expected harness diff:** none (no transcript row writes the file twice within a second). Pinned by the unit test in `service/src/ocsp.rs`.
 
+### DIV-083 · RULE-023 With OCSP configured, a CA certificate that does not parse refuses the start
+
+- **Status:** DECIDED (2026-11-12; user: "Refuse to start (Recommended)"), from the Phase 6 slice 3 review L3.
+- **Legacy:** `--ca-cert` is read as bytes and served on `/certificates`; it is parsed only by `--responder-cert`'s check, and otherwise first when a request comes (`service/fhsm_service.c:1816-1939`). A PEM file, say, starts the service, and every OCSP answer is then malformedRequest, blaming the relying party for the server's own configuration, which C's own comment at `:1924-1926` says it must not do.
+- **Target:** with `--revocation-db` and `--ocsp-label`, a `--ca-cert` that does not parse as a DER certificate refuses the start: "fhsm-service: FILE is not a certificate." and exit 2, after the responder check and before the database is read. Without OCSP, the file is served as before, unparsed.
+- **Expected harness diff:** the new golden row "start: ca cert not a certificate" (C goes on to the missing policy, exit 1; Rust refuses, exit 2), listed as permanent in `service_pending.txt`.
+
 ### DIV-001 in Phase 6
 
 **Built 2026-11-11 (slice 2):** `pqhsm-service`'s `audit::event` returns whether the record was written. Where an answer could be held back, it is: a `/sign` signature, a `/verify` verdict, the `/token` description and the `/health` "ok" are not sent when their record (EV_SIGN, EV_VERIFY, REQUEST_ACCEPTED) fails; the request is refused 500 `audit_failed` instead (its refusal record best effort). A service whose SERVICE_START record fails does not start: "cannot write the audit log; not starting.", the sockets closed and removed, exit 1. The refusal, identity, reload and stop records still discard the result, as Phase 4's `C_Finalize` does: the request is refused or the service is stopping either way. **Expected harness diff:** none. No transcript row makes the log fail at the service's own record: the module's records come first (its C_Initialize and C_Sign records fail closed since Phase 4), so reaching these sites needs a limit exact to the byte; they are checked by reading.

@@ -322,6 +322,10 @@ stop ocspx
 start ocspk k.sock $U --public-socket kq.sock --ca-cert ca.der --revocation-db rev.db --ocsp-label nosuchkey
 ocsp_row "responder key absent: internalError" kq.sock
 stop ocspk
+# DIV-083: a --ca-cert that is not a certificate, with OCSP configured. C goes on to the missing
+# policy (exit 1); Rust refuses (exit 2).
+runx "ca cert not a certificate" --socket x.sock --proxy-uid $ME --pin-file pin --policy missing \
+  --public-socket xq.sock --ca-cert pin --revocation-db rev.db --ocsp-label ca
 
 # --- what the service wrote to the audit log (ts and MACs normalised) ---------------------------
 echo "== audit, after setup"

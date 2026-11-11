@@ -5,3 +5,5 @@
 audit, after setup	"reason":"policy_reload_failed"
 # DIV-080: --proxy-uid must be a real uid.
 130. start: proxy uid 2^32
+# DIV-083: with OCSP configured, a --ca-cert that is not a certificate refuses the start.
+135. start: ca cert not a certificate
