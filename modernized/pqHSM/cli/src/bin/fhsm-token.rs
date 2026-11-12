@@ -7,7 +7,7 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStringExt;
 use std::process::exit;
 
-use pqhsm_cli::{fail, init, pin};
+use pqhsm_cli::{fail, init, new_pin};
 use pqhsm_pkiops::ops;
 use pqhsm_pkiops::{Error, Intent, close, open, parse_slot};
 
@@ -93,7 +93,7 @@ fn cmd_info(module: &CString, slot: c_long) -> i32 {
 }
 
 fn cmd_init(module: &CString, slot: c_long, label: &[u8], force: bool) -> i32 {
-    let so = pin(
+    let so = new_pin(
         PROG,
         "FHSM_SO_PIN",
         "Security Officer PIN",
@@ -103,7 +103,7 @@ fn cmd_init(module: &CString, slot: c_long, label: &[u8], force: bool) -> i32 {
             "  user PIN. It is read from the environment, never from an argument.\n",
         ),
     );
-    let user = pin(
+    let user = new_pin(
         PROG,
         "FHSM_PIN",
         "new user PIN",

@@ -465,6 +465,10 @@ printf 'pki tools characterise: %s, C run 1 %s, %s lines, run 2 vs run 1 %s' "$(
     tools/fhsm-token init --label prompt &&
   FHSM_PIN=userpin1234 tools/fhsm-csr keygen --label p --alg ecdsa-p256 > /dev/null 2>&1 &&
   echo "login with it rc=0") > /out/pin_prompt_token.txt 2>&1
+# DIV-085: each PIN typed twice; a mismatch stops init before the token is written.
+(cd $AMH && export FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 &&
+  env -u FHSM_SO_PIN python3 /work/modernized/pqHSM/tests-support/hybrid/pin_prompt.py sopin1234,sopin9999 \
+    tools/fhsm-token init --label mismatch; echo "token files: $(ls $FHSM_TOKENS_DIR | wc -l)") > /out/pin_prompt_mismatch.txt 2>&1
 # Slice 3 on: fhsm-crypt likewise asks for the user PIN, after the arguments are checked.
 (cd $AMH && export FHSM_TOKENS_DIR=$(mktemp -d) FHSM_INTEGRITY_ALLOW_UNSIGNED=1 &&
   FHSM_SO_PIN=sopin1234 FHSM_PIN=userpin1234 tools/fhsm-token init --label prompt > /dev/null 2>&1 &&
@@ -572,7 +576,8 @@ printf '; hybrid tools: %s; on the C module vs C less DIV-073 to 075 %s; on the 
   "$(tail -1 /out/pkiops_calllog_c.txt)" "$(tail -1 /out/pkiops_calllog_hybrid.txt)" \
   "$(grep -c '^  C_' /out/pkiops_calllog_c.txt)" "$(pl_same /out/pkiops_calllog_c.txt /out/pkiops_calllog_hybrid.txt)" >> /out/pki_char.txt
 printf '; PIN prompt (DIV-072): %s' "$(tail -1 /out/pin_prompt.txt)" >> /out/pki_char.txt
-printf '; fhsm-token init: %s' "$(tr '\n' ' ' < /out/pin_prompt_token.txt | sed 's/ $//')" >> /out/pki_char.txt
+printf '; fhsm-token init: %s; PINs mismatched (DIV-085): %s' "$(tr '\n' ' ' < /out/pin_prompt_token.txt | sed 's/ $//')" \
+  "$(tr '\n' ' ' < /out/pin_prompt_mismatch.txt | sed 's/ $//')" >> /out/pki_char.txt
 printf '; fhsm-crypt: %s' "$(tail -1 /out/pin_prompt_crypt.txt)" >> /out/pki_char.txt
 printf '; fhsm-sign: %s' "$(tail -1 /out/pin_prompt_sign.txt)" >> /out/pki_char.txt
 RACE_OK="12 revokes at once: 12 kept; 4 CRLs at once: numbers 1 2 3 4, database 4"

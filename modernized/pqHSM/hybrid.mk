@@ -200,6 +200,13 @@ $(OBJDIR)/src/fhsm_revocation.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
 # shortcut: a target of its own beside `install`, whose recipe hybrid.mk cannot extend; it
 # becomes `install` at the cutover (slice 5).
 UNITDIR ?= /etc/systemd/system
+# The release library's soname is libpqhsm.so (user, 2026-11-12), so programs linked from now on
+# need only the new name and the libfreehsm.so link can go, as Q18 intends. The harness build
+# keeps libfreehsm.so: its tests load the module by that name in the tree. ld takes the last
+# -soname, and the legacy link line puts $(LDFLAGS) after its own.
+ifeq ($(PQHSM_FEATURES),)
+$(LIB): LDFLAGS += -Wl,-soname,libpqhsm.so
+endif
 PQHSM_RELINK = ln -sfn $(2) $(dir $(1)).$(notdir $(1)).tmp && mv -Tf $(dir $(1)).$(notdir $(1)).tmp $(1)
 .PHONY: install-pqhsm
 install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) tools/freehsm-audit service/pqhsm-service
@@ -219,6 +226,7 @@ install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) tools/freehsm-audit service/pqhsm-servic
 	    install -d -o root -g root -m 755 $(PREFIX)/libexec $(UNITDIR); \
 	    install -o root -g root -m 0755 service/pqhsm-service $(PREFIX)/libexec/pqhsm-service; \
 	    sed -e 's|^ExecStart=/usr/libexec/fhsm-service|ExecStart=$(PREFIX)/libexec/pqhsm-service|' \
+	        -e 's|^Environment=FHSM_|Environment=PQHSM_|' \
 	        -e 's|^#   install -m 0644 systemd/fhsm-service.service /etc/systemd/system/|#   installed by: make -f $(PQHSM_DIR)/hybrid.mk install-pqhsm|' \
 	        systemd/fhsm-service.service > $(UNITDIR)/pqhsm-service.service; \
 	    grep -q '^ExecStart=$(PREFIX)/libexec/pqhsm-service ' $(UNITDIR)/pqhsm-service.service; \

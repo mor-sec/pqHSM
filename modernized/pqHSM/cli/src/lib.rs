@@ -95,6 +95,22 @@ pub fn pin(prog: &str, var: &str, what: &str, missing: &str) -> Zeroizing<Vec<u8
     exit(1)
 }
 
+/// A PIN being set (DIV-085): as [`pin`], but at the terminal typed twice, and a mismatch
+/// stops the tool (exit 1) before anything is written.
+pub fn new_pin(prog: &str, var: &str, what: &str, missing: &str) -> Zeroizing<Vec<u8>> {
+    if pqhsm_core::env(var).is_some_and(|v| !v.is_empty()) || !io::stdin().is_terminal() {
+        return pin(prog, var, what, missing);
+    }
+    let first = pin(prog, var, what, missing);
+    match read_hidden(&format!("{prog}: repeat the {what}: ")) {
+        Ok(again) if again == first => first,
+        _ => {
+            eprintln!("{prog}: the two {what}s do not match; nothing was written.");
+            exit(1)
+        }
+    }
+}
+
 /// A line from the terminal on stdin, echo off but for the newline.
 // shortcut: a signal while it waits leaves echo off, as getpass(3) does; a handler would
 // restore it, if operators ask.

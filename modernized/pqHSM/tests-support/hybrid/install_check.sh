@@ -25,8 +25,10 @@ if [ "$1" = install ]; then
     [ -f $I/bin/pqhsm-$t ] && [ ! -L $I/bin/pqhsm-$t ] && [ "$(readlink $I/bin/fhsm-$t)" = pqhsm-$t ] || echo "$t BAD"; done)
   audit=$(ok sh -c "[ -f $I/bin/pqhsm-audit ] && [ \"\$(readlink $I/bin/freehsm-audit)\" = pqhsm-audit ]")
   unit=$(grep -c "^ExecStart=$I/libexec/pqhsm-service " $I/unit/pqhsm-service.service 2>/dev/null)
+  uenv=$(grep -c '^Environment=PQHSM_TOKENS_DIR=' $I/unit/pqhsm-service.service 2>/dev/null)
+  soname=$(readelf -d $I/lib/libpqhsm.so 2>&1 | grep -o 'soname: \[[^]]*\]')
   rm -rf $T
-  echo "install-pqhsm: release build rc=$r1, again rc=$r2, refused in a dev-bypass tree: $refused; libpqhsm.so $lib; tools ${tools:-ok}; freehsm-audit $audit; unit ExecStart $unit"
+  echo "install-pqhsm: release build rc=$r1, again rc=$r2, refused in a dev-bypass tree: $refused; libpqhsm.so $lib; tools ${tools:-ok}; freehsm-audit $audit; unit ExecStart $unit, Environment=PQHSM_ $uenv; $soname"
   exit 0
 fi
 

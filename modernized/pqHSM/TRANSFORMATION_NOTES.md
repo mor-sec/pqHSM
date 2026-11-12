@@ -1853,11 +1853,15 @@ Checked and found as decided: the strings and prefixes, every `FHSM_*` read thro
 | M4 | The unit went where systemd never reads; its header pointed to the unrenamed unit | `UNITDIR ?= /etc/systemd/system`; the header line rewritten |
 | M5 | NOTICE named every crate in Cargo.lock and shipped no MIT text | The eight linked crates and their licences; `LICENSES/MIT.txt` |
 | L1 | An empty `PQHSM_X` overrides `FHSM_X` | Kept (it is "when set"); in DIV-084, and a test |
-| L2 | `PQHSM_X` from the manager's environment beats the unit's `Environment=FHSM_X` | In DIV-084; renaming the unit's variable is the user's call (open) |
+| L2 | `PQHSM_X` from the manager's environment beats the unit's `Environment=FHSM_X` | The user chose to rename them (2026-11-12): install-pqhsm writes `Environment=PQHSM_`; `install_check.sh` checks it |
 | L3 | The generic `pqHSM` rule matched inside paths, words and URI values | Word boundaries in text; self-check |
 | L4 | `rename_back.py` truncated before mapping; its status unchecked | Mapped, then written; the self-check stops the harness if it fails |
 | L5 | `libfreehsm.so` absent between `mv` and `ln`; idempotence untested | A hard link, then the old name replaced by one rename; installed twice in the harness, the library checked a regular file |
-| L6 | The soname stays `libfreehsm.so`, so the link cannot go after one release without breaking binaries linked to it | Open: for the user before slice 5 |
+| L6 | The soname stays `libfreehsm.so`, so the link cannot go after one release without breaking binaries linked to it | The user chose `libpqhsm.so` (2026-11-12): a release build links with `-Wl,-soname,libpqhsm.so`, the harness build keeps `libfreehsm.so`; `install_check.sh` reads the installed soname |
 | L7 | `setcap cap_ipc_lock` on a library is inert (predates the slice) | Open: `LimitMEMLOCK=` in the unit, slice 5 |
 | L8 | No uninstall for the new layout; `pin_prompt.py` left `PQHSM_PIN` | `pin_prompt.py` strips both; uninstall open for slice 5 |
 | L9 | The Rust files carry no copyright or SPDX header; install ships neither LICENSE nor NOTICE | Open: a `REUSE.toml` annotation for `modernized/**` and installing them, slice 5 |
+
+### After slice 4: PIN typed twice (DIV-085, 2026-11-12)
+
+`pqhsm-token init` asks at a terminal for each PIN twice and stops on a mismatch before the slot is opened (`cli/src/lib.rs` `new_pin`, used only by init; the logins keep `pin`). `pin_prompt.py` takes the answers as a comma-separated list; `inner.sh` adds a mismatch check (rc=1, no token file).

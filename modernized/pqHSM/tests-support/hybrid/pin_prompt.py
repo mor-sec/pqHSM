@@ -11,7 +11,8 @@ import pty
 import signal
 import sys
 
-pin = sys.argv[1].encode()
+pins = sys.argv[1].encode().split(b",")  # given in turn, the last repeated
+pin = pins[0]
 cmd = sys.argv[2:]
 env = {k: v for k, v in os.environ.items() if k not in ("FHSM_PIN", "PQHSM_PIN")}
 pid, fd = pty.fork()
@@ -28,7 +29,7 @@ while True:
         break
     seen += b
     if seen.count(b"PIN: ") > asked:
-        os.write(fd, pin + b"\n")
+        os.write(fd, pins[min(asked, len(pins) - 1)] + b"\n")
         asked += 1
 _, status = os.waitpid(pid, 0)
 print(
