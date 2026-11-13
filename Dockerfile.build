@@ -82,6 +82,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ; \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# --- Rust (pqHSM, Phase 6; user 2026-11-13) ---------------------------------
+# The toolchain of modernized/pqHSM (rust-version 1.99; Debian 13's rustc is
+# older): the standalone archive, checked against the SHA-256 that
+# static.rust-lang.org publishes beside it, so a rebuild installs the same
+# compiler. It goes under /usr/local and shadows nothing the C build uses. The
+# image tag carries the version (build-image.yml), so adding or moving it is a
+# new tag, never a changed one.
+ARG RUST_VERSION=1.99.1
+ARG RUST_SHA256=231fcae47ee950621374725b5fc3b5441d2fbda2955ac45dd7dc816d8876cfe7
+ENV CARGO_HOME=/opt/rust/cargo
+RUN curl --proto '=https' --tlsv1.2 -sSfo /tmp/rust.tar.xz \
+        https://static.rust-lang.org/dist/rust-${RUST_VERSION}-x86_64-unknown-linux-gnu.tar.xz && \
+    echo "${RUST_SHA256}  /tmp/rust.tar.xz" | sha256sum -c - && \
+    tar -C /tmp -xJf /tmp/rust.tar.xz && \
+    /tmp/rust-${RUST_VERSION}-x86_64-unknown-linux-gnu/install.sh --prefix=/usr/local --without=rust-docs && \
+    rm -rf /tmp/rust.tar.xz /tmp/rust-${RUST_VERSION}-x86_64-unknown-linux-gnu && \
+    install -d -m 1777 /opt/rust/cargo && \
+    rustc --version && cargo --version && cargo clippy --version
+
 # --- Reproducibility knobs -------------------------------------------------
 # SOURCE_DATE_EPOCH is consumed by tar, gcc (__DATE__/__TIME__),
 # binutils (ar timestamps), and most build tools shipping in this image.

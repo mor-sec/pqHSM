@@ -76,7 +76,7 @@ jobs:
              || (github.event_name == 'workflow_dispatch' && inputs.full_corpus))
             && '1' || '0' }}
     container:
-      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006-rust1.99.1
       options: --user root
     steps:
       - uses: actions/checkout@v7
@@ -291,7 +291,7 @@ jobs:
              || (github.event_name == 'workflow_dispatch' && inputs.full_corpus))
             && '1' || '0' }}
     container:
-      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006
+      image: ghcr.io/${{ github.repository_owner }}/freehsm-c-build:debian13-20261006-rust1.99.1
       options: --user root
     steps:
       - uses: actions/checkout@v7

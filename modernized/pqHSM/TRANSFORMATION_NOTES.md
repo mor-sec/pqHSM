@@ -1865,3 +1865,16 @@ Checked and found as decided: the strings and prefixes, every `FHSM_*` read thro
 ### After slice 4: PIN typed twice (DIV-085, 2026-11-12)
 
 `pqhsm-token init` asks at a terminal for each PIN twice and stops on a mismatch before the slot is opened (`cli/src/lib.rs` `new_pin`, used only by init; the logins keep `pin`). `pin_prompt.py` takes the answers as a comma-separated list; `inner.sh` adds a mismatch check (rc=1, no token file).
+
+### Slice 5, first part: Rust in CI (2026-11-13)
+
+Decisions (user): Rust 1.99.1 pinned in `Dockerfile.build` ("Pin it in Dockerfile.build (Recommended)"); the image tag carries the toolchain, `debian13-<date>-rust<version>` ("Tag adds the toolchain (Recommended)"), so the image of past releases, `debian13-20261006`, is never rewritten.
+
+| What | Where |
+|---|---|
+| The standalone 1.99.1 archive, checked by the SHA-256 static.rust-lang.org publishes, installed under `/usr/local` without its docs; `CARGO_HOME=/opt/rust/cargo` (1777) | `Dockerfile.build` |
+| The tag from `ARG SNAPSHOT` and `ARG RUST_VERSION`; the check that every workflow names it | `.github/workflows/build-image.yml` |
+| All 16 image references moved to `debian13-20261006-rust1.99.1`; the Security Target's two mentions likewise (the release notes and CHANGELOG are history and keep the old tag) | `ci.yml`, `pkcs11-check.yml`, `release.yml`, `baseline.yml`, `wycheproof.yml`, `docs/FIPS_140_3_SECURITY_TARGET.md` |
+| A `rust` job: clippy and `cargo test` as the image's `freehsm` user (the unreadable-file goldens need no CAP_DAC_OVERRIDE), then the hybrid build | `ci.yml` |
+
+Not yet: the image must be rebuilt and published (build-image.yml, on push to main or by hand) before any job can start, since every workflow now names the new tag. The C jobs then run in an image that differs only by `/usr/local`'s Rust, so their outputs should not move; the reproducibility job checks that. The hybrid harness, the Rust module's reproducible build and the C build's removal from the default pipeline remain for the cutover.
