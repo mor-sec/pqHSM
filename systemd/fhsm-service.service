@@ -35,6 +35,11 @@ RequiresMountsFor=/var/lib/freehsm
 # DefaultLimitNOFILE happens to be on the host, which is a bound nobody chose.
 LimitNOFILE=4096
 
+# The key-material heap is mlock(2)-ed: secure_heap_kb, at most 65536 KiB. The setcap
+# cap_ipc_lock that `make install` puts on the library does nothing (file capabilities
+# apply to executables), so the bound is the RLIMIT_MEMLOCK set here, with room to spare.
+LimitMEMLOCK=128M
+
 Type=exec
 User=freehsm
 Group=freehsm

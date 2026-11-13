@@ -27,8 +27,13 @@ if [ "$1" = install ]; then
   unit=$(grep -c "^ExecStart=$I/libexec/pqhsm-service " $I/unit/pqhsm-service.service 2>/dev/null)
   uenv=$(grep -c '^Environment=PQHSM_TOKENS_DIR=' $I/unit/pqhsm-service.service 2>/dev/null)
   soname=$(readelf -d $I/lib/libpqhsm.so 2>&1 | grep -o 'soname: \[[^]]*\]')
+  docs=$(ok sh -c "[ -f $I/share/doc/pqhsm/NOTICE ] && [ -f $I/share/doc/pqhsm/LICENSES/MIT.txt ]")
+  # a third install under its own prefix, then uninstall-pqhsm: nothing may be left
+  U=/tmp/inst-u; inst $T PQHSM_FEATURES= PREFIX=$U ETCDIR=$U/etc STATEDIR=$U/state UNITDIR=$U/unit > /out/install_u.log 2>&1
+  (cd $T && $M PROFILE=all-mechanisms PREFIX=$U ETCDIR=$U/etc STATEDIR=$U/state SYSUSER=pqhsm-nouser UNITDIR=$U/unit uninstall-pqhsm) >> /out/install_u.log 2>&1; ru=$?
+  left=$(find $U \( -type f -o -type l \) | sed "s|^$U/||" | tr '\n' ' ')
   rm -rf $T
-  echo "install-pqhsm: release build rc=$r1, again rc=$r2, refused in a dev-bypass tree: $refused; libpqhsm.so $lib; tools ${tools:-ok}; freehsm-audit $audit; unit ExecStart $unit, Environment=PQHSM_ $uenv; $soname"
+  echo "install-pqhsm: release build rc=$r1, again rc=$r2, refused in a dev-bypass tree: $refused; libpqhsm.so $lib; tools ${tools:-ok}; freehsm-audit $audit; unit ExecStart $unit, Environment=PQHSM_ $uenv; $soname; LICENSE and NOTICE $docs; uninstall-pqhsm rc=$ru, left: ${left:-nothing}"
   exit 0
 fi
 

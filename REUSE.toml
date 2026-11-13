@@ -99,3 +99,10 @@ SPDX-FileCopyrightText = "2026 Afchine Madjlessi <afchine.mad@gmail.com>"
 SPDX-License-Identifier = "Apache-2.0"
 SPDX-FileComment = "Auto-generated from scripts/gen_p11_thunks.py + the mechanism DB."
 
+
+[[annotations]]
+path = "modernized/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = ["2026 Afchine Madjlessi <afchine.mad@gmail.com>", "2026 mor-sec <192092408+mor-sec@users.noreply.github.com>"]
+SPDX-License-Identifier = "Apache-2.0"
+SPDX-FileComment = "The Rust port of FreeHSM C (user, 2026-11-13: both holders)."

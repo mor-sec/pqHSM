@@ -232,4 +232,19 @@ install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) tools/freehsm-audit service/pqhsm-servic
 	    grep -q '^ExecStart=$(PREFIX)/libexec/pqhsm-service ' $(UNITDIR)/pqhsm-service.service; \
 	    echo "[install] $(PREFIX)/libexec/pqhsm-service, $(UNITDIR)/pqhsm-service.service"; \
 	else echo "[install] the service is not installed: a $(PROFILE_CANON) build's refuses to start (DIV-081)"; fi
+	install -d -o root -g root -m 755 $(PREFIX)/share/doc/pqhsm/LICENSES
+	install -o root -g root -m 0644 LICENSE NOTICE $(PREFIX)/share/doc/pqhsm/
+	install -o root -g root -m 0644 LICENSES/Apache-2.0.txt LICENSES/MIT.txt $(PREFIX)/share/doc/pqhsm/LICENSES/
 	@echo "[install] pqHSM layout: $(LIBDIR)/libpqhsm.so, $(PREFIX)/bin/pqhsm-*"
+
+# The legacy uninstall (its warning and 5 s pause, then tokens, audit logs and KEK shredded),
+# then the pqHSM layout. The service is stopped first, so nothing writes while it runs.
+PQHSM_TOOL_NAMES := $(notdir $(PQHSM_CLI_BINS)) $(patsubst fhsm-%,pqhsm-%,$(notdir $(PQHSM_CLI_BINS)))
+.PHONY: uninstall-pqhsm
+uninstall-pqhsm:
+	-systemctl disable --now pqhsm-service 2>/dev/null || true
+	$(MAKE) -f $(PQHSM_DIR)/hybrid.mk uninstall
+	rm -f $(UNITDIR)/pqhsm-service.service $(PREFIX)/libexec/pqhsm-service $(LIBDIR)/libpqhsm.so \
+	    $(PREFIX)/bin/pqhsm-audit $(PREFIX)/bin/freehsm-audit $(addprefix $(PREFIX)/bin/,$(PQHSM_TOOL_NAMES))
+	rm -rf $(PREFIX)/share/doc/pqhsm $(PREFIX)/share/kat
+	@echo "[uninstall] pqHSM layout removed"
