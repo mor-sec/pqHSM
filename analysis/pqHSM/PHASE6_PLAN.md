@@ -83,7 +83,7 @@ So slices 0 and 1 can start once this plan and the HTTP layer are approved. Slic
 
 ## 8. Slice 5 plan: the cutover
 
-Status: **DRAFT 2026-11-24, for approval** (user: "yes, draft the slice 5 plan"). Lands as one PR, `phase6-slice5` into `main` on github.com/mor-sec/pqHSM, one commit per sub-slice. Method as before: evidence first, an architecture-critic review per sub-slice, a harness run clean apart from recorded divergences.
+Status: **APPROVED 2026-11-24** (user: "Approve, Cargo alone (Recommended)"; drafted on "yes, draft the slice 5 plan"). Lands as one PR, `phase6-slice5` into `main` on github.com/mor-sec/pqHSM, one commit per sub-slice. Method as before: evidence first, an architecture-critic review per sub-slice, a harness run clean apart from recorded divergences.
 
 ### 8.1 Where the C still is (facts, 2026-11-24)
 
@@ -127,7 +127,7 @@ Then the phase exit: the §4 persona walkthroughs on the all-Rust build (manual 
 
 | When | Decision | Recommendation |
 |---|---|---|
-| With this plan | How the module is built: Cargo alone (`cdylib`, version script, features), or Cargo plus a minimal C link step for the exports and the digest section | **Cargo alone.** Every shim exists only because the staticlib went through the C link; Rust can export, version and place a section itself, and `sign_module.sh` takes the library path as its argument |
+| With this plan (**decided 2026-11-24: Cargo alone**, user: "Approve, Cargo alone (Recommended)") | How the module is built: Cargo alone (`cdylib`, version script, features), or Cargo plus a minimal C link step for the exports and the digest section | **Cargo alone.** Every shim exists only because the staticlib went through the C link; Rust can export, version and place a section itself, and `sign_module.sh` takes the library path as its argument |
 | Before 5b | Where the GUI's C lives: `modernized/pqHSM/gui/` with its own short build, or ported to gtk4-rs as the brief first said | **Move it, unchanged.** Phase 5 decided to keep it C; a port is its own slice, and its manual UAT is still open |
 | Before 5b | The installed audit verifier: the Rust `pqhsm-audit`, or the C one under its new name | **The Rust one,** once both agree on the corpus; it carries the DIV-007/008 fixes the C verifier lacks |
 | Before 5c | The ABI-only C tests: kept as `tests/abi/` against the Rust module, or retired to `legacy/` with the rest | **Keep them.** They are consumers of the one contract (the brief's §1) and cost no Rust code |
