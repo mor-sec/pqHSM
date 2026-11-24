@@ -1,13 +1,17 @@
-# FreeHSM --- FIPS 140-3 / CC EAL4+ discipline, without the certificate
+# pqHSM
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![REUSE status](https://api.reuse.software/badge/github.com/afchine1337/freehsm)](https://api.reuse.software/info/github.com/afchine1337/freehsm)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13190/badge)](https://www.bestpractices.dev/projects/13190)
-[![CI](https://github.com/afchine1337/freehsm/actions/workflows/ci.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/ci.yml)
-[![Wycheproof](https://github.com/afchine1337/freehsm/actions/workflows/wycheproof.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/wycheproof.yml)
-[![Fuzz](https://github.com/afchine1337/freehsm/actions/workflows/fuzz.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/fuzz.yml)
-[![Reproducible build](https://github.com/afchine1337/freehsm/actions/workflows/dist-verify.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/dist-verify.yml)
-[![Mirror](https://github.com/afchine1337/freehsm/actions/workflows/mirror.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/mirror.yml)
+
+pqHSM is a Rust modernization of [FreeHSM](https://github.com/afchine1337/freehsm) 2.6.0, a PKCS#11 v3.2 software HSM on the OpenSSL 3.x FIPS provider.
+It is an independent derivative work under Apache-2.0 (see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE)), not affiliated with or endorsed by FreeHSM or Simorgh Labs.
+
+**Status.** The PKCS#11 module, the command-line tools and the HTTP service run on Rust, in [`modernized/pqHSM/`](modernized/pqHSM).
+The legacy C tree is still in place as the behaviour oracle, and the C `Makefile` still links the release library, until Phase 6 slice 5 moves the C under `legacy/`.
+Every intended behaviour change from C is recorded in [`analysis/pqHSM/DIVERGENCES.md`](analysis/pqHSM/DIVERGENCES.md); the plan is [`analysis/pqHSM/MODERNIZATION_BRIEF.md`](analysis/pqHSM/MODERNIZATION_BRIEF.md).
+
+The upstream FreeHSM README follows, unchanged; it describes the C implementation.
+
+---
 
 > French version: see [`README.fr.md`](README.fr.md). Documentation index: [`docs/DOC_INDEX.md`](docs/DOC_INDEX.md).
 >
