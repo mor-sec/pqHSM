@@ -231,20 +231,14 @@ pub unsafe extern "C" fn fhsm_api_free_value(p: *mut c_void, len: usize, secure:
     }
 }
 
-/// Every `(event, role, rv)` the token's C ABI reported through `fhsm_audit_event`.
-pub static AUDIT: std::sync::Mutex<Vec<(c_int, c_int, u32)>> = std::sync::Mutex::new(Vec::new());
-
-/// `fhsm_audit_event` is variadic in C (`audit/shim/audit_event.c` in the hybrid build). A
-/// non-variadic definition reads the five fixed arguments the same way on the SysV ABI and
-/// ignores the key/value list, which the scenario tests check through the safe API instead.
+// The module state, which the audit crate's C ABI consults once a log is open (p11 defines it in
+// the module). No test opens one: pqhsm_audit_event_v drops each event before reaching these.
 #[unsafe(no_mangle)]
-pub extern "C" fn fhsm_audit_event(
-    ev: c_int,
-    _slot: c_int,
-    _session: c_int,
-    role: c_int,
-    rv: u32,
-) -> u32 {
-    AUDIT.lock().unwrap().push((ev, role, rv));
-    OK
+extern "C" fn fhsm_state_get() -> c_int {
+    unreachable!()
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn fhsm_state_latch_error(_reason: *const std::ffi::c_char) {
+    unreachable!()
 }

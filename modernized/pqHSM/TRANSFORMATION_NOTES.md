@@ -1878,3 +1878,37 @@ Decisions (user): Rust 1.99.1 pinned in `Dockerfile.build` ("Pin it in Dockerfil
 | A `rust` job: clippy and `cargo test` as the image's `freehsm` user (the unreadable-file goldens need no CAP_DAC_OVERRIDE), then the hybrid build | `ci.yml` |
 
 Not yet: the image must be rebuilt and published (build-image.yml, on push to main or by hand) before any job can start, since every workflow now names the new tag. The C jobs then run in an image that differs only by `/usr/local`'s Rust, so their outputs should not move; the reproducibility job checks that. The hybrid harness, the Rust module's reproducible build and the C build's removal from the default pipeline remain for the cutover.
+
+### Slice 5a: the module on Cargo alone (2026-11-24)
+
+Plan: `PHASE6_PLAN.md` §8.2 5a (user: "Approve, Cargo alone (Recommended)"). `cargo build --release -p pqhsm-module` now links `libpqhsm.so` itself; the hybrid build's `$(LIB)` is a copy of it.
+
+| What | Where |
+|---|---|
+| `cdylib` beside `staticlib` and `rlib`; the 62 `C_*` and `fhsm_kat_results` defined in the module crate, each forwarding to the crate entry point with `interface.c`'s C-level types (`C_GetSlotList`'s `CK_BBOOL` as `u8`) | `module/src/lib.rs`, `module/Cargo.toml` |
+| The link: soname `libpqhsm.so`; `--exclude-libs,ALL`, so no symbol of a dependency rlib reaches the dynamic table and the exports are the module crate's own; std's unwinder from `libgcc_eh.a` (hybrid.mk's `-static-libgcc`), so `NEEDED` has no `libgcc_s.so.1`; `-z defs` | `module/build.rs` |
+| `fhsm_build_fips_strict` a Rust static (0 with feature `all-mechanisms`), the audit switch a const (false with `audit-optional`); the module and the service forward both features | `p11/src/ffi/sys.rs`, `p11`, `module`, `service` `Cargo.toml` |
+| The `.fhsm_digest` array a `#[used]` `#[link_section]` static, read only through volatile loads; `sign_module.sh` patches it unchanged | `selftest/src/ffi/c_abi.rs` |
+| The Rust callers of C's variadic `fhsm_audit_event` call `pqhsm_audit_event_v` with the pairs flattened (at most two, as before; the token one) | `p11/src/ffi/sys.rs`, `state.rs`, `token/src/ffi/token_abi.rs` |
+| Deleted: `p11/shim/interface.c`, `p11/shim/build_config.c`, `crypto/shim/kat_results.c`, `selftest/shim/integrity_digest.c`. `audit/shim/audit_event.c` stays for the C callers until 5d | |
+| hybrid.mk: the three objects empty; the profile and `-DFHSM_AUDIT_MANDATORY=0` mapped to the features; cargo run on every make (`+`, so `make -n` agrees) and left to decide; the service link without `--exclude-libs` | `hybrid.mk` |
+| Token tests: no audit double; `pqhsm-audit` with `ffi` as a dev-dependency (no log is open, so it drops each event), and two unreachable state doubles | `token/Cargo.toml`, `token/tests/store_common/c_doubles.rs` |
+| The ABI report and its reference | `scripts/abi_report.sh`, `testdata/abi/libpqhsm.txt` |
+
+Differences from the plan: the export set is held by `--exclude-libs` and forwarders in the module crate, not a version script (rustc passes its own, listing every `#[no_mangle]` of every crate as global, and a second script's wildcard `local` does not override it); the report is the guard. The cargo output is `libpqhsm_module.so` (the crate keeps its name, for pqhsm-service's `extern crate`); installs copy it as `libpqhsm.so`.
+
+Evidence: `abi_report.sh` on the signed Cargo-built library is identical to the hybrid's for both profiles (soname, NEEDED, RELRO, BIND_NOW, no exec stack, no TEXTREL, the 48-byte digest, the same 63 exports); its other undefined symbols are versioned libc/libcrypto ones and four weak ones. The release module, signed, passes its integrity check and stops at the absent FIPS provider (0x80000009); with one `.text` byte changed, or the digest zeroed, it refuses (0x80000002), and `FHSM_INTEGRITY_ALLOW_UNSIGNED=1` changes nothing (DIV-034). `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, the selftest and token crates with `ffi`, and clippy with both features: clean. Harness run 32 (rc=0) against run 29: every row the same but the swap counts above, the record total (which varies run to run) and one extra command, `make -n`'s `cp` of the cdylib to `libfreehsm.so` (a dry run cannot re-stat; the list now filters it). The installed release module still passed its integrity check after `install-pqhsm`'s recursive `make install`, so a real make does not re-copy over the signed library. pqhsm-service: dynamic exports 1 (C_GetFunctionList 1). The library is 1.2 MB against the hybrid's 6.5 MB: cargo's `--gc-sections` drops what the module never calls (the revocation code, which the tools reach through pqhsm-pkiops, never exported), so the harness's symbol-table counts for the revocation, heap, DRBG, core and KAT swaps fall (revocation 28 to 0).
+
+### Slice 5a review (architecture-critic, 2026-11-24)
+
+| # | Finding | Resolution |
+|---|---|---|
+| H1 | pqhsm-service's `C_GetFunctionList` now comes from its staticlib, which `--exclude-libs` hides; `--export-dynamic-symbol` cannot bring it back | Confirmed (run 30: exports 0). The service link filters the flag out; `inner.sh` prints FAIL if the export is missing |
+| M1 | The tables point at the exported `C_*`, so another `RTLD_GLOBAL` module's symbols can interpose (as C's did) | Pre-existing; not changed here: `-Bsymbolic-functions` or the tables on `pqhsm_C_*` would be a behaviour difference, for the user to decide as a DIV |
+| M2 | The test_tpm staticlib ignored the profile and the audit switch | It takes `$(PQHSM_CFG)` |
+| L1 | The feature stamp could leave a stale `.so` after a manual cargo build | Cargo on every make; first without `+`, which made `make -n tests` print the rebuild and run 31 ran it as 41 extra commands; with `+` |
+| L2 | No version script, as the plan said | Recorded above |
+| L3 | Undefined symbols were not checked at link time | `-z defs` |
+| L4 | The digest static was `pub` | Private |
+| L5 | Stale comments (hybrid.mk, `token.rs`, `p11/Cargo.toml`) | Updated |
+| L6 | A `Vec` per token audit event | A two-pointer array |

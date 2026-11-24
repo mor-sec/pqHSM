@@ -39,7 +39,7 @@ use state::{Budget, Idents, POOL_MAX_LIMIT, Policy, Pool};
 extern crate pqhsm_module;
 
 unsafe extern "C" {
-    /// `p11/shim/build_config.c`: the profile this binary was linked with.
+    /// pqhsm-p11's: the profile this binary was linked with (feature `all-mechanisms`).
     static fhsm_build_fips_strict: c_int;
 }
 

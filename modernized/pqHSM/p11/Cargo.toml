@@ -11,9 +11,13 @@ publish = false
 crate-type = ["rlib"]
 
 [features]
-# The C ABI. Off for `cargo test`, on for the hybrid build: the tables name the C entry points
-# still defined in src/fhsm_pkcs11.c, which only the module link provides.
+# The C ABI. Off for `cargo test`, on in the module: the tables name the exported C_* entry
+# points, which pqhsm-module defines (module/src/lib.rs).
 ffi = []
+# The module's build settings (pqhsm-module forwards them): fhsm_build_fips_strict 0, and
+# AUDIT_MANDATORY false.
+all-mechanisms = []
+audit-optional = []
 
 [dependencies]
 libc.workspace = true

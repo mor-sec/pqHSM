@@ -31,7 +31,7 @@ grep -q 'DIV-057 (the harness copy' tests/test_ecdh_peer_point.c && grep -q 'tmp
 # 1. The legacy test list, one command at a time, exactly as the baseline ran it. Each command
 #    gets its own TMPDIR so its token dirs, and so its audit logs, can be found for step 6.
 $M -n tests 2>/dev/null | awk '/\\$/{sub(/\\$/,""); buf=buf $0; next} {print buf $0; buf=""}' \
-    | grep -vE '^(cc|gcc|echo|:|make|cargo)' > /out/commands.txt
+    | grep -vE '^(cc|gcc|echo|:|make|cargo|cp modernized/pqHSM/target)' > /out/commands.txt
 n=0; : > /out/results.tsv
 while IFS= read -r cmd; do
   n=$((n+1)); name=$(printf '%s' "$cmd" | grep -oE '(\./tests/[A-Za-z0-9_]+|tests/[A-Za-z0-9_.]+\.sh( [a-z]+)?|\./tools/[a-z-]+)' | head -1)
@@ -167,7 +167,7 @@ for d in /tmp/cb /work; do
   (cd $d && if [ $d = /work ]; then $M test-integrity; else make test-integrity; fi > /out/integrity_test_$tag.txt 2>&1
    echo "rc=$?" >> /out/integrity_test_$tag.txt)
 done
-pass() { grep -E '^(test_integrity|  |\[)' "$1" | grep -v -e '^cc ' -e '^\[gen_p11_thunks\]'; }
+pass() { grep -E '^(test_integrity|  |\[)' "$1" | grep -v -e '^cc ' -e '^\[gen_p11_thunks\]' -e '^ *Finished `release`'; }
 printf 'test-integrity: C %s, hybrid %s, output %s' "$(tail -1 /out/integrity_test_c.txt)" "$(tail -1 /out/integrity_test_hybrid.txt)" \
   "$(pass /out/integrity_test_c.txt > /tmp/a; pass /out/integrity_test_hybrid.txt > /tmp/b; cmp -s /tmp/a /tmp/b && echo same || echo DIFF)" > /out/integrity_tests.txt
 
@@ -523,6 +523,8 @@ printf '; pqhsm-service: %s, dynamic exports %s (C_GetFunctionList %s), --profil
   "$([ "$($AMH/service/pqhsm-service --profile 2>&1)" = "$($AMC/service/fhsm-service --profile 2>&1)" ] && echo "same as C ($($AMC/service/fhsm-service --profile))" || echo DIFF)" \
   "$(tail -1 /out/service_h.txt)" \
   "$(python3 -I /work/modernized/pqHSM/tests-support/hybrid/service_rows.py /out/service_c1.txt /out/service_h.txt /work/modernized/pqHSM/tests-support/hybrid/service_pending.txt)" >> /out/service.txt
+# Slice 5a review H1: without the export the service cannot reach its own module; say so loudly.
+[ "$(nm -D $AMH/service/pqhsm-service 2>/dev/null | grep -c ' T C_GetFunctionList$')" = 1 ] || printf ' FAIL: pqhsm-service does not export C_GetFunctionList' >> /out/service.txt
 # Slice 2, DIV-081: the strict (default-profile) builds, started with a missing policy. C goes past
 # the point where Rust refuses and stops at the policy (exit 1); Rust refuses as strict (exit 2).
 { make -s -C /tmp/cb service/fhsm-service && $M service/pqhsm-service; echo "build rc=$?"; } > /out/service_strict_build.log 2>&1
@@ -588,7 +590,7 @@ for t in c h; do printf '; RULE-021/022 %s: %s' $t "$([ "$(tail -1 /out/rule021_
 
 # 4q. Slice 8c review M1: the audit switch's other side. `make audit-switch` recurses without
 #     -f, so under hybrid.mk it builds pure C; this is its second half, on fresh copies of each
-#     tree: built with -DFHSM_AUDIT_MANDATORY=0 (p11/shim/build_config.c on the hybrid side),
+#     tree: built with -DFHSM_AUDIT_MANDATORY=0 (Cargo feature audit-optional on the hybrid side),
 #     FHSM_AUDIT=off must be honoured, loudly (tests/audit_switch.sh optional).
 AOC=$(mktemp -d) && AOH=$(mktemp -d) && cp -a /c/. $AOC && cp -a /work/. $AOH
 for t in c hybrid; do

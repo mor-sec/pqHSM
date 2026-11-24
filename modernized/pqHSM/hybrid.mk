@@ -25,6 +25,8 @@
 # Slice 3: tools/fhsm-crypt likewise, with the objects, secret keys and CMS envelopes.
 # Slice 4: tools/fhsm-sign likewise. Slice 5: tools/fhsm-ca likewise, and the rest of pkiops.h:
 # test_pkiops* link no C of tools/pkiops.c or tools/cms_env.c.
+# Phase 6 slice 5a: $(LIB) is pqhsm-module's cdylib, copied. Of the module's C shims only
+# audit_event.c is left: the variadic fhsm_audit_event the C callers use, until slice 5d.
 #
 #   make -f modernized/pqHSM/hybrid.mk <any legacy target>     (from the repository root)
 #
@@ -41,15 +43,17 @@ PQHSM_DIR  := modernized/pqHSM
 # release build install-pqhsm requires, in its own target dir so neither is taken for the other.
 PQHSM_FEATURES ?= dev-bypass
 PQHSM_TARGET := $(PQHSM_DIR)/target$(if $(PQHSM_FEATURES),,-release)
-PQHSM_FEAT   := $(if $(PQHSM_FEATURES),--features $(PQHSM_FEATURES)) --target-dir $(PQHSM_TARGET)
+# Slice 5a: the profile and the audit switch are Cargo features of the module (and the service).
+PQHSM_CFG    := $(if $(filter all-mechanisms,$(PROFILE_CANON)),all-mechanisms) \
+                $(if $(findstring -DFHSM_AUDIT_MANDATORY=0,$(EXTRA_CFLAGS)),audit-optional)
+PQHSM_FEAT   := $(foreach f,$(PQHSM_FEATURES) $(PQHSM_CFG),--features $(f)) --target-dir $(PQHSM_TARGET)
 PQHSM_LIB  := $(PQHSM_TARGET)/release/libpqhsm_module.a
+PQHSM_SO   := $(PQHSM_TARGET)/release/libpqhsm_module.so
 # tests/test_tpm only: the same staticlib with the FHSM_TPM_CMD seam, built into its own
 # target dir so the shipped one is never the hooks build (review H6).
 PQHSM_HOOKS_LIB := $(PQHSM_DIR)/target-hooks/release/libpqhsm_module.a
 PQHSM_SHIM := $(PQHSM_DIR)/audit/shim/audit_event.c
 PQHSM_EMPTY := $(PQHSM_DIR)/module/empty.c
-PQHSM_KAT_SHIM := $(PQHSM_DIR)/crypto/shim/kat_results.c
-PQHSM_DIGEST_SHIM := $(PQHSM_DIR)/selftest/shim/integrity_digest.c
 # Cargo is incremental, so depending on every source is cheap and never misses one (review L2).
 PQHSM_SRC  := $(shell find $(PQHSM_DIR) -path $(PQHSM_DIR)/target -prune -o -path $(PQHSM_DIR)/target-hooks -prune -o -path $(PQHSM_DIR)/target-release -prune \
                 -o \( -name '*.rs' -o -name Cargo.toml \) -print) $(PQHSM_DIR)/Cargo.lock
@@ -61,11 +65,18 @@ PQHSM_NATIVE := -lssl -lcrypto -lutil -lrt -lpthread -lm -ldl -lc
 LDFLAGS += -static-libgcc -Wl,--exclude-libs,ALL $(PQHSM_LIB) \
            -Wl,--push-state,--as-needed $(PQHSM_NATIVE) -Wl,--pop-state
 
-$(PQHSM_LIB): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-module $(PQHSM_FEAT) --manifest-path $(PQHSM_DIR)/Cargo.toml
+# Cargo runs every time and decides (review L1): a change of features (profile, audit switch)
+# rebuilds, and a no-op leaves the outputs' mtimes alone, so nothing downstream relinks. `+` runs
+# it under `make -n` too, so a dry run (the harness lists `make -n tests`) sees the same. One run
+# builds both the staticlib the C tests link and the cdylib that is $(LIB).
+$(PQHSM_LIB): FORCE
+	+cargo build --release --locked -p pqhsm-module $(PQHSM_FEAT) --manifest-path $(PQHSM_DIR)/Cargo.toml
 
-$(PQHSM_HOOKS_LIB): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-module --features tpm-test-hooks,dev-bypass \
+$(PQHSM_SO): $(PQHSM_LIB) ;
+
+# With the build's profile and audit switch too, which are the staticlib's since slice 5a (review M2).
+$(PQHSM_HOOKS_LIB): FORCE
+	+cargo build --release --locked -p pqhsm-module --features tpm-test-hooks,dev-bypass $(foreach f,$(PQHSM_CFG),--features $(f)) \
 	    --target-dir $(PQHSM_DIR)/target-hooks --manifest-path $(PQHSM_DIR)/Cargo.toml
 
 # An explicit recipe outranks the legacy pattern rule: the object named fhsm_audit.o is now the
@@ -79,36 +90,24 @@ $(OBJDIR)/src/fhsm_tpm.o $(OBJDIR)/src/fhsm_token_tpm.o $(OBJDIR)/src/fhsm_token
 $(OBJDIR)/src/fhsm_memory.o $(OBJDIR)/src/fhsm_conf.o $(OBJDIR)/src/fhsm_drbg.o \
 $(OBJDIR)/kat/fhsm_kat_vectors.o $(OBJDIR)/kat/cavp_extended.o $(OBJDIR)/src/fhsm_pairwise.o \
 $(OBJDIR)/src/fhsm_composite.o $(OBJDIR)/src/fhsm_session.o $(OBJDIR)/src/fhsm_state.o \
-$(OBJDIR)/src/fhsm_apilock.o $(OBJDIR)/src/fhsm_create_attrs.o \
+$(OBJDIR)/src/fhsm_apilock.o $(OBJDIR)/src/fhsm_create_attrs.o $(OBJDIR)/src/fhsm_crypto.o \
+$(OBJDIR)/src/fhsm_integrity.o $(OBJDIR)/src/fhsm_pkcs11.o \
 $(OBJDIR)/src/fhsm_ecdsa_raw.o $(OBJDIR)/src/fhsm_pq_params.o $(OBJDIR)/src/fhsm_mode.o \
 $(OBJDIR)/src/gen/fhsm_dispatch.o $(patsubst %.c,$(OBJDIR)/%.o,$(wildcard src/dispatch/*.c)): \
 		$(PQHSM_EMPTY) $(PQHSM_LIB)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# fhsm_crypto.o keeps the module's one non-PKCS#11 export, which --exclude-libs would hide.
-$(OBJDIR)/src/fhsm_crypto.o: $(PQHSM_KAT_SHIM) $(PQHSM_LIB)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@ $<
+# Slice 5a: the C_* exports, fhsm_kat_results, the .fhsm_digest array and the two build settings
+# are all the staticlib's, so fhsm_crypto.o, fhsm_integrity.o and fhsm_pkcs11.o are empty (above).
+# fhsm_pkcs11.o keeps the generated source as a prerequisite: it is what regenerates src/gen on a
+# change of profile (the legacy chain ran through gen/fhsm_dispatch.o), so check-profile holds.
+$(OBJDIR)/src/fhsm_pkcs11.o: src/gen/fhsm_dispatch.c
 
-# fhsm_integrity.o keeps the .fhsm_digest section the signing script patches.
-$(OBJDIR)/src/fhsm_integrity.o: $(PQHSM_DIGEST_SHIM) $(PQHSM_LIB)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@ $<
-
-# fhsm_pkcs11.o: every C_* is Rust's (slice 8a), so the object is the shim exporting them and
-# the two build-time settings the Rust reads (slice 8c); src/fhsm_pkcs11.c is not compiled.
-PQHSM_P11_SHIM   := $(PQHSM_DIR)/p11/shim/interface.c
-PQHSM_P11_CONFIG := $(PQHSM_DIR)/p11/shim/build_config.c
-# The Makefile's check-profile formula: all-mechanisms is the one profile that is not strict.
-PQHSM_FIPS_STRICT := $(if $(filter all-mechanisms,$(PROFILE_CANON)),0,1)
-# On the generated source, not the stamp: it is what regenerates src/gen on a change of profile
-# (the legacy chain ran through gen/fhsm_dispatch.o), so check-profile still holds.
-$(OBJDIR)/src/fhsm_pkcs11.o: $(PQHSM_P11_SHIM) $(PQHSM_P11_CONFIG) $(PQHSM_LIB) src/gen/fhsm_dispatch.c
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c -o $@.shim.o $(PQHSM_P11_SHIM)
-	$(CC) $(CFLAGS) -DPQHSM_FIPS_STRICT=$(PQHSM_FIPS_STRICT) -c -o $@.config.o $(PQHSM_P11_CONFIG)
-	$(LD) -r -o $@ $@.shim.o $@.config.o
+# The module is the cargo cdylib (slice 5a), soname libpqhsm.so; the legacy prerequisites stay,
+# and make warns "overriding recipe".
+$(LIB): $(PQHSM_SO)
+	cp $(PQHSM_SO) $@
 
 # tests/test_conf unit-tests src/fhsm_mode.c, which the module no longer links (Q16: not
 # ported; the profile is the build's only mode switch). Its link alone takes the C object.
@@ -164,15 +163,19 @@ tools/fhsm-gui: $(PQHSM_PKIOPS_LIB)
 
 # Phase 6 slice 0: pqhsm-service, built beside the C service (which ships until slice 3). It
 # links the module statically as C's does: its staticlib holds the module's crates and the
-# service, and $(LIB_OBJ) the C shims. pqhsm-pkiops reaches the module with dlopen(NULL), so
-# the binary exports C_GetFunctionList (it exports nothing else).
+# service, and $(LIB_OBJ) the remaining C (audit_event.c). pqhsm-pkiops reaches the module with
+# dlopen(NULL), so the binary exports C_GetFunctionList (it exports nothing else). Since slice 5a
+# that symbol comes from the staticlib, and an --exclude-libs symbol cannot be exported, so this
+# link drops the flag (review H1): an executable exports nothing else by default.
 PQHSM_SERVICE_LIB := $(PQHSM_TARGET)/release/libpqhsm_service.a
-$(PQHSM_SERVICE_LIB): $(PQHSM_SRC)
-	cargo build --release --locked -p pqhsm-service $(PQHSM_FEAT) --manifest-path $(PQHSM_DIR)/Cargo.toml
+PQHSM_COMMA := ,
+$(PQHSM_SERVICE_LIB): FORCE
+	+cargo build --release --locked -p pqhsm-service $(PQHSM_FEAT) --manifest-path $(PQHSM_DIR)/Cargo.toml
 
 service/pqhsm-service: $(PQHSM_DIR)/service/shim/main.c $(LIB_OBJ) $(REVOCATION_OBJ) $(PQHSM_SERVICE_LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(REVOCATION_OBJ) \
-	    $(subst $(PQHSM_LIB),$(PQHSM_SERVICE_LIB),$(LDFLAGS)) -Wl,--export-dynamic-symbol=C_GetFunctionList
+	    $(filter-out -Wl$(PQHSM_COMMA)--exclude-libs$(PQHSM_COMMA)ALL,$(subst $(PQHSM_LIB),$(PQHSM_SERVICE_LIB),$(LDFLAGS))) \
+	    -Wl,--export-dynamic-symbol=C_GetFunctionList
 
 # Slice 3: the hybrid build ships the Rust service under the C name, so `service-guards`,
 # `service-budget` and `service-public` run it (the install rule is slice 4's, Q21). Copied
@@ -191,7 +194,7 @@ $(OBJDIR)/src/fhsm_revocation.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
 
 # Phase 6 slice 4 (Q18, Q21): the pqHSM layout over the legacy install, which installs the module
 # under its C name and freehsm-audit. The module becomes libpqhsm.so with libfreehsm.so a link
-# (its soname stays libfreehsm.so, so consumers linked to either load it); the tools pqhsm-* with
+# (soname libpqhsm.so, below); the tools pqhsm-* with
 # fhsm-* links for one release; the service $(PREFIX)/libexec/pqhsm-service and its unit, with
 # ExecStart to match, when the build's service can start (all-mechanisms: DIV-081). A release
 # build only, signed (review H1, M3), from a clean checkout:
@@ -200,13 +203,9 @@ $(OBJDIR)/src/fhsm_revocation.o: $(PQHSM_EMPTY) $(PQHSM_LIB)
 # shortcut: a target of its own beside `install`, whose recipe hybrid.mk cannot extend; it
 # becomes `install` at the cutover (slice 5).
 UNITDIR ?= /etc/systemd/system
-# The release library's soname is libpqhsm.so (user, 2026-11-12), so programs linked from now on
-# need only the new name and the libfreehsm.so link can go, as Q18 intends. The harness build
-# keeps libfreehsm.so: its tests load the module by that name in the tree. ld takes the last
-# -soname, and the legacy link line puts $(LDFLAGS) after its own.
-ifeq ($(PQHSM_FEATURES),)
-$(LIB): LDFLAGS += -Wl,-soname,libpqhsm.so
-endif
+# The library's soname is libpqhsm.so (user, 2026-11-12), so programs linked from now on need only
+# the new name and the libfreehsm.so link can go, as Q18 intends. Since slice 5a (module/build.rs)
+# the harness build's is too: its tests load the module by path.
 PQHSM_RELINK = ln -sfn $(2) $(dir $(1)).$(notdir $(1)).tmp && mv -Tf $(dir $(1)).$(notdir $(1)).tmp $(1)
 .PHONY: install-pqhsm
 install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) tools/freehsm-audit service/pqhsm-service

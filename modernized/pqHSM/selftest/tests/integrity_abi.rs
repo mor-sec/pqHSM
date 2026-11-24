@@ -1,4 +1,4 @@
-//! The C ABI run on this test binary, which carries its own all-zero `.fhsm_digest`: the
+//! The C ABI run on this test binary, which carries the crate's all-zero `.fhsm_digest`: the
 //! self-locate falls back to `/proc/self/exe`, as for C's statically linked test harnesses.
 
 use std::ffi::{CStr, c_char, c_int};
@@ -7,12 +7,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use pqhsm_crypto::rv;
 // links the crate whose C ABI is called below
 extern crate pqhsm_selftest;
-
-#[allow(non_upper_case_globals)]
-#[unsafe(no_mangle)]
-#[unsafe(link_section = ".fhsm_digest")]
-#[used]
-static fhsm_module_integrity_digest: [u8; 48] = [0; 48];
 
 static LATCHES: AtomicU32 = AtomicU32::new(0);
 

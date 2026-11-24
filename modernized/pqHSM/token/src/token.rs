@@ -102,8 +102,8 @@ pub struct AuditEvent<'a> {
     pub params: &'a [(&'a [u8], &'a [u8])],
 }
 
-/// Where audit records go. The C ABI layer forwards to `fhsm_audit_event` (the C shim in front
-/// of the Rust audit crate); tests record. `Err` means the record is not durable (DIV-001).
+/// Where audit records go. The C ABI layer forwards to the audit crate's `pqhsm_audit_event_v`;
+/// tests record. `Err` means the record is not durable (DIV-001).
 pub trait Audit: Send + Sync {
     fn event(&self, e: &AuditEvent<'_>) -> Result<(), Rv>;
 }

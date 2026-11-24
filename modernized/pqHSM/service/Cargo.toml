@@ -15,6 +15,9 @@ crate-type = ["staticlib"]
 [features]
 # As pqhsm-module's (DIV-034): the hybrid harness only, never a release build.
 dev-bypass = ["pqhsm-module/dev-bypass"]
+# As pqhsm-module's: the build profile and the audit switch.
+all-mechanisms = ["pqhsm-module/all-mechanisms"]
+audit-optional = ["pqhsm-module/audit-optional"]
 
 [dependencies]
 pqhsm-core = { path = "../core" }

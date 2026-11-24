@@ -414,7 +414,7 @@ pub extern "C" fn fhsm_fips_mode() -> c_int {
     1
 }
 
-/// `fhsm_kat_results`, which `crypto/shim/kat_results.c` exports from the module. The array
+/// `fhsm_kat_results`, which pqhsm-module exports (`module/src/lib.rs`). The array
 /// lives in a static, so the pointer outlives the lock, read unlocked as in C.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pqhsm_kat_results(count: *mut usize) -> *const KatRecord {

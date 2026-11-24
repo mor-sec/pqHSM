@@ -142,3 +142,7 @@ Then the phase exit: the §4 persona walkthroughs on the all-Rust build (manual 
 3. *The oracle stops being runnable once it leaves every build.* `legacy.yml` builds it on demand until it is removed, one release after the first pqHSM release.
 4. *Rust builds are less reproducible than the C's.* Remapped path prefixes, one codegen unit if needed, the pinned image; proven by the two-build check before 5e closes.
 5. *A large diff hides a regression.* One commit per sub-slice, `git mv` for every move, and the harness run (5c) before the move (5d).
+
+### 8.6 Progress
+
+- **5a done (2026-11-24):** the module on Cargo alone; the ABI report identical to the hybrid's for both profiles; review H1 (the service's export) fixed. The export set is held by `--exclude-libs` and forwarders in the module crate rather than a version script (`TRANSFORMATION_NOTES.md`, slice 5a).
