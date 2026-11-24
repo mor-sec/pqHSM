@@ -1,13 +1,17 @@
-# FreeHSM --- la discipline FIPS 140-3 / CC EAL4+, sans le certificat
+# pqHSM
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![REUSE status](https://api.reuse.software/badge/github.com/afchine1337/freehsm)](https://api.reuse.software/info/github.com/afchine1337/freehsm)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13190/badge)](https://www.bestpractices.dev/projects/13190)
-[![CI](https://github.com/afchine1337/freehsm/actions/workflows/ci.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/ci.yml)
-[![Wycheproof](https://github.com/afchine1337/freehsm/actions/workflows/wycheproof.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/wycheproof.yml)
-[![Fuzz](https://github.com/afchine1337/freehsm/actions/workflows/fuzz.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/fuzz.yml)
-[![Reproducible build](https://github.com/afchine1337/freehsm/actions/workflows/dist-verify.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/dist-verify.yml)
-[![Mirror](https://github.com/afchine1337/freehsm/actions/workflows/mirror.yml/badge.svg)](https://github.com/afchine1337/freehsm/actions/workflows/mirror.yml)
+
+pqHSM est une modernisation en Rust de [FreeHSM](https://github.com/afchine1337/freehsm) 2.6.0, un HSM logiciel PKCS#11 v3.2 sur le fournisseur FIPS d'OpenSSL 3.x.
+C'est une œuvre dérivée indépendante sous Apache-2.0 (voir [`LICENSE`](LICENSE) et [`NOTICE`](NOTICE)), sans lien avec FreeHSM ni Simorgh Labs et non approuvée par eux.
+
+**État.** Le module PKCS#11, les outils en ligne de commande et le service HTTP tournent en Rust, dans [`modernized/pqHSM/`](modernized/pqHSM).
+L'arbre C historique reste en place comme oracle de comportement, et le `Makefile` C lie encore la bibliothèque publiée, jusqu'à ce que la tranche 5 de la phase 6 déplace le C sous `legacy/`.
+Chaque écart voulu par rapport au C est consigné dans [`analysis/pqHSM/DIVERGENCES.md`](analysis/pqHSM/DIVERGENCES.md).
+
+Le README FreeHSM d'origine suit, inchangé ; il décrit l'implémentation C.
+
+---
 
 
 > Version anglaise : voir [`README.md`](README.md). Index documentation : [`docs/DOC_INDEX.md`](docs/DOC_INDEX.md).
