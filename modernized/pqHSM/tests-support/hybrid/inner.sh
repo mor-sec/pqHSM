@@ -525,6 +525,12 @@ printf '; pqhsm-service: %s, dynamic exports %s (C_GetFunctionList %s), --profil
   "$(python3 -I /work/modernized/pqHSM/tests-support/hybrid/service_rows.py /out/service_c1.txt /out/service_h.txt /work/modernized/pqHSM/tests-support/hybrid/service_pending.txt)" >> /out/service.txt
 # Slice 5a review H1: without the export the service cannot reach its own module; say so loudly.
 [ "$(nm -D $AMH/service/pqhsm-service 2>/dev/null | grep -c ' T C_GetFunctionList$')" = 1 ] || printf ' FAIL: pqhsm-service does not export C_GetFunctionList' >> /out/service.txt
+# Slice 5b review L1: the Cargo binary's hardening and exports, from the module's ABI report.
+sh /work/modernized/pqHSM/scripts/abi_report.sh $AMH/service/pqhsm-service > /out/service_abi.txt 2>&1
+elf=$(grep -vE '^(soname|needed):' /out/service_abi.txt | tr '\n' '|' | sed 's/|$//')
+printf '; service ELF: %s, NEEDED %s' "$elf" "$(sed -n 's/^needed: //p' /out/service_abi.txt | tr '\n' ' ')" >> /out/service.txt
+[ "$elf" = 'relro: yes|bind_now: yes|exec_stack: no|textrel: no|fhsm_digest_size: 48|export: T C_GetFunctionList' ] &&
+  ! grep -q '^needed: libgcc_s' /out/service_abi.txt || printf ' FAIL: pqhsm-service ELF' >> /out/service.txt
 # Slice 2, DIV-081: the strict (default-profile) builds, started with a missing policy. C goes past
 # the point where Rust refuses and stops at the policy (exit 1); Rust refuses as strict (exit 2).
 { make -s -C /tmp/cb service/fhsm-service && $M service/pqhsm-service; echo "build rc=$?"; } > /out/service_strict_build.log 2>&1
@@ -632,6 +638,22 @@ while IFS= read -r cmd; do
   printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$(awk -F'\t' -v n=$n '$1==n{print $2}' /out/results.tsv)" "$logs" "$recs" "$v" >> /out/corpus.tsv
 done < /out/commands.txt
 
+# 6b. Slice 5b: the installed verifier becomes the Rust one, so both read every corpus log, C- and
+#     Rust-written, with the key beside it; exit code and output must agree (the tampered cases
+#     are audit-verify's cli.rs goldens, DIV-008's rows among them).
+: > /out/verifiers.txt; agree=0; ok=0; differ=0; nokey=0
+for f in $(find /tmp/corpus -name 'audit.log*' -type f | sort); do
+  k=$(dirname "$f")/audit.key
+  [ -f "$k" ] || { nokey=$((nokey+1)); continue; }
+  key=$(od -An -tx1 -v "$k" | tr -d ' \n')
+  c=$(./tools/freehsm-audit verify "$f" "$key" 2>&1; echo "rc=$?")
+  r=$($RTOOL verify "$f" "$key" 2>&1; echo "rc=$?")
+  if [ "$c" = "$r" ]; then agree=$((agree+1)); case $c in *rc=0) ok=$((ok+1));; esac
+  else differ=$((differ+1)); printf '== %s\nC: %s\nRust: %s\n' "$f" "$c" "$r" >> /out/verifiers.txt; fi
+done
+printf 'verifiers on the corpus: %s logs agree (%s intact for both), %s differ, %s without a key beside them' $agree $ok $differ $nokey > /out/verifiers_summary.txt
+[ $ok -gt 0 ] && [ $differ = 0 ] || printf ' FAIL' >> /out/verifiers_summary.txt
+
 # 7. TSan (brief, Phase 1 risk 2): the concurrency and fork tests on a TSan build of the hybrid
 #    module, in a copy. The Rust staticlib itself is not instrumented (stable toolchain). TSan
 #    aborts under this kernel's mmap ASLR ("unexpected memory mapping"), so tests run under
@@ -702,24 +724,31 @@ fi
 
 # 12. The GUI (Phase 5 slice 6; user: "Keep C GUI on Rust (Recommended)", "Fetch once
 #     (Recommended)"): GTK 4, Xvfb and D-Bus from netcache/gtkdebs (run.sh, GTK_DEBS), installed
-#     offline; this branch's tools/fhsm_gui.c built by the legacy Makefile (/tmp/cwork, pure C,
-#     no PQHSM_REV_LOCK) and by hybrid.mk on pqhsm-pkiops, and each through tests/gui_smoke.sh.
+#     offline; this branch's fhsm_gui.c built by the legacy Makefile (/tmp/cwork, pure C, no
+#     PQHSM_REV_LOCK) and, since slice 5b, by modernized/pqHSM/gui's makefile on pqhsm-pkiops
+#     alone, and each through its smoke script.
 #     Before 10 and 9, as 11.
 if ls /gdebs/*.deb > /dev/null 2>&1; then
   # dpkg -i of the lot meets pre-dependencies (systemd's) out of order: a later pass settles them
   for i in 1 2 3; do timeout 600 dpkg -i /gdebs/*.deb >> /out/gui_install.log 2>&1 && break; done
   timeout 600 dpkg --configure -a >> /out/gui_install.log 2>&1; inst=$?
-  cp /work/tools/fhsm_gui.c /tmp/cwork/tools/fhsm_gui.c
-  gui() { # $1 tree, $2 make
-    (cd "$1" && $2 tools/fhsm-gui) > /out/gui_build_$3.log 2>&1 && b=0 || b=$?
-    (cd "$1" && sh tests/gui_smoke.sh) > /out/gui_smoke_$3.txt 2>&1 && s=0 || s=$?
+  cp /work/modernized/pqHSM/gui/fhsm_gui.c /tmp/cwork/tools/fhsm_gui.c
+  gui() { # $1 dir, $2 build command, $3 name, $4 smoke script
+    (cd "$1" && $2) > /out/gui_build_$3.log 2>&1 && b=0 || b=$?
+    (cd "$1" && sh $4) > /out/gui_smoke_$3.txt 2>&1 && s=0 || s=$?
     printf '%s build rc=%s smoke rc=%s (%s)' "$3" $b $s "$(tail -1 /out/gui_smoke_$3.txt)"
   }
-  c=$(gui /tmp/cwork make c); h=$(gui /work "$M" hybrid)
+  c=$(gui /tmp/cwork "make tools/fhsm-gui" c tests/gui_smoke.sh)
+  h=$(gui /work/modernized/pqHSM/gui make hybrid gui_smoke.sh)
   # the C sources named on the hybrid link line (none), and the Rust in the binary
-  if [ -x /work/tools/fhsm-gui ]; then
-    links="hybrid link names pkiops.c/cms_env.c: $(grep -E '^cc .*-o tools/fhsm-gui' /out/gui_build_hybrid.log | grep -cE 'tools/(pkiops|cms_env)\.c'), rust pkiops symbols $(nm /work/tools/fhsm-gui | grep -c 'pqhsm_pkiops'), fhsm_rev_db_lock $(nm /work/tools/fhsm-gui | grep -c ' [Tt] fhsm_rev_db_lock$')"
+  GB=/work/modernized/pqHSM/gui/fhsm-gui
+  if [ -x $GB ]; then
+    links="rust pkiops symbols $(nm $GB | grep -c 'pqhsm_pkiops'), fhsm_rev_db_lock $(nm $GB | grep -c ' [Tt] fhsm_rev_db_lock$')"
   else links="hybrid binary absent"; fi
+  # slice 5b review L3: gui/include holds copies; until slice 5d nothing else keeps them equal
+  drift=$(for h in tools/pkiops.h tools/p11_err.h include/fhsm_common.h include/fhsm_composite.h include/fhsm_revocation.h; do
+    cmp -s /work/$h /work/modernized/pqHSM/gui/include/${h#*/} || printf ' %s' $h; done)
+  links="$links, gui/include ${drift:+FAIL: differs from}${drift:-as the legacy headers}"
   printf 'gui: install rc=%s, %s unconfigured; %s; %s; %s\n' "$inst" "$(dpkg --audit | grep -c '^ ')" "$c" "$h" "$links" > /out/gui.txt
 else
   echo "gui: skipped: no GTK_DEBS" > /out/gui.txt
@@ -861,4 +890,5 @@ rm -rf /tmp/wy /tmp/venv
   echo "wycheproof: $(cat /out/wycheproof.txt)"
   echo "fips: $(grep 'install rc' /out/fips_install.log 2>/dev/null)"; sed 's/^/  /' /out/fips.txt
   echo "cross_impl (C tool on Rust logs): $(grep -E 'test result|rc=' /out/x_cross_impl.txt | tr '\n' ' ')"
+  cat /out/verifiers_summary.txt; echo
 } > /out/summary.txt

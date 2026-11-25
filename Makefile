@@ -376,27 +376,7 @@ tests/test_pkiops_envelope: tests/test_pkiops_envelope.c $(PKIOPS_SRC) $(OBJDIR)
 tests/test_pkiops_envelope_rsa: tests/test_pkiops_envelope_rsa.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
 
-# fhsm-gui --- the desktop interface over pkiops (docs/fhsm-gui-plan.md).
-# Not part of `all`: building the module, the tools and the tests must not
-# need GTK, and neither must CI. The GTK flags go in as -isystem so that
-# this project's -Werror applies to its own code and not to GTK's headers.
-# Recursive (=) so pkg-config runs only when the target is built.
-GTK_CFLAGS = $(shell pkg-config --cflags gtk4 2>/dev/null | sed 's/-I/-isystem /g')
-GTK_LIBS   = $(shell pkg-config --libs gtk4 2>/dev/null)
-
-.PHONY: gui gui-smoke
-gui: tools/fhsm-gui
-
-# The window started under a virtual display and closed over the session bus,
-# failing on any GTK or GLib CRITICAL or WARNING (tests/gui_smoke.sh). Not
-# part of `make tests`: it needs a display server and GTK, and the module
-# needs neither.
-gui-smoke: tools/fhsm-gui
-	sh tests/gui_smoke.sh
-
-tools/fhsm-gui: tools/fhsm_gui.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ)
-	@pkg-config --exists gtk4 || { echo "fhsm-gui needs GTK 4: sudo apt install libgtk-4-dev" >&2; exit 2; }
-	$(CC) $(CFLAGS) $(GTK_CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) $(GTK_LIBS) -ldl
+# fhsm-gui left this tree in pqHSM Phase 6 slice 5b: modernized/pqHSM/gui (make -C there).
 
 # ---------------------------------------------------------------------------
 # Code generation --- runs scripts/gen_p11_thunks.py to regenerate
@@ -1702,7 +1682,7 @@ clean:
 	# asserting the previous buffer size and failed two cases that had just
 	# been fixed, which for a minute looked like the fix was wrong.
 	rm -f $(basename $(wildcard tests/*.c))
-	rm -f tools/freehsm-audit $(TOOLS) tools/fhsm-gui
+	rm -f tools/freehsm-audit $(TOOLS)
 	# The service too. Leaving it behind meant a `make clean && make` handed
 	# back a binary from the previous build's flags -- a TSAN one, in the run
 	# that found this, which then refused to start and looked like a service

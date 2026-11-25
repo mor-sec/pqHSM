@@ -23,7 +23,8 @@ if [ "$1" = install ]; then
   lib=$(ok sh -c "[ -f $I/lib/libpqhsm.so ] && [ ! -L $I/lib/libpqhsm.so ] && [ \"\$(readlink $I/lib/libfreehsm.so)\" = libpqhsm.so ]")
   tools=$(for t in csr ca sign crypt token; do
     [ -f $I/bin/pqhsm-$t ] && [ ! -L $I/bin/pqhsm-$t ] && [ "$(readlink $I/bin/fhsm-$t)" = pqhsm-$t ] || echo "$t BAD"; done)
-  audit=$(ok sh -c "[ -f $I/bin/pqhsm-audit ] && [ \"\$(readlink $I/bin/freehsm-audit)\" = pqhsm-audit ]")
+  # Slice 5b: the Rust verifier, not the C one the legacy install put there first.
+  audit=$(ok sh -c "[ -f $I/bin/pqhsm-audit ] && [ \"\$(readlink $I/bin/freehsm-audit)\" = pqhsm-audit ] && cmp -s $I/bin/pqhsm-audit $T/modernized/pqHSM/target-release/release/pqhsm-audit && ! cmp -s $I/bin/pqhsm-audit $T/tools/freehsm-audit")
   unit=$(grep -c "^ExecStart=$I/libexec/pqhsm-service " $I/unit/pqhsm-service.service 2>/dev/null)
   uenv=$(grep -c '^Environment=PQHSM_TOKENS_DIR=' $I/unit/pqhsm-service.service 2>/dev/null)
   soname=$(readelf -d $I/lib/libpqhsm.so 2>&1 | grep -o 'soname: \[[^]]*\]')

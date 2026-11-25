@@ -304,12 +304,11 @@ fn check_ocsp(a: &Args, ca: &[u8]) -> Result<Option<ocsp::Ocsp>, c_int> {
     Ok(Some(o))
 }
 
-/// The binary's `main` (`service/shim/main.c`).
+/// The binary's `main` (`src/main.rs`).
 ///
 /// # Safety
 /// `argv` holds `argc` C strings, as `main` receives them.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pqhsm_service_main(argc: c_int, argv: *const *const c_char) -> c_int {
+pub unsafe fn pqhsm_service_main(argc: c_int, argv: *const *const c_char) -> c_int {
     // SAFETY: main's argv, argc entries.
     let args: Vec<&[u8]> = (1..argc.max(1) as usize)
         .map(|i| unsafe { CStr::from_ptr(*argv.add(i)) }.to_bytes())

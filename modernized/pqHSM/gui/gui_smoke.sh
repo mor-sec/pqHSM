@@ -3,7 +3,7 @@
 # Copyright 2026 Afchine Madjlessi <afchine.mad@gmail.com>
 # SPDX-License-Identifier: Apache-2.0
 # ===========================================================================
-# tests/gui_smoke.sh --- does fhsm-gui start, and close cleanly, with no display?
+# modernized/pqHSM/gui/gui_smoke.sh (was tests/gui_smoke.sh) --- does fhsm-gui start, and close cleanly, with no display?
 #
 # docs/fhsm-gui-plan.md left this open: the window's logic is tested through
 # tools/pkiops (tests/test_pkiops.c) and the command-line tools, and nothing
@@ -21,11 +21,11 @@
 # (libglib2.0-bin). Exit 0 pass, 1 fail, 77 a tool is missing (skipped).
 set -u
 
-GUI=${GUI:-./tools/fhsm-gui}
+GUI=${GUI:-$(dirname "$0")/fhsm-gui}
 for t in xvfb-run dbus-run-session gapplication; do
     command -v "$t" >/dev/null 2>&1 || { echo "gui_smoke: skipped, no $t"; exit 77; }
 done
-[ -x "$GUI" ] || { echo "gui_smoke: $GUI is not built (make gui)"; exit 1; }
+[ -x "$GUI" ] || { echo "gui_smoke: $GUI is not built (make -C modernized/pqHSM/gui)"; exit 1; }
 
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT

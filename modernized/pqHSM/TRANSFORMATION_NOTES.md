@@ -1912,3 +1912,34 @@ Evidence: `abi_report.sh` on the signed Cargo-built library is identical to the 
 | L4 | The digest static was `pub` | Private |
 | L5 | Stale comments (hybrid.mk, `token.rs`, `p11/Cargo.toml`) | Updated |
 | L6 | A `Vec` per token audit event | A two-pointer array |
+
+### Slice 5b: the binaries on Cargo alone (2026-11-25)
+
+Plan: `PHASE6_PLAN.md` §8.2 5b, with the two §8.4 decisions (user: "Move it unchanged (Recommended)" for the GUI, "The Rust one (Recommended)" for the verifier).
+
+| What | Where |
+|---|---|
+| pqhsm-service a Cargo `[[bin]]`: `#![no_main]` and a C `main`, so start-up is as with `main.c` (no std runtime set-up; the library installs its own signal dispositions); `test = false`, since that `main` would replace the test harness's. `pqhsm_service_main` is a plain Rust function now. `service/shim/main.c` deleted, the staticlib crate type dropped | `service/src/main.rs`, `service/Cargo.toml`, `service/src/lib.rs` |
+| The binary's link: `--export-dynamic-symbol` and `--undefined` for `C_GetFunctionList` (exported and kept, nothing else), the unwinder from `libgcc_eh.a` | `service/build.rs` |
+| hybrid.mk: `service/pqhsm-service` a copy of the cargo binary, made every time; `install-pqhsm` copies the cargo outputs over `$(LIB)` and the service before signing | `hybrid.mk` |
+| The installed verifier is audit-verify's `pqhsm-audit`, `freehsm-audit` its link; `tools/freehsm-audit` stays as the oracle until 5d. `install_check.sh` asserts the installed file is the Rust binary and not the C one | `hybrid.mk`, `install_check.sh` |
+| Both verifiers on every corpus log (step 6b): same output and exit code, with a floor of logs both find intact | `inner.sh` |
+| The GUI: `tools/fhsm_gui.c` and `tests/gui_smoke.sh` moved (`git mv`), the C unchanged; a makefile linking `pqhsm-pkiops` alone (the composite and revocation objects it also linked were empty in the hybrid build); copies of the five legacy headers it includes, which the harness compares with the originals until 5d. The legacy Makefile's and hybrid.mk's GUI rules removed; CI's `gui-smoke` job and `docs/FHSM_GUI.md` name the new commands | `gui/`, `Makefile`, `hybrid.mk`, `ci.yml`, `docs/FHSM_GUI.md` |
+
+Differences from the plan: none in substance. The GUI's headers are copies rather than moved, because the legacy tree still builds from them until 5d; the comments inside `fhsm_gui.c` that say "make gui" are left as they were, since the decision was to move the C unchanged.
+
+Evidence: in the pinned image the binary exports exactly `C_GetFunctionList`, its NEEDED is libssl, libcrypto, libc and the loader (no libgcc_s), it carries `.fhsm_digest`, and `--profile` answers for both feature sets. Clippy (`-D warnings`) and `cargo test --workspace` pass. Harness run 33: rc=0, the same as run 32 except the new rows: the verifiers agree on all 160 corpus logs, the GUI built from its makefile passes `gui_smoke` (292 Rust pkiops symbols, `fhsm_rev_db_lock` present), and `install-pqhsm` installs the Rust verifier. Run 34, with the review's fixes: rc=0; the service's ELF row hardened (RELRO, BIND_NOW, no exec stack, no TEXTREL, the 48-byte digest, the one export); the header copies as the legacy ones; the verifiers agree on 160 logs, 159 intact for both and one that both report not intact, alike (step 6b keeps only differing logs, so which one is not recorded).
+
+### Slice 5b review (architecture-critic, 2026-11-25)
+
+| # | Finding | Resolution |
+|---|---|---|
+| M1 | After a feature switch Cargo can put back an older build with its old mtime, so make keeps a stale copy of the service (and of `$(LIB)`, since 5a), which `install-pqhsm` would sign and install | The service copy runs every time; `install-pqhsm` copies both cargo outputs before signing. `$(LIB)` itself stays mtime-driven: with `FORCE` every make would relink the tests |
+| M2 | Step 6b would pass with both tools failing alike, or with no logs | It counts logs intact for both and prints FAIL at zero or on any difference |
+| L1 | Nothing checked the binary's RELRO, BIND_NOW, stack or exports | `abi_report.sh` on it in the harness, FAIL unless hardened, digest present, `C_GetFunctionList` the only export and no libgcc_s |
+| L2 | Keeping the export depended on something referencing it | `--undefined=C_GetFunctionList` |
+| L3 | The header copies could drift | The harness compares them with the legacy originals |
+| L4 | The GUI makefile: `_FORTIFY_SOURCE` redefinition on compilers that predefine it, no header prerequisites, pkg-config noise | `-U` first; headers and the makefile as prerequisites; stderr silenced |
+| L5 | `docs/FHSM_GUI.md` named the removed targets | Updated; the comments inside `fhsm_gui.c` left (the C moves unchanged) |
+| L6 | The link-line count could pass on a different `CC`; a stale GUI binary could reach the harness | The count dropped (the nm checks are the evidence); `run.sh` excludes the binary |
+| L7 | A redundant `extern crate`, an exported `pqhsm_service_main` | Both removed; `rerun-if-changed` not added (cargo reruns on any package change) |

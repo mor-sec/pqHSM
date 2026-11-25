@@ -132,7 +132,7 @@ tests/test_tpm: $(PQHSM_HOOKS_LIB)
 # pkiops.h, so they compile no tools/pkiops.c or tools/cms_env.c. The legacy recipes name
 # tools/pkiops.c literally, so each is overridden here: make warns "overriding recipe" once per
 # target. Not a target-specific PQHSM_LIB, as test_tpm's: it would reach $(LIB), a prerequisite
-# of test_pkiops*, if make built the module for them. tools/fhsm-gui: slice 6, below.
+# of test_pkiops*, if make built the module for them. The GUI: modernized/pqHSM/gui (slice 5b).
 # From slice 1 a ported tool is pqhsm-cli's binary instead (PQHSM_CLI_BINS, below).
 PQHSM_PKIOPS_LIB  := $(PQHSM_TARGET)/release/libpqhsm_pkiops.a
 PQHSM_CLI_BINS    := tools/fhsm-csr tools/fhsm-token tools/fhsm-crypt tools/fhsm-sign tools/fhsm-ca
@@ -153,29 +153,19 @@ $(PQHSM_PKIOPS_BINS): $(PQHSM_PKIOPS_LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $(subst -,_,$@).c \
 	    $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(subst $(PQHSM_LIB),$(PQHSM_PKIOPS_LIB),$(LDFLAGS)) -ldl
 
-# Slice 6: the GUI stays C (user: "Keep C GUI on Rust (Recommended)") and links pqhsm-pkiops,
-# so every operation it runs is Rust; PQHSM_REV_LOCK gives its database jobs DIV-074's lock.
-tools/fhsm-gui: $(PQHSM_PKIOPS_LIB)
-	@pkg-config --exists gtk4 || { echo "fhsm-gui needs GTK 4: sudo apt install libgtk-4-dev" >&2; exit 2; }
-	$(CC) $(CFLAGS) -DPQHSM_REV_LOCK $(GTK_CFLAGS) -Itools -o $@ tools/fhsm_gui.c \
-	    $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) \
-	    $(subst $(PQHSM_LIB),$(PQHSM_PKIOPS_LIB),$(LDFLAGS)) $(GTK_LIBS) -ldl
+# The GUI (slice 6: C on pqhsm-pkiops) has its own build since slice 5b: modernized/pqHSM/gui.
 
-# Phase 6 slice 0: pqhsm-service, built beside the C service (which ships until slice 3). It
-# links the module statically as C's does: its staticlib holds the module's crates and the
-# service, and $(LIB_OBJ) the remaining C (audit_event.c). pqhsm-pkiops reaches the module with
-# dlopen(NULL), so the binary exports C_GetFunctionList (it exports nothing else). Since slice 5a
-# that symbol comes from the staticlib, and an --exclude-libs symbol cannot be exported, so this
-# link drops the flag (review H1): an executable exports nothing else by default.
-PQHSM_SERVICE_LIB := $(PQHSM_TARGET)/release/libpqhsm_service.a
-PQHSM_COMMA := ,
-$(PQHSM_SERVICE_LIB): FORCE
-	+cargo build --release --locked -p pqhsm-service $(PQHSM_FEAT) --manifest-path $(PQHSM_DIR)/Cargo.toml
+# Phase 6 slice 0: pqhsm-service, built beside the C service (which ships until slice 3). Slice 5b:
+# a Cargo binary with no C (service/src/main.rs is its C `main`); service/build.rs exports
+# C_GetFunctionList, which pqhsm-pkiops reaches with dlopen(NULL), and nothing else.
+PQHSM_SERVICE_BIN := $(PQHSM_TARGET)/release/pqhsm-service
+$(PQHSM_SERVICE_BIN): FORCE
+	+cargo build --release --locked -p pqhsm-service --bin pqhsm-service $(PQHSM_FEAT) --manifest-path $(PQHSM_DIR)/Cargo.toml
 
-service/pqhsm-service: $(PQHSM_DIR)/service/shim/main.c $(LIB_OBJ) $(REVOCATION_OBJ) $(PQHSM_SERVICE_LIB)
-	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(REVOCATION_OBJ) \
-	    $(filter-out -Wl$(PQHSM_COMMA)--exclude-libs$(PQHSM_COMMA)ALL,$(subst $(PQHSM_LIB),$(PQHSM_SERVICE_LIB),$(LDFLAGS))) \
-	    -Wl,--export-dynamic-symbol=C_GetFunctionList
+# Copied every time (review M1): after a feature switch Cargo can put back an older build with
+# its old mtime, which make would take for up to date.
+service/pqhsm-service: $(PQHSM_SERVICE_BIN) FORCE
+	cp $(PQHSM_SERVICE_BIN) $@
 
 # Slice 3: the hybrid build ships the Rust service under the C name, so `service-guards`,
 # `service-budget` and `service-public` run it (the install rule is slice 4's, Q21). Copied
@@ -206,10 +196,18 @@ UNITDIR ?= /etc/systemd/system
 # The library's soname is libpqhsm.so (user, 2026-11-12), so programs linked from now on need only
 # the new name and the libfreehsm.so link can go, as Q18 intends. Since slice 5a (module/build.rs)
 # the harness build's is too: its tests load the module by path.
+# Slice 5b (user: "The Rust one (Recommended)"): the installed verifier is audit-verify's pqhsm-audit,
+# with freehsm-audit its link for one release. tools/freehsm-audit stays the C oracle's, which the
+# harness cross-checks it against (the legacy install still puts it in place first).
+PQHSM_AUDIT_BIN := $(PQHSM_TARGET)/release/pqhsm-audit
+$(PQHSM_AUDIT_BIN): FORCE
+	+cargo build --release --locked -p pqhsm-audit-verify --bin pqhsm-audit --target-dir $(PQHSM_TARGET) --manifest-path $(PQHSM_DIR)/Cargo.toml
 PQHSM_RELINK = ln -sfn $(2) $(dir $(1)).$(notdir $(1)).tmp && mv -Tf $(dir $(1)).$(notdir $(1)).tmp $(1)
 .PHONY: install-pqhsm
-install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) tools/freehsm-audit service/pqhsm-service
+install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) $(PQHSM_AUDIT_BIN) service/pqhsm-service
 	@[ -z "$(PQHSM_FEATURES)" ] || { echo "install-pqhsm: refused: built with $(PQHSM_FEATURES), the harness's seams (DIV-034). From a clean checkout: make -f $(PQHSM_DIR)/hybrid.mk PQHSM_FEATURES= install-pqhsm" >&2; exit 1; }
+	@# the cargo outputs themselves, not a copy make took for current (slice 5b review M1)
+	cp $(PQHSM_SO) $(LIB) && cp $(PQHSM_SERVICE_BIN) service/pqhsm-service
 	scripts/sign_module.sh $(LIB) || [ $$? = 3 ]
 	$(MAKE) -f $(PQHSM_DIR)/hybrid.mk install
 	ln -f $(LIBDIR)/$(LIB) $(LIBDIR)/libpqhsm.so
@@ -218,7 +216,7 @@ install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) tools/freehsm-audit service/pqhsm-servic
 	    install -o root -g root -m 0755 tools/$$t $(PREFIX)/bin/pq$${t#f} && \
 	    ln -sfn pq$${t#f} $(PREFIX)/bin/.$$t.tmp && mv -Tf $(PREFIX)/bin/.$$t.tmp $(PREFIX)/bin/$$t || exit 1; \
 	done
-	ln -f $(PREFIX)/bin/freehsm-audit $(PREFIX)/bin/pqhsm-audit
+	install -o root -g root -m 0755 $(PQHSM_AUDIT_BIN) $(PREFIX)/bin/pqhsm-audit
 	$(call PQHSM_RELINK,$(PREFIX)/bin/freehsm-audit,pqhsm-audit)
 	@if [ "$(PROFILE_CANON)" = all-mechanisms ]; then \
 	    set -e; scripts/sign_module.sh service/pqhsm-service || [ $$? = 3 ]; \

@@ -21,12 +21,13 @@ print. The design and its stages are in [`fhsm-gui-plan.md`](fhsm-gui-plan.md).
 ```bash
 sudo apt install libgtk-4-dev            # once
 make PROFILE=all-mechanisms              # for the composite; the other algorithms need no profile
-make PROFILE=all-mechanisms gui
-FHSM_TOKENS_DIR=~/fhsm-tokens ./tools/fhsm-gui
+make -C modernized/pqHSM/gui
+FHSM_TOKENS_DIR=~/fhsm-tokens ./modernized/pqHSM/gui/fhsm-gui
 ```
 
-`make gui` is not part of `make all`: the module and the command-line tools do
-not depend on GTK, and a server needs neither.
+The window has its own makefile (pqHSM Phase 6 slice 5b) and is not part of
+`make all`: the module and the command-line tools do not depend on GTK, and a
+server needs neither.
 
 The module is loaded from the path in the window (`./libfreehsm.so` by
 default) and can be unloaded and another loaded without restarting. The
@@ -204,6 +205,6 @@ PINs and fails if either appears in any record.
   stop at the signature.
 - **Run without a display.** It is a desktop tool. The operations are tested
   through `tests/test_pkiops.c` and the command-line tools; the window itself
-  by `make gui-smoke` (`tests/gui_smoke.sh`), which starts it under a virtual
+  by `make -C modernized/pqHSM/gui smoke` (`gui_smoke.sh` there), which starts it under a virtual
   display, closes it with `app.quit` — the action behind Ctrl+Q — and fails on
   any GTK or GLib CRITICAL or WARNING. CI runs it in the `gui-smoke` job.
