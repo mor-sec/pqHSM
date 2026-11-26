@@ -12,6 +12,7 @@ SPDX-PackageDownloadLocation = "https://github.com/afchine1337/freehsm"
 [[annotations]]
 path = [
     "CHANGELOG.md",
+    "legacy/CHANGELOG.md",
     "README.md",
     "README.fr.md",
     "NOTICE",
@@ -19,6 +20,7 @@ path = [
     "CONTRIBUTING.md",
     "CODE_OF_CONDUCT.md",
     "RELEASE_v1.1.0.md",
+    "legacy/RELEASE_v1.1.0.md",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Afchine Madjlessi <afchine.mad@gmail.com>"
@@ -31,7 +33,7 @@ SPDX-FileCopyrightText = "2026 Afchine Madjlessi <afchine.mad@gmail.com>"
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
-path = ["kat/**", "tests/cavp/**"]
+path = ["kat/**", "legacy/kat/**", "tests/cavp/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "NIST CAVP — Public Domain"
 SPDX-License-Identifier = "LicenseRef-NIST-PD"
@@ -59,8 +61,10 @@ SPDX-License-Identifier = "Apache-2.0"
 [[annotations]]
 path = [
     "Makefile",
+    "legacy/Makefile",
     "Dockerfile.build",
     "Dockerfile.test",
+    "legacy/Dockerfile.test",
     "**/*.mk",
 ]
 precedence = "aggregate"
@@ -72,6 +76,7 @@ SPDX-License-Identifier = "Apache-2.0"
 [[annotations]]
 path = [
     "scripts/**/*.sh",
+    "legacy/scripts/**/*.sh",
     "tests/**/*.sh",
 ]
 precedence = "aggregate"
@@ -82,6 +87,7 @@ SPDX-License-Identifier = "Apache-2.0"
 [[annotations]]
 path = [
     "scripts/**/*.py",
+    "legacy/scripts/**/*.py",
     "tests/**/*.py",
 ]
 precedence = "aggregate"
@@ -92,7 +98,9 @@ SPDX-License-Identifier = "Apache-2.0"
 [[annotations]]
 path = [
     "include/fhsm_pkcs11_mechanisms.h",
+    "legacy/include/fhsm_pkcs11_mechanisms.h",
     "src/gen/**",
+    "legacy/src/gen/**",
 ]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Afchine Madjlessi <afchine.mad@gmail.com>"
@@ -101,14 +109,14 @@ SPDX-FileComment = "Auto-generated from scripts/gen_p11_thunks.py + the mechanis
 
 
 [[annotations]]
-path = ["tests/abi/Makefile", "tests/abi/check.sh", "tests/abi/runs.txt", "tests/abi/test_kat_results.c"]
+path = ["tests/abi/Makefile", "tests/abi/check.sh", "tests/abi/runs.txt", "tests/abi/test_kat_results.c", "legacy/README.md"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 mor-sec <192092408+mor-sec@users.noreply.github.com>"
 SPDX-License-Identifier = "Apache-2.0"
-SPDX-FileComment = "pqHSM Phase 6 slice 5c: the ABI tests' build and runner, and one test of its own."
+SPDX-FileComment = "pqHSM Phase 6 slice 5: the ABI tests' build and runner, one test of its own, and legacy/'s README."
 
 [[annotations]]
-path = "modernized/**"
+path = ["modernized/**", "legacy/hybrid/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = ["2026 Afchine Madjlessi <afchine.mad@gmail.com>", "2026 mor-sec <192092408+mor-sec@users.noreply.github.com>"]
 SPDX-License-Identifier = "Apache-2.0"

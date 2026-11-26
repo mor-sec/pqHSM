@@ -1,5 +1,5 @@
 //! Shared helpers for the pqhsm-token TPM characterization tests. Every expected value is in
-//! `golden/tpm/`, produced by running the legacy C code: `tests-support/golden/regen_tpm.sh`.
+//! `golden/tpm/`, produced by running the legacy C code: `legacy/hybrid/golden/regen_tpm.sh`.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;

@@ -1,5 +1,5 @@
 //! Shared helpers for the pqhsm-pki characterization tests. Every expected value is in
-//! `golden/rev/`, produced by running the legacy C code: `tests-support/golden/regen_rev.sh`.
+//! `golden/rev/`, produced by running the legacy C code: `legacy/hybrid/golden/regen_rev.sh`.
 #![allow(dead_code)]
 
 #[cfg(feature = "ffi")]

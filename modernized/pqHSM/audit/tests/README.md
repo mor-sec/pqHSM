@@ -46,8 +46,8 @@ Every expected value under `*/tests/golden/` comes from running the C code in th
 legacy image. Nothing in it is hand-computed. To rebuild them all:
 
 ```sh
-tests-support/golden/regen.sh                       # builds the legacy tree first
-LEGACY_BUILD=/path/to/built/tree tests-support/golden/regen.sh
+legacy/hybrid/golden/regen.sh                       # builds the legacy tree first
+LEGACY_BUILD=/path/to/built/tree legacy/hybrid/golden/regen.sh
 ```
 
 - `gen_audit.c` is linked against the legacy objects. It writes logs through

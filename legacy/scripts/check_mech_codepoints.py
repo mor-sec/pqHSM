@@ -130,7 +130,7 @@ def main() -> int:
         by_value.setdefault((family(n), v), n)
 
     entries: list[tuple[str, int, str]] = []
-    for n, v in MECH_RE.findall((here / "gen_p11_thunks.py").read_text()):
+    for n, v in MECH_RE.findall((here.parent.parent / "scripts" / "gen_p11_thunks.py").read_text()):
         entries.append((n, int(v, 16), "gen_p11_thunks.py"))
     for pattern in ("src/*.c", "src/**/*.c", "include/*.h"):
         for f in glob.glob(str(root / pattern), recursive=True):

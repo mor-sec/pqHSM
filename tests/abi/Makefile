@@ -12,7 +12,7 @@ WARN := -Wall -Wextra -Wpedantic -Werror -Wstrict-prototypes -Wshadow -Wpointer-
         -Wnull-dereference -Wdouble-promotion -Wconversion -Wno-sign-conversion -Wno-unused-parameter
 CFLAGS ?= -g -O2
 CFLAGS += $(WARN) -fstack-protector-strong -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fno-strict-aliasing \
-          -DOPENSSL_API_COMPAT=0x30000000L -std=c11 -D_GNU_SOURCE -I. -I../../include -I$(OPENSSL_PREFIX)/include
+          -DOPENSSL_API_COMPAT=0x30000000L -std=c11 -D_GNU_SOURCE -I. -I../../modernized/pqHSM/gui/include -I$(OPENSSL_PREFIX)/include
 # libcrypto for the eleven that check the module's output with OpenSSL; --as-needed drops it elsewhere.
 LDLIBS := -L$(OPENSSL_PREFIX)/lib64 -L$(OPENSSL_PREFIX)/lib -Wl,--push-state,--as-needed -lcrypto \
           -Wl,--pop-state -ldl -lpthread

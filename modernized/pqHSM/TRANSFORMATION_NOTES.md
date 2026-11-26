@@ -2031,3 +2031,58 @@ Found by the harness after the review:
 | 36 | The installed module was unsigned. The tree copy (GNU tar keeps whole seconds) left the profile stamp a second newer than the generated headers, so the install regenerated them, recompiled, and the inner `make install` copied the unsigned cargo output over the signed `libfreehsm.so`. `make generate` writes the stamp after the headers, so once one regeneration happens, the next make regenerates again (a legacy-build quirk, gone with 5d). A defect of `install-pqhsm` since 5b's M1 fix, which only this timing showed | The inner make runs with `-o $(LIB)`, so the signed file is never remade. The harness did not reproduce the sequence on demand: aging the generated files (runs 38, 39) makes the outer make regenerate, before signing, and the inner make then has nothing to do. `-o` was shown on a makefile of `install-pqhsm`'s shape instead (a prerequisite made newer after signing: without it the inner make installs the unsigned copy, with it the signed one) |
 | 36 | `probe_ecdh_curves` failed on the all-mechanisms module. With DIV-057 its X25519 secrets stay sensitive, and it compared them by reading `CKA_VALUE`. Before 5c the harness never ran it there (the default profile skips X25519) | It compares them wrapped under one session AES key (AES-KW is deterministic), as `test_ecdh_peer_point.c` exports its secret |
 | 36 | The new tampered-module line pushed the install row out of the summary's `tail -2` | `tail -3`; the FIPS step's `tail -1` takes two |
+
+### Slice 5d: the move (2026-11-26)
+
+Two decisions first (user, 2026-11-26): the Cargo workspace stays at `modernized/pqHSM/` for this PR ("Keep it for this PR (Recommended)"), and `hybrid.mk` with its harness is frozen into `legacy/` rather than rewired or deleted ("Freeze into legacy/ (Recommended)"). The frozen hybrid runs at `0f481e9`, the last hybrid state; run 39 was its last full run.
+
+| Where | What |
+|---|---|
+| `legacy/` (`git mv`, history kept) | `src/`, `include/`, `tools/`, `service/`, `probes/`, `disabled/`, `dist/`, the legacy `Makefile`, `Dockerfile.test`, `CHANGELOG.md`, the 25 `RELEASE_v*.md`; `kat/`'s C (`kat/cavp/` stays: the module reads `sha2_256_short.rsp`); `fuzz/`'s C targets and makefile (`fuzz/corpus/` stays: the cargo-fuzz targets use it); 18 of `scripts/` |
+| `legacy/hybrid/` | `hybrid.mk`, the harness (`harness/`), the golden generators (`golden/`), `audit_event.c` and `module/empty.c`, which only the hybrid compiled |
+| Stayed in `scripts/` | `sign_module.sh`; `gen_p11_thunks.py`, the mechanism database the Rust table is generated from (`gen_mechs_rs.py`); the three KAT extractors behind `tests/vectors/`; the pkcs11-check scripts; `ci_install_openssl_fips.sh`; the docs checks (5f's) |
+| Stayed in `tests/` | `abi/` and the shell suites, which drive tools by their C names and run against either build |
+| New | the top-level `Makefile`; `tests/install_check.sh`; `legacy/README.md`; `gui/Makefile`'s `tests` and `check` |
+
+The legacy `Makefile` now runs from `legacy/`: its own tree is `./`, the rest `../` (paths rewritten by script, then checked by building and running the C suite). The C reads some files relative to its working directory; six links in `legacy/` point at the copies that stayed (`kat/cavp`, `fuzz/corpus`, `tests/{vectors,fixtures,wycheproof,tpm2-stub.sh}`). Its `install`, `uninstall`, `dist` and `dist-verify` refuse to run: the first two would replace the pqHSM layout with the C's.
+
+The top-level `Makefile` is Cargo alone:
+- `make [PROFILE=all-mechanisms] [AUDIT=optional]` builds the module, service, tools and verifier into `target-release/`, copies them to `out/` and signs the module and service (fresh copies, as `sign_module.sh` refuses a signed file). `FEATURES` is `override`, so `make FEATURES=dev-bypass` cannot sign and install a bypassable module (DIV-034, which `install-pqhsm` refused).
+- `make test`: `cargo test --workspace` and the two `ffi` suites; a dev-bypass module (in `target/`) for `tests/abi` and the GUI's tests; and the tool suites (below).
+- `sudo make install` installs what `out/` holds and builds nothing, so root needs no toolchain: `install-pqhsm`'s layout plus the legacy install's state directories, conf file, capability and KAT file. `uninstall` as before.
+
+Found while verifying (the pinned image, as `freehsm`, not root as the harness ran):
+
+| Finding | Resolution |
+|---|---|
+| `token/tests/scenarios.rs` read the generators' copy of `store_scenarios.txt` at run time, through a path the first search missed | The comparison is gone: with the generators frozen, the golden copy is the only one. `pkiops/src/keys.rs`, which read `tools/pkiops.c`, holds C's names and rows as constants (review H1) |
+| `test_audit_key_diag` re-ran itself as `./tests/test_audit_key_diag`. Under `tests/abi` that path is the repository's `tests/`, where the hybrid's `make tests` had left a binary: the harness's 64 of 64 ran a different build as the child | It re-runs `/proc/self/exe`. As a non-root user its unwritable-directory case now runs against the Rust for the first time, and passes |
+| `make -C legacy tests` failed `test_input_validation`: since 5c it carries DIV-059 (minimum PIN length 8) and the oracle compiles it | The oracle compiles a copy with that comparison put back to C's 4; `tests/abi` keeps the Rust's |
+| `test_tpm` found no stub: it runs `sh tests/tpm2-stub.sh` from its working directory | Linked, with the other data |
+| `audit_switch.sh` against the Rust (the new tool suites): a stream audit target fails `C_Initialize`. DIV-001, which the harness had patched into its copy only | The script carries DIV-001; the oracle runs it with C's line put back (`AUDIT_SWITCH_C`) |
+
+Evidence, in the pinned image from a copy of the tree (`git ls-files`), as the unprivileged `freehsm` (runs in `pqHSM-runs/5d`, out4 and out5):
+- `cargo clippy --workspace --all-targets -- -D warnings` clean.
+- `make`: module, service, tools and verifier built and signed into `out/`; soname `libpqhsm.so`.
+- `make test`: the Rust suites and both `ffi` suites pass; `tests/abi` 64 of 64; the GUI's tests 6 of 6; the tool suites 8 of 8 (`fhsm_crypt_cli`, `pki_tools_algs`, `audit_switch`, `service_guards`, `service_budget`, `service_public`, `revocation_db`, `ocsp_delegated`).
+- `make -C legacy` and `make -C legacy tests` pass (no FAIL line), and `make -C legacy audit-switch` both sides.
+- `tests/install_check.sh`, as root: built, installed twice, layout, conf, KAT file, unit and soname as expected, uninstall leaves nothing; the installed tools and service pass their integrity check and stop at the provider (none in the image); a copy with one `.text` byte flipped is refused by the signature check, an untouched copy reaches the provider.
+
+Left for later: CI still calls the C build and `hybrid.mk` (5e rewrites it; Actions are off); the docs name the C build (5f); the audit switch's optional side needs a second build (5e, with the ABI tests in both profiles); `extract_topology.py` and the frozen hybrid's how-to (`PILOT_PLAYBOOK.md`) still describe the old layout.
+
+### Slice 5d review (architecture-critic, 2026-11-26)
+
+| # | Finding | Resolution |
+|---|---|---|
+| H1 | `cargo test --workspace` read `legacy/` (the pkiops names, the store script) | Constants; the comparison removed (above). `git grep legacy/ -- modernized/pqHSM` now finds only comments and one panic message |
+| M1 | `check_mech_codepoints.py` read `gen_p11_thunks.py` beside itself | It reads the root's `scripts/` |
+| M2 | An interrupted `make` left a new unsigned module beside the old `out/profile`, which `install` trusts | `sign` removes `out/profile` first and writes it last |
+| M3 | `make FEATURES=dev-bypass` overrode the `:=` | `override` |
+| M4 | The shell suites that drive the tools and the service ran only under the legacy build: since 5d nothing ran them against the Rust | `make test-tools` (part of `make test`): an all-mechanisms dev-bypass build in `target-tools/`, laid out as they expect in `out/stage`, runs eight of them. The audit switch's optional side is 5e's |
+| M5 | `legacy/hybrid/` lost the `modernized/**` REUSE annotation | Added to it |
+| L1, L3 | The legacy `dist`, `install` and `uninstall` still ran | They refuse |
+| L2 | `uninstall`'s warning named only `STATEDIR`; no `daemon-reload` | It names the conf and the unit; `daemon-reload` added |
+| L4 | `CARGO_TARGET_DIR` in the environment would move the dev-bypass build away from `$(DEV)` | `--target-dir` explicit |
+| L5 | `.gitignore` missed the legacy build's outputs; an empty `tests-support/` was left | Both fixed |
+| L6 | The module still built the staticlib only the hybrid linked | `crate-type = ["cdylib", "rlib"]` |
+| L7 | The golden regeneration messages named scripts that do not run at this commit | They name `0f481e9` |

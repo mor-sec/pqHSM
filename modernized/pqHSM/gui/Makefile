@@ -35,6 +35,24 @@ $(PKIOPS): FORCE
 smoke: fhsm-gui
 	sh gui_smoke.sh
 
+# The pkiops interface's tests (tests/, since slice 5c): pkiops.h and the Rust library, no GTK.
+# Each runs in its own directory against MODULE, a dev-bypass module copied in as ./libfreehsm.so.
+GT    := $(CARGO_TARGET)/gui-tests
+TESTS := $(patsubst tests/%.c,$(GT)/%,$(wildcard tests/*.c))
+tests: $(TESTS)
+$(GT)/%: tests/%.c include/pkiops.h Makefile $(PKIOPS)
+	@mkdir -p $(GT)
+	$(CC) $(CFLAGS) -o $@ $< $(LDLIBS)
+check: tests
+	@[ -n "$(MODULE)" ] || { echo "check needs MODULE=<a dev-bypass libpqhsm_module.so>" >&2; exit 2; }
+	@failed=; for t in $(notdir $(TESTS)); do d=$(abspath $(GT))/run-$$t; mkdir -p $$d; \
+	    cp $(abspath $(MODULE)) $$d/libfreehsm.so; \
+	    (cd $$d && FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+	     LD_LIBRARY_PATH=$(OPENSSL_PREFIX)/lib64:$(OPENSSL_PREFIX)/lib ../$$t) < /dev/null > $$d/log 2>&1 || \
+	    { failed="$$failed $$t"; tail -5 $$d/log; }; done; \
+	[ -z "$$failed" ] || { echo "gui tests failed:$$failed (logs in $(GT)/run-*)"; exit 1; }; \
+	echo "gui tests: $(words $(TESTS)) run, all passed"
+
 clean:
-	rm -f fhsm-gui
-.PHONY: smoke clean FORCE
+	rm -f fhsm-gui $(TESTS)
+.PHONY: smoke tests check clean FORCE

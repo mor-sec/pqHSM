@@ -40,13 +40,17 @@ static void ok(int cond, const char *what) {
     if (!cond) fails++;
 }
 
+/* This binary, wherever it was built: tests/abi's are not ./tests/ (slice 5d; the harness passed
+ * only because the legacy build had left a copy there). */
+static char self[512];
+
 /* Run ourselves with FHSM_TOKENS_DIR set, capture stderr. */
 static char *run_child(const char *dir, char *buf, size_t cap) {
-    char cmd[1024];
+    char cmd[1200];
     snprintf(cmd, sizeof cmd,
              "FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR='%s' "
-             "OPENSSL_CONF=/dev/null ./tests/test_audit_key_diag --child 2>&1",
-             dir);
+             "OPENSSL_CONF=/dev/null '%s' --child 2>&1",
+             dir, self);
     FILE *p = popen(cmd, "r");
     buf[0] = '\0';
     if (!p) return buf;
@@ -70,6 +74,9 @@ static int child(void) {
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--child") == 0) return child();
 
+    ssize_t sn = readlink("/proc/self/exe", self, sizeof self - 1);
+    if (sn <= 0) { fprintf(stderr, "readlink /proc/self/exe\n"); return 2; }
+    self[sn] = '\0';
     printf("test_audit_key_diag\n");
     char out[8192];
 

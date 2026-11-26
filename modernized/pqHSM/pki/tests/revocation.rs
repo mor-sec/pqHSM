@@ -2,7 +2,7 @@
 //! RULE-099, RULE-100), against what the legacy C code did.
 //!
 //! Every expected value is a row of `golden/rev/cases.tsv` (written by
-//! `tests-support/golden/gen_rev.c`), or `testdata/revocation.tsv` for the Phase 2 corpus. A
+//! `legacy/hybrid/golden/gen_rev.c`), or `testdata/revocation.tsv` for the Phase 2 corpus. A
 //! test names its row, rebuilds the row's inputs, calls the safe API, and compares. Where Rust
 //! is meant to differ (DIV-016, DIV-019 to DIV-022), the test first asserts what C did, then
 //! what Rust must.

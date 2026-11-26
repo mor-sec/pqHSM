@@ -9,9 +9,9 @@ license.workspace = true
 publish = false
 
 [lib]
-# cdylib: libpqhsm.so (Phase 6 slice 5a). rlib: pqhsm-service links the module into its own
-# staticlib (Phase 6). staticlib: the hybrid build's C tests, until the C tree moves (slice 5d).
-crate-type = ["cdylib", "staticlib", "rlib"]
+# cdylib: libpqhsm.so (Phase 6 slice 5a). rlib: pqhsm-service links the module in. The staticlib
+# the hybrid's C tests linked went with it (slice 5d).
+crate-type = ["cdylib", "rlib"]
 
 [features]
 # The test_tpm build only, into its own --target-dir (PHASE2_PLAN.md §3(d), review H6).

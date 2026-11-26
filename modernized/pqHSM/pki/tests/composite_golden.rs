@@ -1,4 +1,4 @@
-//! `tests/golden/composite/composite.tsv` (tests-support/golden/gen_composite.c) replayed: every
+//! `tests/golden/composite/composite.tsv` (legacy/hybrid/golden/gen_composite.c) replayed: every
 //! call the generator made, made again through the Rust C ABI with the same arguments, each row
 //! formatted as the C formatted it. Signing uses the C's key pair (`composite_fixture.tsv`):
 //! the Ed25519 half is deterministic and compared byte for byte, the ML-DSA half is checked by

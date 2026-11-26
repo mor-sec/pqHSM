@@ -1,5 +1,5 @@
 //! Shared helpers for the pqhsm-audit characterization tests. Golden files are produced by
-//! running the legacy C code: see `tests-support/golden/regen.sh`.
+//! running the legacy C code: see `legacy/hybrid/golden/regen.sh`.
 #![allow(dead_code)]
 
 use std::path::PathBuf;

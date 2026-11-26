@@ -1,0 +1,1 @@
+../../tests/tpm2-stub.sh

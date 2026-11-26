@@ -385,7 +385,7 @@ mod tests {
             })
             .collect();
         let h =
-            std::fs::read_to_string(format!("{dir}/../../../tools/pkiops.h")).expect("pkiops.h");
+            std::fs::read_to_string(format!("{dir}/../gui/include/pkiops.h")).expect("pkiops.h");
         // a declaration starts in column 0 and names the function just before its '('
         let decl: BTreeSet<String> = h
             .lines()

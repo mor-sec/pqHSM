@@ -9,3 +9,20 @@
 /modernized/pqHSM/token/fuzz/corpus/
 # Debian packages fetched once for the harness (PHASE4_PLAN §5 item 3), installed offline
 /netcache/
+# The new Makefile's signed outputs; the legacy build's, in legacy/ (slice 5d)
+/out/
+/.obj/
+/legacy/.obj/
+/legacy/docs/
+/legacy/*.so
+/legacy/*.sha256
+/modernized/pqHSM/target-tools/
+/legacy/libfreehsm.so*
+/legacy/*.integrity-sha384
+/legacy/tests/test_*
+!/legacy/tests/test_*.c
+/legacy/tools/fhsm-*
+/legacy/tools/freehsm-audit
+/legacy/service/fhsm-service
+/legacy/src/gen/.profile.stamp
+/legacy/reports/

@@ -1,4 +1,4 @@
-//! `tests/golden/composite/x509.tsv` (tests-support/golden/gen_x509.c) replayed: every call the
+//! `tests/golden/composite/x509.tsv` (legacy/hybrid/golden/gen_x509.c) replayed: every call the
 //! generator made to the X.509 encoders, made again through the Rust C ABI with the same
 //! arguments, the same signing and RNG callbacks and the same clock, each row formatted as the
 //! C formatted it. Inputs C made (keys' public halves, AlgorithmIdentifiers, really-signed

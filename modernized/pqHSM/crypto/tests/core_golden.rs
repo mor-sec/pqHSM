@@ -1,5 +1,5 @@
 //! Replays `tests/golden/core.tsv`, recorded from the legacy `src/fhsm_crypto.c` by
-//! `tests-support/golden/gen_core.c`:
+//! `legacy/hybrid/golden/gen_core.c`:
 //!
 //! - the lifecycle scenarios through [`Core`] on a [`Platform`] scripted as gen_core's stubs and
 //!   `--wrap` seams are, its stderr against `core/<scenario>.stderr`;

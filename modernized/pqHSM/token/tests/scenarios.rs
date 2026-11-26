@@ -1,6 +1,6 @@
 //! Slice 3: the token store (`src/fhsm_token.c`) against the legacy C, scenario by scenario.
 //!
-//! `tests-support/golden/store_scenarios.txt` is run twice: by gen_store.c against the legacy
+//! `legacy/hybrid/golden/store_scenarios.txt` is run twice: by gen_store.c against the legacy
 //! C (its output is `golden/store/steps.tsv`), and here against the Rust token by
 //! `store_common/scenario.rs`. Every step's output must be identical, except at the steps in
 //! [`DIVS`] and [`DIV024`]: there C's value is pinned first, then Rust's expected value is
@@ -902,16 +902,8 @@ fn script_text(p: PathBuf) -> String {
     fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
-#[test]
-fn the_goldens_were_made_from_the_current_script() {
-    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../tests-support/golden/store_scenarios.txt");
-    assert_eq!(
-        script_text(src),
-        script_text(store_golden("store_scenarios.txt")),
-        "store_scenarios.txt changed since the goldens were made: run tests-support/golden/regen_store.sh"
-    );
-}
+// The goldens' script was compared with the generator's copy until slice 5d froze the generators
+// (legacy/hybrid/golden, runnable at 0f481e9): the golden copy is now the only one.
 
 #[test]
 fn every_scenario_has_a_test_and_every_test_a_scenario() {

@@ -3,7 +3,7 @@
 //! FHSM_TPM_TEST_HOOKS seam and `tests/tpm2-stub.sh`.
 //!
 //! Every expected value is a row of `golden/tpm/cases.tsv`, written by
-//! `tests-support/golden/gen_tpm.c`. A test names its row, rebuilds the row's inputs, calls
+//! `legacy/hybrid/golden/gen_tpm.c`. A test names its row, rebuilds the row's inputs, calls
 //! the Rust API, and compares the return code, the bytes, the files left behind, and the
 //! exact tpm2 subcommands (`golden/tpm/log/`). Where Rust is meant to differ (DIV-015,
 //! DIV-017), the test first asserts what C did and then what Rust must do.

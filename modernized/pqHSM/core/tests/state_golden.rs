@@ -1,5 +1,5 @@
 //! Replays `tests/golden/state.tsv`, recorded from the legacy `src/fhsm_state.c` by
-//! `tests-support/golden/gen_state.c`. Every result must match, and so must the audit event
+//! `legacy/hybrid/golden/gen_state.c`. Every result must match, and so must the audit event
 //! the C ABI emits for it, rendered here from what [`State`] returns, as `p11`'s ABI does.
 
 use pqhsm_core::state::{POWER_OFF, State};

@@ -1,0 +1,1768 @@
+# ===========================================================================
+# Makefile --- FreeHSM C natif (FIPS 140-3 / CC EAL4+ candidate)
+#
+# Build targets:
+#   make              # libfreehsm.so + binaire de test
+#   make tests        # exécute la suite KAT + tests d'audit
+#   make integrity    # signe le .so et imprime le digest pour le module
+#   make clean
+#
+# Compiler flags align with NIST recommendations for FIPS-validated
+# crypto modules (NIST SP 800-67, hardening guidelines). All warnings
+# are errors; the build fails on any unhandled return value, missing
+# braces, signed-comparison, format-string mismatch, or implicit fall-
+# through.
+# ===========================================================================
+
+CC          ?= cc
+AR          ?= ar
+
+# OpenSSL 3.x with FIPS provider --- override via OPENSSL_PREFIX if not
+# installed in /usr/local/ssl.
+OPENSSL_PREFIX ?= /usr/local/ssl
+OPENSSL_LDFLAGS = -L$(OPENSSL_PREFIX)/lib64 -L$(OPENSSL_PREFIX)/lib \
+                  -lcrypto -ldl -pthread
+OPENSSL_CFLAGS  = -I$(OPENSSL_PREFIX)/include
+
+# Run-time search path for the test recipes. Every recipe used to say
+# $(TEST_LD) which *replaces* the caller's, not extends it: the tests
+# then loaded whatever libcrypto the system had, not the one the objects were
+# compiled and linked against. On a machine with OpenSSL 3.0 installed and
+# OPENSSL_PREFIX pointing at 3.5, the ML-DSA-65 boot KAT failed with no
+# diagnostic beyond a bare [!] -- OPENSSL_PREFIX was wired into the build and
+# not into the run, which is the same defect shape as a guard on some paths
+# and not the rest.
+TEST_LD = LD_LIBRARY_PATH=.:$(OPENSSL_PREFIX)/lib64:$(OPENSSL_PREFIX)/lib
+# tests/audit_switch.sh expects the Rust's DIV-001 (slice 5d); the oracle runs it with C's line
+AUDIT_SWITCH_C = sed 's/^.*(DIV-001)"$$/ok $$rc "a stream target still starts the module"/' ../tests/audit_switch.sh | $(TEST_LD) sh -s
+
+WARN_FLAGS = \
+    -Wall -Wextra -Wpedantic -Werror \
+    -Wstrict-prototypes -Wshadow -Wpointer-arith -Wcast-align \
+    -Wwrite-strings -Wnested-externs -Wmissing-prototypes \
+    -Wmissing-declarations -Wredundant-decls -Wstrict-aliasing=2 \
+    -Wformat=2 -Wformat-security -Wno-format-nonliteral \
+    -Wnull-dereference -Wdouble-promotion -Wconversion \
+    -Wno-sign-conversion -Wno-unused-parameter
+
+# LOCAL_CFLAGS / LOCAL_LDFLAGS (PR #9, jas4711) --- the contract
+#
+# Both are appended AFTER every group this Makefile defines, so a packager can
+# raise -O1 to -O2 or add a distribution's hardening, and cannot silently drop
+# -Werror, -fstack-protector-strong or the -z relro,now,noexecstack bundle.
+# Later flags win where GCC lets them; earlier ones stand where it does not.
+#
+# They do NOT reach the reproducible build. dist/refs/vX.Y.Z.sha256 is produced
+# inside the pinned image, which sets neither, so nothing a downstream passes
+# can move the published reference. A Debian build is not expected to match our
+# digest, and should not try to.
+#
+# _FORTIFY_SOURCE stands down when the caller supplies one, so that a caller
+# hardening further than we do wins outright rather than colliding: without
+# this, their value wins on position but GCC warns `"_FORTIFY_SOURCE"
+# redefined`, and -Werror turns that into a build failure -- the flag meant to
+# allow more hardening would have forbidden it.
+#
+# Measured on Debian 13 (2026-09-03): `dpkg-buildflags --get CFLAGS` emits
+#
+#   -g -O2 -Werror=implicit-function-declaration -ffile-prefix-map=…
+#   -fstack-protector-strong -fstack-clash-protection -Wformat
+#   -Werror=format-security -fcf-protection
+#
+# with NO _FORTIFY_SOURCE at all. So this guard is defensive, not a response to
+# what Debian actually passes today -- and the "our =2 versus their =3" theory
+# built on it while chasing issue #7 was wrong. Stated here because a comment
+# claiming a distribution's flags is a claim, and this one was checked.
+FORTIFY_FLAG := $(if $(findstring _FORTIFY_SOURCE,$(LOCAL_CFLAGS)),,-D_FORTIFY_SOURCE=2)
+
+# -fcf-protection=full (Intel CET) only exists on x86; GCC rejects it as
+# "not supported for this target" everywhere else. Only use it when the
+# compiler accepts it.
+CF_PROTECTION_FLAG := $(shell $(CC) -Werror -fcf-protection=full -x c -c /dev/null -o /dev/null >/dev/null 2>&1 && echo -fcf-protection=full)
+
+HARDEN_FLAGS = \
+    -fstack-protector-strong $(FORTIFY_FLAG) -fPIC \
+    -fstack-clash-protection $(CF_PROTECTION_FLAG) \
+    -fvisibility=hidden -fno-strict-aliasing \
+    -fno-omit-frame-pointer \
+    -DOPENSSL_API_COMPAT=0x30000000L
+
+# ---------------------------------------------------------------------------
+# Reproducibility flags. Together with SOURCE_DATE_EPOCH (set by the
+# Docker build environment), they purge every non-deterministic byte
+# from the resulting .so :
+#
+#   -ffile-prefix-map  redacts absolute paths in __FILE__ / debug info
+#   -fdebug-prefix-map idem for the DWARF .debug_info section. Both map
+#                      $(CURDIR) to "." (NOT empty) : mapping to empty
+#                      leaves the DWARF comp_dir (DW_AT_comp_dir, stored
+#                      in .debug_line_str) as the absolute build path,
+#                      which breaks cross-directory reproducibility on
+#                      gcc < 12 (gcc 12+ has -fdebug-compilation-dir).
+#                      Mapping to "." rewrites comp_dir to "." in every
+#                      build tree, so two builds in different dirs are
+#                      byte-identical.
+#   -frandom-seed=fhsm makes gcc's anonymous-namespace / mangling stable
+#   -Wno-builtin-macro-redefined needed because we override __FILE__
+#   -D__DATE__='"redacted"' -D__TIME__='"redacted"' belt-and-braces
+#                        in case SOURCE_DATE_EPOCH is missing
+# ---------------------------------------------------------------------------
+REPRO_FLAGS = \
+    -ffile-prefix-map=$(CURDIR)=. \
+    -fdebug-prefix-map=$(CURDIR)=. \
+    -frandom-seed=fhsm-$(FHSM_VERSION_STRING) \
+    -Wno-builtin-macro-redefined \
+    -D__DATE__='"redacted"' -D__TIME__='"redacted"'
+
+# Stable version string injected into REPRO_FLAGS. Parsed from the
+# canonical header so a release bump propagates automatically.
+FHSM_VERSION_STRING := $(shell awk -F'"' '/FHSM_VERSION_STRING/{print $$2; exit}' include/fhsm_common.h)
+
+DEBUG_FLAGS ?= -g3 -O2
+
+# SANITIZE=1 builds with AddressSanitizer + UBSan. Off by default; the hardening
+# flags and the sanitizers do not coexist well (ASan replaces the allocator that
+# _FORTIFY_SOURCE instruments) so the hardening set is dropped for this build.
+# Never ship a SANITIZE build -- it is for the store-format and parser work,
+# where a bounds bug does not show up as a failing test but as an unreadable
+# token months later.
+#   make asan                    (the whole suite, and it cannot be got wrong)
+#   make SANITIZE=1 && make SANITIZE=1 tests/test_token   (one binary)
+# The variable must be repeated: it reaches LDFLAGS only on the invocation
+# that sets it, so dropping it from the second command links instrumented
+# objects without the runtime. See the `asan` target below.
+# TSAN=1 builds with ThreadSanitizer. Separate from SANITIZE=1 because ASan and
+# TSan cannot coexist in one binary.
+#
+# Added for #111-prep: a REST server serves N clients from one process, and
+# what sessions on one token share becomes shared between threads. TSan is to
+# concurrency what SANITIZE=1 was to memory in #125 -- it finds what review does
+# not. Never ship a TSAN build.
+#   make tsan-concurrency        (the concurrency tests, the way CI runs them)
+ifeq ($(TSAN),1)
+SAN_FLAGS    = -fsanitize=thread -fno-omit-frame-pointer
+HARDEN_FLAGS = -fPIC -fvisibility=hidden -fno-strict-aliasing \
+               -DOPENSSL_API_COMPAT=0x30000000L
+DEBUG_FLAGS  = -g3 -O1
+endif
+
+ifeq ($(SANITIZE),1)
+SAN_FLAGS   = -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
+# _FORTIFY_SOURCE instruments the allocator ASan replaces, so the hardening set
+# is dropped -- but -fPIC and -fvisibility are structural, not hardening, and
+# the shared object does not link without them.
+HARDEN_FLAGS = -fPIC -fvisibility=hidden -fno-strict-aliasing \
+               -DOPENSSL_API_COMPAT=0x30000000L
+DEBUG_FLAGS  = -g3 -O1
+endif
+
+CFLAGS  = $(WARN_FLAGS) $(HARDEN_FLAGS) $(SAN_FLAGS) $(REPRO_FLAGS) $(DEBUG_FLAGS) \
+          $(LOCAL_CFLAGS) \
+          -std=c11 -D_GNU_SOURCE \
+          -Iinclude -I../tests/abi $(OPENSSL_CFLAGS) $(EXTRA_CFLAGS)
+
+# Linker reproducibility :
+#   --build-id=none        suppress the random .note.gnu.build-id slot
+#   --hash-style=gnu       deterministic hash table layout
+#   --sort-common          stable .bss/.common ordering
+#   --reproducible         ld >= 2.38 honors the bundle (binutils 2.38+)
+LDFLAGS = $(SAN_FLAGS) -Wl,-z,relro,-z,now,-z,noexecstack,-z,defs \
+          $(LOCAL_LDFLAGS) \
+          -Wl,--no-undefined \
+          -Wl,--build-id=none \
+          -Wl,--hash-style=gnu \
+          -Wl,--sort-common \
+          $(OPENSSL_LDFLAGS)
+
+# ---------------------------------------------------------------------------
+# Sources / objects
+# ---------------------------------------------------------------------------
+LIB_SRC = \
+    src/fhsm_state.c                  \
+    src/fhsm_memory.c                 \
+    src/fhsm_crypto.c                 \
+    src/fhsm_audit.c                  \
+    src/fhsm_pkcs11.c                 \
+    src/fhsm_ecdsa_raw.c              \
+    src/fhsm_pq_params.c              \
+    src/fhsm_create_attrs.c           \
+    src/fhsm_token.c                  \
+    src/fhsm_session.c                \
+    src/fhsm_apilock.c                \
+    src/fhsm_integrity.c              \
+    src/fhsm_pairwise.c               \
+    src/fhsm_composite.c              \
+    src/fhsm_drbg.c                   \
+    src/fhsm_tpm.c                    \
+    src/fhsm_token_tpm.c              \
+    src/fhsm_mode.c                   \
+    src/fhsm_conf.c                   \
+    src/dispatch/fhsm_dispatch_legacy.c \
+    src/gen/fhsm_dispatch.c           \
+    src/dispatch/fhsm_dispatch_common.c \
+    src/dispatch/fhsm_dispatch_digest.c \
+    src/dispatch/fhsm_dispatch_hmac.c \
+    src/dispatch/fhsm_dispatch_aes.c  \
+    src/dispatch/fhsm_dispatch_kdf.c  \
+    src/dispatch/fhsm_dispatch_pkey.c \
+    src/dispatch/fhsm_dispatch_pq.c   \
+    src/dispatch/fhsm_dispatch_concat.c \
+    src/dispatch/fhsm_dispatch_hybrid.c \
+    src/dispatch/fhsm_dispatch_composite.c \
+    kat/fhsm_kat_vectors.c              \
+    kat/cavp_extended.c
+
+# Dispatch source files need the dispatch common header on their include path.
+CFLAGS += -Isrc/dispatch
+
+# Optional object-store cap override (default 64, see src/fhsm_token.c).
+# The pkcs11-check target builds with a larger store : the harness
+# creates many objects over a full run and does not destroy the session
+# objects it creates, so the default store would fill and cascade
+# CKR_DEVICE_MEMORY across unrelated later tests. See FINDINGS I1 / F5.
+ifdef FHSM_MAX_OBJECTS
+CFLAGS += -DFHSM_MAX_OBJECTS=$(FHSM_MAX_OBJECTS)
+endif
+
+# Objects are built out of tree. This repository is normally checked out on a
+# VirtualBox shared folder, where vboxsf is slow on the many small writes a C
+# build produces and serves mtimes from the host clock while make compares
+# them against the guest's. Sources stay where they are -- they are read, not
+# rewritten -- and the objects go wherever OBJDIR points, which on that setup
+# is a native filesystem.
+#
+# The default is in-tree so that a fresh clone behaves the way a contributor
+# expects. Override it in the environment:  export OBJDIR=$HOME/.cache/freehsm
+OBJDIR ?= .obj
+LIB_OBJ = $(patsubst %.c,$(OBJDIR)/%.o,$(LIB_SRC))
+
+# ---------------------------------------------------------------------------
+# Objects remember which sanitizer built them, and a change of mode cleans.
+#
+# SANITIZE=1 and TSAN=1 change CFLAGS but not any file's timestamp, so make
+# sees objects that are up to date and relinks them under different flags.
+# Both directions fail, and neither failure names its cause:
+#
+#   plain objects + SANITIZE=1 link  -> undefined __asan_init
+#   ASan objects  + plain link       -> undefined __asan_init
+#
+# The second is the one that bites, because `make asan` deliberately leaves an
+# instrumented tree and the next ordinary `make` inherits it. That happened
+# twice in four days -- once from forgetting to repeat the variable, once from
+# forgetting the clean afterwards -- and both times the linker error pointed
+# at a KAT source file, which has nothing to do with it.
+#
+# The `asan` target's leading clean and its closing message were the earlier
+# answers, and both are instructions someone has to follow. This is the guard:
+# the mode is recorded beside the objects, and a mismatch cleans them.
+#
+# Evaluated while the makefile is read, because it has to happen before any
+# recipe runs.
+BUILD_MODE := $(if $(filter 1,$(SANITIZE)),asan,$(if $(filter 1,$(TSAN)),tsan,plain))
+BUILD_MODE_STAMP := $(OBJDIR)/.build-mode
+BUILD_MODE_PREV := $(shell cat $(BUILD_MODE_STAMP) 2>/dev/null)
+ifneq ($(BUILD_MODE_PREV),)
+ifneq ($(BUILD_MODE_PREV),$(BUILD_MODE))
+$(info [build] sanitizer mode changed: $(BUILD_MODE_PREV) -> $(BUILD_MODE), discarding $(OBJDIR))
+$(shell rm -rf $(OBJDIR))
+endif
+endif
+$(shell mkdir -p $(OBJDIR) && printf '%s' '$(BUILD_MODE)' > $(BUILD_MODE_STAMP))
+
+# src/fhsm_revocation.c is deliberately NOT in LIB_SRC. It is shared between
+# fhsm-ca and fhsm-service -- one implementation of "is this serial revoked",
+# because two would drift and a drifted responder answers `good` for a revoked
+# certificate. But it is not part of the PKCS#11 module: it pulls in OpenSSL's
+# OCSP parser and computes SHA-1 for CertID matching, and the
+# nist-approved-only module has no business carrying either. Named here so both consumers get the
+# same object and neither the module nor a future tool acquires it by accident.
+REVOCATION_OBJ = $(OBJDIR)/src/fhsm_revocation.o
+
+LIB     = libfreehsm.so
+LIB_VER = $(LIB).$(shell awk -F'"' '/FHSM_VERSION_STRING/{print $$2; exit}' include/fhsm_common.h)
+
+# ---------------------------------------------------------------------------
+# Default target
+# ---------------------------------------------------------------------------
+# The four PKI tools link tools/pkiops.c, src/fhsm_composite.o and
+# src/fhsm_revocation.o, not the module (until 2026-10-02 only the composite
+# object, and fhsm-ca the revocation one too), so a
+# change to that file can compile inside the module and fail to link outside
+# it. That is exactly what happened: `all` did not name these binaries, the
+# release pre-flight ran `all`, and a tree in which a quarter of the shipped
+# programs did not build was validated and tagged. They are named here so the
+# question cannot be asked again.
+TOOLS = tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign tools/fhsm-token tools/fhsm-crypt
+
+.PHONY: audit-switch all
+all: generate $(LIB) tests/test_smoke tools/freehsm-audit $(TOOLS)
+
+# Built against the same OpenSSL as everything else. This rule used to be a
+# bare `cc ... -lcrypto`, the only one in the file ignoring OPENSSL_PREFIX. It
+# builds anyway wherever the system headers happen to be on the default path,
+# which is why nobody noticed -- and where they are not, the release pre-flight
+# fails at the last tool. Worse where it does build: the audit tool would link
+# a different libcrypto from the module it audits, which is precisely the sort
+# of divergence an audit tool exists to rule out.
+tools/freehsm-audit: tools/freehsm_audit.c
+	$(CC) -O2 -Wall -Wextra $(OPENSSL_CFLAGS) -o $@ $< $(OPENSSL_LDFLAGS)
+
+# fhsm-csr links only the composite encoder -- src/fhsm_composite.o stands
+# alone against libcrypto -- and loads the PKCS#11 module at runtime through
+# C_GetFunctionList, the one symbol the standard requires.
+#
+# This comment used to claim the tool "drives any module implementing the
+# mechanism". It did not: load_module dlsym'd each C_* by name and exited if
+# one was missing, so it drove modules that export all of them -- ours -- and
+# nothing else. p11-kit-client.so exports exactly one symbol, and the tool
+# answered "C_Initialize missing from module".
+#
+# One limitation remains, and is not fixed here: --slot takes a raw
+# CK_SLOT_ID and defaults to 0. A module whose slot IDs are not small
+# integers cannot be addressed at all, because the tools never call
+# C_GetSlotList. See docs/ROADMAP.md.
+# The tools' operations as a library (docs/fhsm-gui-plan.md, stage 0). Compiled
+# into each tool that has moved onto it; tools/pkiops.c is the one file that
+# includes p11_util.h (../tests/abi/ since pqHSM slice 5c), whose function table is static per file.
+# It signs CRLs and OCSP answers too, so every tool that links it links
+# $(REVOCATION_OBJ) as well.
+PKIOPS_SRC = tools/pkiops.c tools/pkiops.h ../tests/abi/p11_util.h ../tests/abi/p11_err.h tools/cms_env.c tools/cms_env.h
+
+tools/fhsm-csr: tools/fhsm_csr.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# fhsm-ca signs for other people; fhsm-csr makes requests and its own root.
+# Separate binaries because they are separate authorities, usually separate
+# operators, and a single tool named for one of them would misname the other.
+tools/fhsm-ca: tools/fhsm_ca.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+tools/fhsm-sign: tools/fhsm_sign.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+tools/fhsm-token: tools/fhsm_token.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# Keys that do not sign, and the objects on the token: listing and deletion
+# first, encryption in the later stages (docs/fhsm-crypt-plan.md).
+tools/fhsm-crypt: tools/fhsm_crypt.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# tools/pkiops without a window: the slot and key listings and the call log
+# the interface needs, and a check that no PIN reaches the log.
+tests/test_pkiops: ../modernized/pqHSM/gui/tests/test_pkiops.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# Every algorithm through the token, each artefact checked by OpenSSL
+# (docs/classic-algorithms-plan.md, stage 2).
+tests/test_pkiops_algs: ../modernized/pqHSM/gui/tests/test_pkiops_algs.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# Listing and deleting objects, certificates included (docs/fhsm-crypt-plan.md,
+# stage 0), and the CLI that drives them.
+tests/test_pkiops_objects: ../modernized/pqHSM/gui/tests/test_pkiops_objects.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# Secret keys: their attributes, their use, and the name parsers that send
+# each tool's algorithms to the other (docs/fhsm-crypt-plan.md, stage 1).
+tests/test_pkiops_secret: ../modernized/pqHSM/gui/tests/test_pkiops_secret.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# Files encrypted for a token AES key, and OpenSSL reading ours and writing
+# what we read (docs/fhsm-crypt-plan.md, stage 2).
+tests/test_pkiops_envelope: ../modernized/pqHSM/gui/tests/test_pkiops_envelope.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# Files encrypted for an RSA key with RSA-OAEP: a pair on the token, a
+# certificate, and OpenSSL both ways (docs/fhsm-crypt-plan.md, stage 3).
+tests/test_pkiops_envelope_rsa: ../modernized/pqHSM/gui/tests/test_pkiops_envelope_rsa.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
+
+# fhsm-gui left this tree in pqHSM Phase 6 slice 5b: ../modernized/pqHSM/gui (make -C there).
+
+# ---------------------------------------------------------------------------
+# Code generation --- runs ../scripts/gen_p11_thunks.py to regenerate
+# include/fhsm_pkcs11_mechanisms.h, src/gen/fhsm_dispatch.c, docs/MECHANISMS.md.
+# The profile defaults to nist-approved-only; override with
+# PROFILE=all-mechanisms.
+# ---------------------------------------------------------------------------
+PROFILE ?= nist-approved-only
+
+# One canonical spelling, resolved before anything compares against it.
+#
+# fips-strict and interop are the former names (#11) and still work. They are
+# normalised here rather than at each use, because every use is a string
+# comparison -- the stamp, check-profile below -- and a comparison that does
+# not know about an alias takes an aliased build for the other profile. That
+# is the failure check-profile exists to catch, so it must not be the one
+# introducing it.
+#
+# fips-strict named a standard this module does not claim; nist-approved-only
+# says whose list the mechanisms are on. interop described a purpose rather
+# than a content, and was not the opposite of anything.
+ifeq ($(PROFILE),fips-strict)
+PROFILE_CANON := nist-approved-only
+PROFILE_ALIAS := fips-strict
+else ifeq ($(PROFILE),interop)
+PROFILE_CANON := all-mechanisms
+PROFILE_ALIAS := interop
+else ifeq ($(PROFILE),nist-approved-only)
+PROFILE_CANON := nist-approved-only
+else ifeq ($(PROFILE),all-mechanisms)
+PROFILE_CANON := all-mechanisms
+else
+$(error PROFILE=$(PROFILE) is not a profile. Use nist-approved-only or \
+all-mechanisms (fips-strict and interop are the former names and still work))
+endif
+
+ifneq ($(PROFILE_ALIAS),)
+$(info [freehsm] PROFILE=$(PROFILE_ALIAS) is the former name for \
+$(PROFILE_CANON); it still works.)
+endif
+
+# Witness file recording the profile the generated sources were produced with.
+#
+# Without this, `make PROFILE=all-mechanisms` silently did nothing: the
+# generated artifacts depended only on gen_p11_thunks.py, so an existing set
+# built for another profile satisfied the rule and the build linked the wrong
+# dispatch table. The failure is silent in the dangerous direction too -- a
+# tree last generated for all-mechanisms, rebuilt without PROFILE, ships the
+# non-approved mechanisms enabled while every visible sign says
+# nist-approved-only. Getting the profile right
+# should not depend on remembering to run `make generate` first.
+#
+# .profile.stamp is rewritten only when the profile actually changes, so it does
+# not force a rebuild on every invocation.
+PROFILE_STAMP := src/gen/.profile.stamp
+
+.PHONY: profile-stamp
+profile-stamp:
+	@mkdir -p $(dir $(PROFILE_STAMP))
+	@if [ "$$(cat $(PROFILE_STAMP) 2>/dev/null)" != "$(PROFILE_CANON)" ]; then \
+	    printf '%s' '$(PROFILE_CANON)' > $(PROFILE_STAMP); \
+	    echo "[freehsm] profile -> $(PROFILE_CANON) (regenerating)"; \
+	fi
+
+$(PROFILE_STAMP): profile-stamp
+	@:
+
+# The stamp watches a transition; this watches the state.
+#
+# The stamp is rewritten when PROFILE changes, which covers the operator who
+# forgets the flag. It does not cover the generated files changing underneath
+# it -- a git checkout, a branch switch, a merge, a stash pop. When that
+# happens the stamp still says one profile while src/gen says the other, make
+# sees nothing out of date, and the build links a dispatch table nobody asked
+# for. Found the hard way: restoring src/gen from HEAD left a
+# nist-approved-only dispatch behind an all-mechanisms stamp, and the only
+# symptom was CKR_MECHANISM_INVALID from a mechanism supposed to be enabled.
+#
+# The dangerous direction is the other one. A tree generated for
+# all-mechanisms and rebuilt as nist-approved-only ships the non-approved
+# mechanisms live while every
+# visible sign says otherwise, and nothing downstream would catch it --
+# docs/ROADMAP.md already names this as the check that cannot be recovered
+# after a release.
+#
+# So: assert the post-condition. fhsm_build_fips_strict is written by the
+# generator and read by the profile gates, which makes it the one value that
+# cannot be right by accident.
+.PHONY: check-profile
+check-profile:
+	@want=$$( [ "$(PROFILE_CANON)" = "all-mechanisms" ] && echo 0 || echo 1 ); 	got=$$(sed -n 's/^const int fhsm_build_fips_strict = \([01]\);.*/\1/p' \
+	        src/gen/fhsm_dispatch.c 2>/dev/null); 	if [ -z "$$got" ]; then 	    echo "[freehsm] cannot read fhsm_build_fips_strict from src/gen/fhsm_dispatch.c" >&2; 	    exit 1; 	fi; 	if [ "$$got" != "$$want" ]; then 	    echo "[freehsm] PROFILE=$(PROFILE_CANON) but the generated dispatch says" >&2; 	    echo "          fhsm_build_fips_strict = $$got (expected $$want)." >&2; 	    echo "          The generated sources and the profile stamp disagree --" >&2; 	    echo "          usually a checkout or merge replaced src/gen underneath." >&2; 	    echo "          Run:  rm -f $(PROFILE_STAMP) && make PROFILE=$(PROFILE_CANON) generate" >&2; 	    exit 1; 	fi
+
+# `generate` writes the stamp, so that `make PROFILE=X generate` leaves a tree
+# whose witness matches what was generated. It did not until 2026-09-27: the
+# recovery procedure check-profile prints -- `rm -f .profile.stamp && make
+# PROFILE=X generate` -- regenerated for X and left NO stamp behind, so
+# show-profile then reported `<jamais genere>` for a tree that had just been
+# generated. A small inconsistency, fixed here.
+#
+# It is NOT what makes a profile switch revert, and that is worth writing down
+# because it was misdiagnosed as such on the day. PROFILE defaults to
+# nist-approved-only, so a bare `make` does not mean "leave the tree alone",
+# it means "build the default profile" -- and the stamp then correctly detects
+# the disagreement and regenerates. Switching profiles means carrying
+# PROFILE=... on EVERY invocation until you switch back, which is why the
+# ocsp-delegated target below spells out `$(MAKE) PROFILE=all-mechanisms all`
+# rather than relying on a previous command having set it.
+#
+# What that cost, once: `make clean && make PROFILE=all-mechanisms` followed by
+# a bare `make service-guards` put the tree back to nist-approved-only. Three
+# service scripts refused with the right diagnosis, and a 45-minute corpus run
+# was started against the wrong profile before the stamp was read.
+.PHONY: generate
+generate:
+	python3 ../scripts/gen_p11_thunks.py --profile=$(PROFILE_CANON)
+	@mkdir -p $(dir $(PROFILE_STAMP))
+	@printf '%s' '$(PROFILE_CANON)' > $(PROFILE_STAMP)
+	@echo "[freehsm] generated for $(PROFILE_CANON), stamp written"
+
+# Generated artifacts depend on the script (so editing it triggers a re-gen)
+# AND on the profile witness (so switching profiles does too).
+include/fhsm_pkcs11_mechanisms.h src/gen/fhsm_dispatch.c docs/MECHANISMS.md: ../scripts/gen_p11_thunks.py $(PROFILE_STAMP)
+	$(MAKE) generate
+
+# Report the profile the current generated sources were built for. Cheap way to
+# answer "what am I actually running?" without reading fhsm_dispatch.c.
+.PHONY: show-profile
+show-profile:
+	@echo "PROFILE (requested) : $(PROFILE)"
+	@echo "generated sources   : $$(cat $(PROFILE_STAMP) 2>/dev/null || echo '<jamais genere>')"
+	@echo -n "fhsm_build_fips_strict = "
+	@grep -oE 'fhsm_build_fips_strict = [01]' src/gen/fhsm_dispatch.c 2>/dev/null \
+	    | grep -oE '[01]$$' || echo '?'
+
+# The choke point: everything that carries the profile goes through this
+# object, so gating it covers the library, the tests and the tools alike --
+# gating only $(LIB) would leave `make tests` building against a dispatch the
+# check never looked at.
+$(OBJDIR)/src/gen/fhsm_dispatch.o: | check-profile
+
+$(LIB): $(LIB_OBJ) | check-profile
+	$(CC) -shared -Wl,-soname,$(LIB) -o $@ $^ $(LDFLAGS)
+
+$(OBJDIR)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+# test_smoke is an INTERNAL test : it accesses helpers (fhsm_state_get,
+# fhsm_rng_bytes, fhsm_aes_gcm_*, fhsm_ct_memcmp, fhsm_kat_results) that
+# are hidden in the shipped .so (visibility=hidden). For testing we link
+# against the .o files directly, which bypasses visibility filtering.
+# Integrity self-check regression (#125). INTERNAL linking model: the test
+# binary embeds its own .fhsm_digest section (from fhsm_integrity.o), so it
+# can be signed by ../scripts/sign_module.sh exactly like the shipped .so.
+#
+# This is the only place the integrity check is exercised WITHOUT
+# FHSM_INTEGRITY_ALLOW_UNSIGNED. That matters: the check shipped inert twice
+# (an unconditional pass until v1.2.1, then an always-fail caused by a missing
+# `volatile` on the digest slot), and neither was caught because every other
+# caller sets the bypass. `unset` below is deliberate -- the test refuses to
+# run if the variable leaks in from the environment.
+tests/test_integrity: tests/test_integrity.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+.PHONY: test-integrity
+test-integrity: tests/test_integrity
+	@echo "test_integrity : module integrity self-check (no bypass)"
+	@# 1. Fresh build: digest slot is all zeros -> must NOT verify.
+	@env -u FHSM_INTEGRITY_ALLOW_UNSIGNED ./tests/test_integrity unsigned
+	@# 2. Sign it, exactly as the shipped module is signed.
+	@bash ../scripts/sign_module.sh ./tests/test_integrity >/dev/null
+	@env -u FHSM_INTEGRITY_ALLOW_UNSIGNED ./tests/test_integrity signed
+	@# 3. Flip one byte of the signed image (in a copy) -> must NOT verify.
+	@cp ./tests/test_integrity ./tests/test_integrity.tampered
+	@python3 -c "import sys; \
+p='./tests/test_integrity.tampered'; d=bytearray(open(p,'rb').read()); \
+off=d.find(b'FHSM_TAMPER_CANARY'); \
+d[off+18]^=0x01; open(p,'wb').write(d)"
+	@chmod +x ./tests/test_integrity.tampered
+	@env -u FHSM_INTEGRITY_ALLOW_UNSIGNED ./tests/test_integrity.tampered tampered
+	@rm -f ./tests/test_integrity.tampered
+	@echo "test_integrity : PASS"
+
+# Config reader (#128) : proves the two shipped keys are actually read, that
+# bad values fall back to the documented default, and that key matching is
+# exact. Links the objects because the reader is internal, not exported.
+# Sensitive values in the mlock'd arena (#127) : proves the routing, that
+# non-sensitive values stay out, and that exhaustion fails rather than
+# silently falling back to pageable memory.
+# Capacity micro-benchmark (not a test) : cost of creating N objects and of a
+# worst-case lookup, to answer "can FHSM_MAX_OBJECTS grow" with numbers.
+# Concurrent PKCS#11 use (#111-prep). Links the shared object with -ldl so it
+# exercises the module exactly as a caller would. Meant to be run under
+# `make TSAN=1`; it is written to be able to fail.
+tests/test_concurrency: ../tests/abi/test_concurrency.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl -lpthread
+
+# Its second half: what sessions on one token share -- the object store, the
+# login state, the function tables -- with one thread mutating while the
+# others read. Four passes, each in its own process. Checks results when run
+# plain; under `make TSAN=1` it also fails on every race TSan reports.
+tests/test_concurrency_store: ../tests/abi/test_concurrency_store.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl -lpthread
+
+# The entry lock's deferred release, with the interleaving fixed by hand
+# rather than left to the scheduler. Linked against the objects: it drives
+# src/fhsm_apilock.c directly.
+tests/test_apilock: tests/test_apilock.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/bench_capacity: tests/bench_capacity.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# Loads the module through dlopen rather than linking it, because the thing
+# being measured is what the shipped .so reserves and touches -- linking the
+# objects into the benchmark would measure a different binary's memory.
+tests/bench_session_mem: ../tests/abi/bench_session_mem.c ../tests/abi/p11_util.h
+	$(CC) $(CFLAGS) -Itools -o $@ $< -ldl
+
+tests/test_session_cap: ../tests/abi/test_session_cap.c ../tests/abi/p11_util.h
+	$(CC) $(CFLAGS) -Itools -o $@ $< -ldl
+
+tests/bench_fork_client: ../tests/abi/bench_fork_client.c ../tests/abi/p11_util.h
+	$(CC) $(CFLAGS) -Itools -o $@ $< -ldl
+
+tests/test_fork_child: ../tests/abi/test_fork_child.c ../tests/abi/p11_util.h
+	$(CC) $(CFLAGS) -Itools -o $@ $< -ldl
+
+# No module, no libcrypto: the point is to have none of our code in the loop.
+tests/bench_fsync_floor: tests/bench_fsync_floor.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+# Not part of `make tests`: a measurement, not an assertion. See the file.
+tests/bench_audit_rate: tests/bench_audit_rate.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_secure_heap: tests/test_secure_heap.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_conf: tests/test_conf.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# CKM_AES_CBC_PAD decrypt behaviour (R2). Links the shared object with -ldl so
+# it drives the module exactly as a caller would, like tests/test_concurrency.
+tests/test_cbc_pad_oracle: ../tests/abi/test_cbc_pad_oracle.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Composite ML-DSA combiner against the draft's Appendix D vectors (#112).
+tests/test_composite_mprime: tests/test_composite_mprime.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_composite_sign: tests/test_composite_sign.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# Composite ML-DSA through the PKCS#11 surface (#112). Links the shared object
+# with -ldl so it drives the module exactly as a caller would, and so the
+# profile baked into the .so is what the test observes.
+tests/test_composite_p11: ../tests/abi/test_composite_p11.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+tests/test_composite_x509: tests/test_composite_x509.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_composite_csr: tests/test_composite_csr.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_composite_issue: tests/test_composite_issue.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# Requests, roots and issuance for every signer of include/fhsm_pki.h, each
+# artefact checked by OpenSSL (docs/classic-algorithms-plan.md, stage 1a).
+tests/test_pki_classic: tests/test_pki_classic.c $(LIB_OBJ) $(REVOCATION_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(REVOCATION_OBJ) $(LDFLAGS)
+
+tests/test_composite_crl: tests/test_composite_crl.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_composite_prehash: tests/test_composite_prehash.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_composite_cms: tests/test_composite_cms.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_composite_ocsp: tests/test_composite_ocsp.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_pin_length: tests/test_pin_length.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_throttle_reboot: tests/test_throttle_reboot.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_wrong_pin_store: tests/test_wrong_pin_store.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_public_objects: tests/test_public_objects.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_audit_fsync: tests/test_audit_fsync.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS) -lpthread
+
+tests/test_audit_concurrent: tests/test_audit_concurrent.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS) -lpthread
+
+tests/test_audit_multiproc: tests/test_audit_multiproc.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS) -lpthread
+
+tests/test_audit_switch: tests/test_audit_switch.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS) -lpthread
+
+tests/test_audit_key: tests/test_audit_key.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_audit_backpressure: tests/test_audit_backpressure.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+tests/test_audit_verify: tests/test_audit_verify.c $(LIB_OBJ) tools/freehsm-audit
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# -Itools: this test exercises the tools' real loader rather than a copy of it.
+tests/test_p11_loader: ../tests/abi/test_p11_loader.c $(LIB)
+	$(CC) $(CFLAGS) -Itools -o $@ $< $(LDFLAGS) -ldl
+
+# Single-action driver for the real-TPM validation (#109). NOT part of `make
+# tests`: it needs a TPM, a provisioned parent handle, and a reboot between
+# phases -- see scripts/validate_tpm_sealing.sh.
+tests/tpm_hw_probe: tests/tpm_hw_probe.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# TPM 2.0 sealing (#109). fhsm_tpm.c is recompiled here with
+# -DFHSM_TPM_TEST_HOOKS, which is what lets FHSM_TPM_DEVICE / FHSM_TPM_CMD
+# redirect the module at ../tests/tpm2-stub.sh. That macro is set by this rule
+# and by nothing else: the shipped library has no way to be pointed at a fake
+# TPM, which is the whole reason the seam is compile-time and not an
+# environment variable the module always reads.
+$(OBJDIR)/tests/fhsm_tpm_testhooks.o: src/fhsm_tpm.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DFHSM_TPM_TEST_HOOKS -c -o $@ $<
+
+tests/test_tpm: tests/test_tpm.c $(OBJDIR)/tests/fhsm_tpm_testhooks.o $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/tests/fhsm_tpm_testhooks.o \
+	    $(filter-out $(OBJDIR)/src/fhsm_tpm.o,$(LIB_OBJ)) $(LDFLAGS) -lpthread
+
+tests/test_smoke: tests/test_smoke.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# Asks positively whether the signed module really loads the FIPS provider,
+# for scripts/run_fips_tests.sh. dlopen of the .so on purpose : that is the
+# only artefact `make integrity` signs, so it is the only configuration in
+# which the question has an answer. Deliberately NOT linked against
+# $(LIB_OBJ) -- that would give it the all-zero digest placeholder and make it
+# the very thing it exists to detect.
+tests/probe_fips_loaded: ../tests/abi/probe_fips_loaded.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl
+
+# Same shape, same reason: is the secure heap actually mlock()-ed, or did
+# OpenSSL fall back to swappable memory and return success anyway?
+# src/fhsm_memory.c promises a re-check in a comment and does not perform one,
+# so nothing in the module can tell the difference. This reads VmLck across
+# C_Initialize, which is the kernel's own answer.
+tests/probe_secure_heap: ../tests/abi/probe_secure_heap.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl
+
+# Two copies of the module in one process share libcrypto's secure heap; the
+# second must adopt it, not fail. dlopen()s both, so it links nothing of ours.
+tests/test_secure_heap_shared: ../tests/abi/test_secure_heap_shared.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl
+
+# The service links the library objects rather than dlopen()ing the module:
+# it is the PKCS#11 application, and it needs fhsm_audit_set_actor(), which is
+# not part of PKCS#11 and is not exported from the shared object.
+service/fhsm-service: service/fhsm_service.c $(LIB_OBJ) $(REVOCATION_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(REVOCATION_OBJ) $(LDFLAGS)
+
+# Regression test for the objects-blob loader bound (#108) and the v2
+# variable-record blob (#110) : >11-object and certificate-sized
+# round-trips must survive close + reload. Same INTERNAL linking model
+# as test_smoke.
+tests/test_token_capacity: tests/test_token_capacity.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# Test binaries are statically linked against the .o files : their
+# .fhsm_digest section keeps the zero placeholder (only the shipped .so
+# is patched by `make integrity`). FHSM_INTEGRITY_ALLOW_UNSIGNED=1 is
+# therefore required here, same convention as ../tests/coverage_matrix.sh.
+# NULL-argument robustness regression (#125 pkcs11-check finding) :
+# drives the PUBLIC API via dlopen, so it links against the built .so
+# rather than the .o files. Requires $(LIB) to exist.
+tests/test_decrypt_null_args: ../tests/abi/test_decrypt_null_args.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# TSFI robustness guards (#125) : NULL template / data pointers and
+# integer-overflow counts must return CKR_ARGUMENTS_BAD, not SIGSEGV.
+tests/test_robustness_args: ../tests/abi/test_robustness_args.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Per-session operation-state hygiene (#125) : session-handle reuse must
+# not bleed CKR_OPERATION_ACTIVE ; C_Sign undersized buffer must return
+# CKR_BUFFER_TOO_SMALL and preserve the operation.
+tests/test_op_state: ../tests/abi/test_op_state.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# C_UnwrapKey must bound the wrapped blob before decrypting into its
+# 256-byte stack buffer, and must validate the unwrapping-key size the way
+# C_WrapKey already did. Found 2026-09-07 by pkcs11-check against the
+# Wycheproof AES-KW vectors, as an abort from _FORTIFY_SOURCE.
+tests/test_unwrap_len: ../tests/abi/test_unwrap_len.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Multipart verify accepted only CKM_SHA256_HMAC, while multipart sign had
+# been generalised by #125 -- so the module refused to verify a MAC it had
+# just produced. pkcs11-check exercises multipart with SHA-256, the one value
+# the gate let through, so the harness could not see it.
+tests/test_hmac_multipart: ../tests/abi/test_hmac_multipart.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Init then Final with no Update answered CKR_OPERATION_NOT_INITIALIZED: the
+# cipher context was only ever built by the first Update. pkcs11-check 0.2.3,
+# TestZeroDataFinal::test_encrypt_final_no_update.
+tests/test_cipher_final_no_update: ../tests/abi/test_cipher_final_no_update.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# An empty CK_EDDSA_PARAMS on an Ed25519 key asks for Ed25519ctx, and was
+# answered with pure Ed25519. pkcs11-check 0.2.3,
+# TestEdDSAParametrizedModes::test_edwards25519_ctx_*_roundtrip.
+tests/test_eddsa_params: ../tests/abi/test_eddsa_params.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Multipart digest knew three of the eleven digests C_DigestInit accepts,
+# and an Update error left the operation active. pkcs11-check 0.2.3,
+# TestMultipartDigest.
+tests/test_digest_multipart: ../tests/abi/test_digest_multipart.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# A private or secret key's value is withheld when it is sensitive or not
+# extractable, and the call says CKR_ATTRIBUTE_SENSITIVE (PKCS#11 v3.2
+# attribute tables, footnote 7).
+tests/test_sensitive_value: ../tests/abi/test_sensitive_value.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# HashML-DSA signs an M' the module builds itself; NIST's deterministic
+# signatures compared byte for byte (docs/hash-ml-dsa-plan.md).
+tests/test_hash_ml_dsa: ../tests/abi/test_hash_ml_dsa.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Every SLH-DSA parameter set through C_GenerateKeyPair, C_Sign, C_Verify:
+# eight of the twelve sign larger than the pair-wise check's old buffer.
+tests/test_slh_dsa_sets: ../tests/abi/test_slh_dsa_sets.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# SLH-DSA against NIST's ACVP vectors: deterministic signatures compared
+# byte for byte, NIST's verdicts on modified and resized signatures.
+tests/test_slh_dsa_kat: ../tests/abi/test_slh_dsa_kat.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# A curve the module does not take is CKR_CURVE_NOT_SUPPORTED, an EC_PARAMS
+# that names no curve CKR_ATTRIBUTE_VALUE_INVALID, at import and keygen.
+tests/test_ec_curve_refusal: ../tests/abi/test_ec_curve_refusal.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# ECDSA verification reaching the point at infinity is CKR_SIGNATURE_INVALID
+# (Wycheproof P-256 tc392, tc431), one-shot and multipart.
+tests/test_ecdsa_verify_edge: ../tests/abi/test_ecdsa_verify_edge.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# CKA_COPYABLE TRUE -> FALSE through C_SetAttributeValue, and not back.
+tests/test_copyable_oneway: ../tests/abi/test_copyable_oneway.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# CKM_GENERIC_SECRET_KEY_GEN makes every length C_GetMechanismInfo advertises.
+tests/test_generic_secret_len: ../tests/abi/test_generic_secret_len.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# AES-CMAC one-shot and multipart against SP 800-38B's examples.
+tests/test_aes_cmac_multipart: ../tests/abi/test_aes_cmac_multipart.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# HashSLH-DSA signs an M' the module builds itself; NIST's deterministic
+# signatures compared byte for byte, as for HashML-DSA.
+tests/test_hash_slh_dsa: ../tests/abi/test_hash_slh_dsa.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# AES-GMAC one-shot and multipart, against OpenSSL's GMAC and GCM Test Case 1.
+tests/test_aes_gmac_multipart: ../tests/abi/test_aes_gmac_multipart.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
+
+# CKA_PARAMETER_SET read back on PQC keys, and a decapsulation ciphertext of
+# the wrong size refused as such. Both found with OpenSC pkcs11-tool.
+tests/test_pqc_params: ../tests/abi/test_pqc_params.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Every AES mechanism at 128, 192 and 256 bits, and RSA-OAEP across hashes,
+# MGFs and labels, each against OpenSSL computing the same thing.
+tests/test_aes_sizes: ../tests/abi/test_aes_sizes.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
+
+tests/test_rsa_oaep: ../tests/abi/test_rsa_oaep.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
+
+# The advertised set and the implemented set are two structures with nothing
+# holding them equal: fhsm_mechanism_table[] carries a handler pointer that no
+# code dereferences, and the PKCS#11 entry points switch on mechanisms by hand.
+# Every defect of the week of 2026-09-07 is a symptom. This asks the module
+# which operation each advertised mechanism claims, then calls it.
+tests/test_advertised_operational: ../tests/abi/test_advertised_operational.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# The four PKCS#11 v3.2 6.20 combiners, checked byte for byte. Their handlers
+# existed in src/dispatch/fhsm_dispatch_concat.c and C_DeriveKey never called
+# them. test_advertised_operational goes green on anything but
+# CKR_MECHANISM_INVALID, so it cannot tell an implementation from a stub.
+tests/test_derive_concat: ../tests/abi/test_derive_concat.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# A bare ECDH peer point whose second byte reads as a DER length: one P-256
+# key in 256, met by chance by pkcs11-check, made on purpose here.
+tests/test_ecdh_peer_point: ../tests/abi/test_ecdh_peer_point.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl
+
+# HKDF through C_DeriveKey. Links libcrypto because each case computes its own
+# reference with EVP_KDF rather than carrying expected values written from
+# memory; the RFC 5869 A.1 vector is checked alongside so that a shared
+# mistake in module and reference would still show.
+tests/test_derive_hkdf: ../tests/abi/test_derive_hkdf.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
+
+# ECDH end to end on each supported curve: generate, read the public point,
+# derive, then import a private key the standards-conforming way (X9.62 d +
+# CKA_EC_PARAMS) and derive with that. The import half is what 7,185
+# Wycheproof vectors were failing on, invisibly, because C_CreateObject
+# accepted the key and only its use failed.
+tests/probe_ecdh_curves: ../tests/abi/probe_ecdh_curves.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Which signature algorithms accept EVP_DigestSignUpdate on this OpenSSL.
+# Decides, per mechanism family, whether multipart signing can stream or has
+# to buffer the message. Links against OpenSSL directly, not the module: the
+# question is about the provider's capability. Not in `make tests` -- it
+# measures the environment rather than asserting anything about us.
+tests/probe_digestsign_stream: tests/probe_digestsign_stream.c
+	$(CC) $(CFLAGS) -o $@ $< $(OPENSSL_LDFLAGS) -lcrypto
+
+# Whether OpenSSL 3.5 can make HashML-DSA, natively or as Sign_internal over
+# an M' built here, under the default and the FIPS provider. Not in `make
+# tests`: it measures the environment (docs/hash-ml-dsa-plan.md).
+tests/probe_hash_ml_dsa: tests/probe_hash_ml_dsa.c
+	$(CC) $(CFLAGS) -o $@ $< $(OPENSSL_LDFLAGS) -lcrypto
+
+# What the module answers to the harness's HKDF call shapes. Reports return
+# codes rather than asserting: written to find out which of two candidate rules
+# was refusing CKM_HKDF_DATA, and kept because the next HKDF discrepancy will
+# ask the same question.
+tests/probe_hkdf_data: ../tests/abi/probe_hkdf_data.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# CKM_PKCS5_PBKD2 through C_GenerateKey, where PKCS#11 6.28 puts it. Links
+# libcrypto: each case computes its own reference rather than carrying values
+# written from memory, with RFC 6070 checked alongside.
+tests/test_pbkd2: ../tests/abi/test_pbkd2.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
+
+# The published interfaces, entered through C_GetInterface rather than dlsym.
+# Every other test reaches the module by symbol, which checks arithmetic and
+# not reachability -- the difference is what hid CKM_ML_KEM behind an interface
+# the module never published.
+tests/test_interface_v32: ../tests/abi/test_interface_v32.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# PQC public-key import : raw in (PKCS#11 v3.2), raw out, and the imported key
+# still encapsulates / verifies. ML-DSA public used to be accepted and stored
+# unusable; ML-KEM public was refused outright.
+tests/test_pqc_pub_import: ../tests/abi/test_pqc_pub_import.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# CKM_AES_GMAC takes CK_GCM_PARAMS (v3.2 6.13.6), and ulTagBits decides the
+# tag length. Links libcrypto: the expected tags are computed here rather than
+# written out.
+tests/test_gmac_params: ../tests/abi/test_gmac_params.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
+
+# CKA_ENCAPSULATE / CKA_DECAPSULATE enforced (v3.2 5.14.7, 5.14.8). The bits
+# live in the v3 record's former pad byte, so the store round trip is part of
+# the test rather than an assumption.
+tests/test_encap_flags: ../tests/abi/test_encap_flags.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# The same bits across a reload, at the token layer -- the only layer where a
+# reload can be staged. See the header of the file for why the PKCS#11 test
+# cannot do it.
+tests/test_encap_flags_store: tests/test_encap_flags_store.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# A token written before the v4 record still opens. The fixture it reads is
+# committed, not generated here, and tests/make_v3_fixture.c -- which is NOT
+# built by this target -- says why and how it was produced.
+tests/test_v3_fixture: tests/test_v3_fixture.c $(LIB_OBJ)
+	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
+
+# CKA_ALLOWED_MECHANISMS: absent, listed and empty are three different answers,
+# and the module has to tell them apart. Driven through PKCS#11 because that is
+# where the enforcement lives.
+tests/test_allowed_mechanisms: ../tests/abi/test_allowed_mechanisms.c libfreehsm.so
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# The three nested policy templates. Two compare against a creation template,
+# the third against an existing object's attributes.
+tests/test_nested_templates: ../tests/abi/test_nested_templates.c libfreehsm.so
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# CKA_WRAP_WITH_TRUSTED: the refusal half. The positive half needs an SO
+# session to mint a CKA_TRUSTED wrapper and is left to pkcs11-check.
+tests/test_wrap_with_trusted: ../tests/abi/test_wrap_with_trusted.c libfreehsm.so
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# C_Finalize releases the state it built, authentication included. #125 fixed
+# the fork half of this; the same-process half stayed until 2026-09-19.
+tests/test_finalize_release: ../tests/abi/test_finalize_release.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# CKA_ALWAYS_AUTHENTICATE (PKCS#11 v3.2 5.6) : the attribute was stored and
+# reported and gated nothing, so a key marked TRUE signed without
+# C_Login(CKU_CONTEXT_SPECIFIC). Both directions of the loop are checked.
+tests/test_always_authenticate: ../tests/abi/test_always_authenticate.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# FIPS-approved digest/HMAC mechanisms advertised but previously not
+# callable (#125) : SHA-224, SHA-512/t, SHA-3, and their HMACs.
+tests/test_fips_digests: ../tests/abi/test_fips_digests.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# C_GetAttributeValue boolean/date attribute coverage (#125).
+tests/test_attributes: ../tests/abi/test_attributes.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+tests/test_set_dates: ../tests/abi/test_set_dates.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+tests/test_init_token_session: ../tests/abi/test_init_token_session.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Parameter / attribute validation hardening (#125).
+# The source carries DIV-059 (the Rust's minimum PIN length, 8) since slice 5c; the oracle is
+# held to C's, 4, so the copy it compiles has that one comparison put back (slice 5d).
+tests/test_input_validation: ../tests/abi/test_input_validation.c $(LIB)
+	sed 's/ti\.ulMinPinLen != 8 ||/ti.ulMinPinLen != 4 ||/' $< | $(CC) $(CFLAGS) -x c -o $@ - -ldl
+
+# PKCS#11 CKA_TOKEN semantics : session objects destroyed on close (#125).
+tests/test_session_objects: ../tests/abi/test_session_objects.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Mechanism advertisement coherence guard (#125) : C_GetMechanismList /
+# C_GetMechanismInfo derived from the generated dispatch table must stay
+# consistent (correct PQ values, EdDSA/HKDF present, no phantoms).
+tests/test_mech_advertise: ../tests/abi/test_mech_advertise.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Non-approved digest gating (#125 general-purpose) : SHA-1/MD5 executable
+# in all-mechanisms, rejected in nist-approved-only. Profile-adaptive.
+tests/test_legacy_digest: ../tests/abi/test_legacy_digest.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Non-approved cipher gating (#125) : AES-ECB (+3DES) executable in
+# all-mechanisms, rejected in nist-approved-only. Profile-adaptive round-trip.
+tests/test_legacy_cipher: ../tests/abi/test_legacy_cipher.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# Non-FIPS RSA legacy padding gating (#125) : RSA-PKCS v1.5 / X.509 raw.
+tests/test_legacy_rsa: ../tests/abi/test_legacy_rsa.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# The EC curves accepted are the ones advertised (2026-09-28). Profile-adaptive:
+# a curve outside 256..521 bits or on a binary field is refused in both, and
+# brainpool exists only in all-mechanisms.
+tests/test_ec_curve_bounds: ../tests/abi/test_ec_curve_bounds.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# C_Decrypt sizes the caller's buffer against the recovered plaintext, not
+# against RSA_size(key). pkcs11-check test_oaep_decrypt_correctness.
+tests/test_oaep_decrypt_size: ../tests/abi/test_oaep_decrypt_size.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# C_SignUpdate / C_SignFinal for the asymmetric mechanisms, which used to be
+# accepted at C_SignInit and refused at Final. Includes the exact-size buffer
+# case for ECDSA, where DER is converted to raw r||s in place, and the
+# buffered-multipart ceiling. pkcs11-check
+# test_sign_final_buffer_too_small_then_correct.
+tests/test_sign_multipart: ../tests/abi/test_sign_multipart.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# C_DecryptUpdate reports a length the caller can retry with, and does not
+# consume the ciphertext when it refuses. The decrypt side had inherited
+# C_EncryptUpdate's ulLen + one block bound, which decryption cannot reach.
+# pkcs11-check test_aes_cbc_pad_decrypt_update_buffer_too_small_*.
+tests/test_cbc_pad_update_size: ../tests/abi/test_cbc_pad_update_size.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# A refused audit key says which refusal it was, and a fresh store says
+# nothing. @petrn's bare rv=0x6 on a foreign-owned directory (#11).
+tests/test_audit_key_diag: ../tests/abi/test_audit_key_diag.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# The optional key-wrap IV of PKCS#11 v3.2 §6.16.2, on all four entry points.
+# It was accepted and dropped; a caller supplying one got the default (#14).
+tests/test_kw_iv: ../tests/abi/test_kw_iv.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# SO and USER kept apart, and the SO out of read-only sessions (§5.6).
+# None of the three refusals existed; an SO login took over a USER's token.
+tests/test_login_conflicts: ../tests/abi/test_login_conflicts.c $(LIB)
+	$(CC) $(CFLAGS) -o $@ $< -ldl
+
+# ---------------------------------------------------------------------------
+# asan --- build and run the whole suite under AddressSanitizer + UBSan.
+#
+# SAN_FLAGS reaches CFLAGS and LDFLAGS only on the invocation that sets
+# SANITIZE=1, so the two-step usage has to repeat the variable. Dropping it
+# from the second command links instrumented objects without the runtime and
+# fails with undefined __asan_* / __ubsan_* references. That is not a subtle
+# trap, but it is an invisible one: the flag definition is forty lines away
+# from the line documenting how to pass it, and reading the first without the
+# second is the obvious thing to do.
+#
+# The cost of the trap was not the failed link. It was that `make SANITIZE=1`
+# existed for months and the suite had never been taken through it end to
+# end. The first complete run found four defects, one of them in the module:
+# a KAT identifier that pointed into a dead stack frame and was read by the
+# code that reports a failed self-test.
+#
+# The leading clean also drops the built binaries, which the build-mode stamp
+# near OBJDIR does not: the stamp discards objects when the mode changes, so
+# an ordinary `make` after this target now works on its own. The clean stays
+# because a target whose job is "measure from scratch" should start from
+# scratch, not from whatever a previous run left.
+#
+# The tree is left instrumented on purpose, so that a build which is not
+# shippable cannot be mistaken for one that is. Never ship it.
+.PHONY: asan
+asan:
+	$(MAKE) clean
+	$(MAKE) SANITIZE=1
+	$(MAKE) SANITIZE=1 tests
+	@echo
+	@echo "[asan] suite complete under AddressSanitizer + UBSan."
+	@echo "[asan] This tree is instrumented and must not be shipped or signed."
+	@echo "[asan] The next plain 'make' rebuilds it; then 'make integrity'."
+
+# No `tsan` twin of the whole suite, deliberately. TSAN=1 carries the same
+# two-invocation trap and deserves the same treatment, but the full suite has
+# never been run under ThreadSanitizer here and a target that claims to run it
+# green would be asserting something nobody has measured.
+#
+# What has been measured is the concurrency tests, and this runs exactly
+# those: 10 runs clean on 2026-10-16 after the entry lock, against a failure
+# on every run before it (#111-prep). TSan exits 66 on any report, so a race
+# fails the target. The variable is repeated on each make, as for asan.
+.PHONY: tsan-concurrency
+tsan-concurrency:
+	$(MAKE) TSAN=1
+	$(MAKE) TSAN=1 tests/test_apilock tests/test_concurrency tests/test_concurrency_store
+	$(TEST_LD) ./tests/test_apilock
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_concurrency
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_concurrency_store
+	@echo
+	@echo "[tsan] concurrency tests clean under ThreadSanitizer."
+	@echo "[tsan] This tree is instrumented and must not be shipped or signed."
+
+.PHONY: tests test check
+# `make test` and `make check` are what a Makefile project is expected to
+# answer to (OpenSSF test_invocation); both are `make tests`.
+test check: tests
+
+# The test binaries, one list. `tests` builds them and runs each below, with
+# its own environment; `test-bins` only builds them (CI's test-fips-provider
+# job, which runs them its own way). The list and the recipe are still two
+# places, because each test has its own invocation, so
+# scripts/check_test_lists.py checks that every binary here is run there and
+# nothing is run that is not built. Until 2026-10-02 test_session_cap and
+# test_fork_child were built by `make tests` and run by nothing.
+TEST_BINS = \
+	tests/test_conf \
+	tests/test_session_cap \
+	tests/test_fork_child \
+	tests/test_tpm \
+	tests/test_cbc_pad_oracle \
+	tests/test_composite_mprime \
+	tests/test_composite_sign \
+	tests/test_composite_p11 \
+	tests/test_composite_x509 \
+	tests/test_composite_csr \
+	tests/test_composite_issue \
+	tests/test_pki_classic \
+	tests/test_composite_crl \
+	tests/test_composite_prehash \
+	tests/test_composite_cms \
+	tests/test_composite_ocsp \
+	tests/test_pin_length \
+	tests/test_throttle_reboot \
+	tests/test_wrong_pin_store \
+	tests/test_public_objects \
+	tests/test_audit_fsync \
+	tests/test_audit_concurrent \
+	tests/test_audit_multiproc \
+	tests/test_audit_switch \
+	tests/test_audit_key \
+	tests/test_audit_backpressure \
+	tests/test_audit_verify \
+	tests/test_p11_loader \
+	tests/test_smoke \
+	tests/test_token_capacity \
+	tests/test_decrypt_null_args \
+	tests/test_mech_advertise \
+	tests/test_legacy_digest \
+	tests/test_legacy_cipher \
+	tests/test_legacy_rsa \
+	tests/test_ec_curve_bounds \
+	tests/test_robustness_args \
+	tests/test_op_state \
+	tests/test_unwrap_len \
+	tests/test_hmac_multipart \
+	tests/test_cipher_final_no_update \
+	tests/test_eddsa_params \
+	tests/test_digest_multipart \
+	tests/test_sensitive_value \
+	tests/test_hash_ml_dsa \
+	tests/test_slh_dsa_sets \
+	tests/test_slh_dsa_kat \
+	tests/test_ec_curve_refusal \
+	tests/test_ecdsa_verify_edge \
+	tests/test_copyable_oneway \
+	tests/test_generic_secret_len \
+	tests/test_aes_cmac_multipart \
+	tests/test_hash_slh_dsa \
+	tests/test_aes_gmac_multipart \
+	tests/test_pqc_params \
+	tests/test_aes_sizes \
+	tests/test_rsa_oaep \
+	tests/test_advertised_operational \
+	tests/test_derive_concat \
+	tests/test_ecdh_peer_point \
+	tests/test_derive_hkdf \
+	tests/probe_ecdh_curves \
+	tests/probe_hkdf_data \
+	tests/test_pbkd2 \
+	tests/test_always_authenticate \
+	tests/test_interface_v32 \
+	tests/test_pqc_pub_import \
+	tests/test_gmac_params \
+	tests/test_encap_flags \
+	tests/test_encap_flags_store \
+	tests/test_v3_fixture \
+	tests/test_allowed_mechanisms \
+	tests/test_nested_templates \
+	tests/test_wrap_with_trusted \
+	tests/test_finalize_release \
+	tests/test_apilock \
+	tests/test_concurrency \
+	tests/test_concurrency_store \
+	tests/test_fips_digests \
+	tests/test_attributes \
+	tests/test_set_dates \
+	tests/test_init_token_session \
+	tests/test_input_validation \
+	tests/test_session_objects \
+	tests/test_oaep_decrypt_size \
+	tests/test_sign_multipart \
+	tests/test_cbc_pad_update_size \
+	tests/test_audit_key_diag \
+	tests/test_kw_iv \
+	tests/test_login_conflicts \
+	tests/test_pkiops \
+	tests/test_pkiops_algs \
+	tests/test_pkiops_objects \
+	tests/test_pkiops_secret \
+	tests/test_pkiops_envelope \
+	tests/test_pkiops_envelope_rsa \
+	tests/test_secure_heap_shared
+
+.PHONY: test-bins
+test-bins: $(TEST_BINS) tools/fhsm-token
+
+# Every test gets its own tokens directory. It used to be only the ones that
+# touch a token -- but C_Initialize now opens the audit log, which lives
+# beside the tokens, so any test that initialises the module writes there.
+# Without this they all fall back to /var/lib/freehsm/tokens and fail with a
+# bare 0x6 on any machine where that does not exist.
+tests: $(TEST_BINS) tools/fhsm-token tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign tools/fhsm-crypt
+# test_conf had a build rule since #128 and appeared in no list: not in the
+# prerequisites above, not in the recipe below, not in any script, not in CI.
+# `make tests` never built it and nothing ever ran it. Found on 2026-09-26
+# while adding seven assertions to it -- the assertions would have been
+# written, committed, and never once executed.
+#
+# FHSM_MODE is cleared rather than assumed absent: the test drives the mode
+# through a conf file, and an inherited FHSM_MODE takes precedence over the
+# file by design, so it would silently decide every mode assertion.
+	env -u FHSM_MODE ./tests/test_conf
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_smoke
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_tpm
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_cbc_pad_oracle
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_mprime
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_sign
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) \
+		$(TEST_LD) ./tests/test_composite_p11
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_x509
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_csr
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_issue
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_pki_classic
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_crl
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_prehash
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_cms
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_composite_ocsp
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_audit_key
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_audit_backpressure
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_pin_length
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_throttle_reboot
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_wrong_pin_store
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_public_objects
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_audit_fsync
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_audit_concurrent
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_audit_multiproc
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_audit_switch
+	$(AUDIT_SWITCH_C) mandatory
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_audit_verify
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_p11_loader ./libfreehsm.so
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) $(TEST_LD) ./tests/test_token_capacity
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_decrypt_null_args
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_robustness_args
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_op_state
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_unwrap_len
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_hmac_multipart
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_cipher_final_no_update
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_eddsa_params
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_digest_multipart
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_sensitive_value
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_hash_ml_dsa
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_slh_dsa_sets
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_slh_dsa_kat
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_ec_curve_refusal
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_ecdsa_verify_edge
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_copyable_oneway
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_generic_secret_len
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_aes_cmac_multipart
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_hash_slh_dsa
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_aes_gmac_multipart
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pqc_params
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_aes_sizes
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_rsa_oaep
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_advertised_operational
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_derive_concat
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_ecdh_peer_point
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_derive_hkdf
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/probe_ecdh_curves
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/probe_hkdf_data
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pbkd2
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_always_authenticate
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_interface_v32
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pqc_pub_import
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_gmac_params
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_encap_flags
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_encap_flags_store
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_v3_fixture
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_allowed_mechanisms
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_nested_templates
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_wrap_with_trusted
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_finalize_release
+# The concurrency tests (#111-prep) were run by hand under TSAN=1 and by
+# nothing else. Run plain here they still check results -- a key freed under
+# a running C_Sign shows as CKR_FUNCTION_FAILED, a torn label as a wrong
+# label -- and `make tsan-concurrency` runs them where they also see races.
+	$(TEST_LD) ./tests/test_apilock
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_concurrency
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_concurrency_store
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_fips_digests
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_attributes
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_set_dates
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_init_token_session
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_input_validation
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_session_objects
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_mech_advertise
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_legacy_digest
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_legacy_cipher
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_legacy_rsa
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_ec_curve_bounds
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_oaep_decrypt_size
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_sign_multipart
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_cbc_pad_update_size
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_audit_key_diag
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_kw_iv
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_login_conflicts
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_session_cap
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_fork_child
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pkiops
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pkiops_algs
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pkiops_objects
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pkiops_secret
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pkiops_envelope
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_pkiops_envelope_rsa
+# fhsm-crypt list and delete, as an operator would type them; the script
+# sets up its own token, as pki_tools_algs.sh does.
+	$(TEST_LD) sh ../tests/fhsm_crypt_cli.sh
+# The command-line tools with every algorithm but the composite, each file
+# checked by the openssl command line (docs/classic-algorithms-plan.md).
+	$(TEST_LD) sh ../tests/pki_tools_algs.sh
+# A copy under another name, so the loader maps a second instance -- as it
+# would a second build.
+	d=$$(mktemp -d) && cp $(LIB) $$d/libfreehsm-copy.so && \
+	FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$$(mktemp -d) OPENSSL_CONF=/dev/null \
+		$(TEST_LD) ./tests/test_secure_heap_shared ./$(LIB) $$d/libfreehsm-copy.so
+
+# External behavioral harness (#125) : Denis Mingulov's pkcs11-check
+# (>100k vendor-neutral checks) against the built module. Findings are
+# evidence, not a gate --- see ../scripts/run_pkcs11_check.sh. Requires
+# opensc (pkcs11-tool) and `pip install pkcs11-check` (Python >= 3.12).
+# Run against an UNSIGNED dev build ; CI runs the signed module.
+.PHONY: pkcs11-check
+pkcs11-check:
+	# Built at the default FHSM_MAX_OBJECTS. The 4096 override that used to
+	# be here was a workaround from when the default was 64: the harness's
+	# object churn filled the store and masked findings behind
+	# CKR_DEVICE_MEMORY (FINDINGS I1 / F5). The deeper fix that comment
+	# asked for -- destroying session objects on C_CloseSession -- landed in
+	# #125, and the default is now 1024.
+	$(MAKE) clean
+	$(MAKE)
+	$(MAKE) integrity
+	FHSM_ALLOW_UNSIGNED=1 bash ../scripts/run_pkcs11_check.sh ./$(LIB) ./reports/pkcs11-check
+
+# ---------------------------------------------------------------------------
+# Integrity --- sign the shipped .so and embed its SHA-256 into the
+# fhsm_module_integrity_digest[] array. Done by ../scripts/sign_module.sh
+# as a two-pass build (zero placeholder -> real digest patched in).
+# Required by FIPS 140-3 §7.10.2 (pre-operational integrity self-test).
+# ---------------------------------------------------------------------------
+.PHONY: integrity
+# The audit switch has two sides and `make tests` only exercises one: the
+# default build refuses FHSM_AUDIT=off, so the branch that honours it is never
+# reached. This runs both, and is the reason EXTRA_CFLAGS exists.
+audit-switch:
+	$(MAKE) clean
+	$(MAKE) all tests/test_audit_switch
+	$(AUDIT_SWITCH_C) mandatory
+	$(MAKE) clean
+	$(MAKE) EXTRA_CFLAGS=-DFHSM_AUDIT_MANDATORY=0 all tests/test_audit_switch
+	$(AUDIT_SWITCH_C) optional
+	@echo "[audit-switch] both sides of FHSM_AUDIT_MANDATORY exercised"
+
+# The delegated responder's rules are rules of the tool, not of the library:
+# fhsm_composite_ocsp() signs whatever certificate it is handed. Which one it
+# is handed, and whether a verifier will accept it, is decided in fhsm-ca. So
+# this drives the tools rather than linking the library, like audit_switch.sh.
+# The composite mechanism is all-mechanisms-only, so this cannot run against
+# the default build: nist-approved-only answers CKR_MECHANISM_INVALID and there
+# is no key to sign anything with. It leaves an all-mechanisms tree behind,
+# which is why CI rebuilds before uploading anything.
+# The service's guards need the binary and a token, so they are their own
+# target rather than part of `make tests`, which links the library and never
+# opens a socket.
+# Two things here were learned by watching these three targets fail on a tree
+# that was correct.
+#
+# $(TEST_LD) is not decoration. Without it the module resolves against the
+# system OpenSSL, which on a distribution build has no ML-DSA-65, and the
+# first composite keygen fails with CKR_MECHANISM_INVALID. Forty-two recipes
+# in this file carry it; these three did not.
+#
+# And $(LIB) is a prerequisite, not an assumption. The tools dlopen
+# ./libfreehsm.so; naming only the binaries let a library built for the
+# other profile survive a rebuild and fail at the same keygen with the same
+# status -- two causes, one message, and the service's own --profile guard
+# passing throughout because the service carries its profile statically and
+# the library it never loads carries another.
+#
+# The recurring shape twice over: a control wired to most of the paths that
+# reach a state and not the rest.
+.PHONY: service-guards
+service-guards: $(LIB) service/fhsm-service tools/fhsm-token tools/fhsm-csr
+	$(TEST_LD) sh ../tests/service_guards.sh
+
+# The budget test is separate from service-guards because it stops and starts
+# the daemon: the property it exists for -- a count that survives a restart --
+# cannot be seen by a suite that never restarts anything.
+.PHONY: service-budget
+service-budget: $(LIB) service/fhsm-service tools/fhsm-token tools/fhsm-csr
+	$(TEST_LD) sh ../tests/service_budget.sh
+
+# The public listener needs its own script for the same reason: it starts the
+# daemon three times expecting refusals, then once expecting success.
+.PHONY: service-public
+service-public: $(LIB) service/fhsm-service tools/fhsm-token tools/fhsm-csr
+	$(TEST_LD) sh ../tests/service_public.sh
+
+# The revocation database, which fhsm-ca and fhsm-service now read through the
+# same code. Needs only the tool: `revoke` touches no key and unlocks nothing,
+# which is the whole point of keeping it separate from `crl`.
+.PHONY: revocation-db
+revocation-db: tools/fhsm-ca
+	$(TEST_LD) sh ../tests/revocation_db.sh
+
+.PHONY: ocsp-delegated
+ocsp-delegated:
+	$(MAKE) clean
+	$(MAKE) PROFILE=all-mechanisms all
+	$(TEST_LD) sh ../tests/ocsp_delegated.sh
+	@echo "[ocsp-delegated] the tree is now a PROFILE=all-mechanisms build"
+
+integrity: $(LIB)
+# Exit 3 means "already signed", which is a state and not a failure.
+# scripts/release.sh and .github/workflows/release.yml both learned to accept
+# it on 2026-09-01; the target they were working around did not, so a second
+# `make integrity` on an unchanged module stopped the build with Error 3. Any
+# other non-zero status still stops it.
+	@../scripts/sign_module.sh $(LIB) || [ $$? = 3 ]
+	@echo "[integrity] $(LIB) signed ; readback :"
+# od, not xxd. xxd is its own package on Debian trixie and is absent from
+# Dockerfile.build, so this readback printed
+#
+#     [integrity] libfreehsm.so signed ; readback :
+#     /bin/sh: 2: xxd: not found
+#
+# -- a confirmation step that confirmed nothing, silently, in the one
+# environment where the signature matters most. The same dependency was
+# removed from .github/workflows/release.yml on 2026-09-01 without anyone
+# checking whether the Makefile shared it. It did.
+	@objcopy --dump-section .fhsm_digest=/dev/stdout $(LIB) /dev/null \
+	    2>/dev/null | od -An -tx1 -v | tr -d ' \n' ; echo
+
+# Strip-and-sign : produce a release artefact with debug info removed
+# and the digest patched. Goes hand-in-hand with `make repro`.
+.PHONY: release
+release: $(LIB)
+	@objcopy --strip-debug $(LIB)
+	@../scripts/sign_module.sh $(LIB)
+
+# ---------------------------------------------------------------------------
+# Lint --- cppcheck over src/ and kat/; any finding fails it.
+#
+# This comment used to say the build refuses to ship if cppcheck or
+# scan-build flags a defect. Nothing ran this target -- not CI, not
+# release.sh, not tag-release.sh -- and scan-build was never in it. Found on
+# 2026-10-01 while answering OpenSSF's static_analysis criterion, which this
+# file had been cited for. CI's static-analysis job runs it on every push.
+# ---------------------------------------------------------------------------
+.PHONY: lint
+#
+# The first run, on 2026-10-01, reported 124 findings and no defect: 58
+# variadic NULL sentinels (now FHSM_AUDIT_END), 16 functions whose analysis
+# was cut short (hence --check-level=exhaustive), 36 suggestions below, and
+# a dozen style notes, each now suppressed in place with its reason.
+#
+# Suppressed here, for the whole tree:
+#   const*             "this could be const". Worth taking when a function is
+#                      touched anyway; not worth a tree-wide edit, and not
+#                      what a gate is for.
+#   unusedStructMember the PKCS#11 ABI structures (CK_VERSION,
+#                      CK_FUNCTION_LIST*) carry fields this file never reads;
+#                      their layout is not ours to trim.
+lint:
+	cppcheck --enable=warning,style,performance,portability \
+	         --error-exitcode=1 --std=c11 --inline-suppr \
+	         --check-level=exhaustive \
+	         --suppress=constParameterPointer --suppress=constVariablePointer \
+	         --suppress=constParameterCallback --suppress=constVariable \
+	         --suppress=unusedStructMember \
+	         -Iinclude src/ kat/
+
+# ---------------------------------------------------------------------------
+# Clean
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Install --- system-wide installation under PREFIX (defaults to /opt/freehsm).
+# Run as root (or with sudo). The procedure follows docs/AGD_PRE.md §3.
+# ---------------------------------------------------------------------------
+PREFIX     ?= /opt/freehsm
+LIBDIR     ?= $(PREFIX)/lib
+# The module reads /etc/freehsm/freehsm.conf (FHSM_CONF_PATH_DEFAULT in
+# src/fhsm_conf.c), not $(PREFIX)/etc. Installing under PREFIX put the file
+# somewhere nothing would ever open it -- a configuration that cannot take
+# effect, which is the same defect #128 removed from the file's contents.
+# Override FHSM_CONFDIR only if you also change FHSM_CONF_PATH_DEFAULT.
+FHSM_CONFDIR ?= /etc/freehsm
+ETCDIR     ?= $(FHSM_CONFDIR)
+STATEDIR   ?= /var/lib/freehsm
+SYSUSER    ?= freehsm
+
+.PHONY: install
+install: $(LIB)
+	@echo "$@: retired with slice 5d: the top-level Makefile installs pqHSM; legacy/ is an oracle only" >&2; exit 2
+	@echo "[install] target prefix = $(PREFIX)"
+	install -d -o root -g root -m 755 $(LIBDIR) $(ETCDIR)
+	install -o root -g root -m 0755 $(LIB) $(LIBDIR)/$(LIB)
+	id -u $(SYSUSER) >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d $(STATEDIR) $(SYSUSER)
+	install -d -o $(SYSUSER) -g $(SYSUSER) -m 700 $(STATEDIR)/tokens $(STATEDIR)/audit $(STATEDIR)/kek
+	test -f $(ETCDIR)/freehsm.conf || printf '# freehsm.conf --- runtime configuration.\n#\n# Every key below is read by the module. Nothing else is: the rest of the\n# module is configured at compile time (FHSM_PIN_MAX_FAILED, the PBKDF2\n# iteration count, the throttle curve) or through the environment\n# (FHSM_TOKENS_DIR, FHSM_MODE). Until v1.6.0 this file listed nine keys and\n# no code read any of them -- a file that promises controls nothing enforces.\n\n# Runtime mode: strict | permissive. Overridden by the FHSM_MODE environment\n# variable. `strict` refuses the thirteen mechanisms NIST has not approved;\n# `permissive` runs them. The former spellings `fips` and `legacy` are still\n# accepted and print a note naming the replacement.\n#\n# NOTE its narrow scope. This is one of two axes, and it is the second one:\n# which mechanisms the PKCS#11 API advertises at all is fixed when the module\n# is built (make generate PROFILE=nist-approved-only|all-mechanisms) and\n# cannot be changed here. A mechanism the build left out cannot be turned on\n# by this key; this key only decides whether a compiled-in but unapproved\n# mechanism is allowed to run.\nmode = permissive\n\n# Size of the mlock(2)-ed secure heap holding key material, in KiB.\n# Range 64..65536, rounded UP to a power of two (the arena allocator requires\n# one). Out-of-range or unparseable values fall back to the compiled default.\n# Raise this if the module reports CKR_DEVICE_MEMORY when loading a token with\n# many private keys.\nsecure_heap_kb = 8192\n' > $(ETCDIR)/freehsm.conf
+	chmod 0644 $(ETCDIR)/freehsm.conf
+	-setcap 'cap_ipc_lock=+ep' $(LIBDIR)/$(LIB)
+	install -d -o root -g root -m 755 $(PREFIX)/share/kat
+	install -o root -g root -m 0644 kat/cavp/*.rsp $(PREFIX)/share/kat/ 2>/dev/null || true
+	install -d -o root -g root -m 755 $(PREFIX)/bin
+	test -f tools/freehsm-audit && install -o root -g root -m 0755 tools/freehsm-audit $(PREFIX)/bin/freehsm-audit || true
+	@echo "[install] installed to $(LIBDIR)/$(LIB)"
+	@echo "[install] verify with : readelf -p .comment $(LIBDIR)/$(LIB)"
+
+.PHONY: uninstall
+uninstall:
+	@echo "$@: retired with slice 5d: the top-level Makefile installs pqHSM; legacy/ is an oracle only" >&2; exit 2
+	@echo "[uninstall] WARNING : this WILL DESTROY all tokens, audit logs and KEK."
+	@echo "[uninstall] Press Ctrl-C now to abort, or wait 5 s..."
+	@sleep 5
+	-systemctl stop freehsm-bound-service 2>/dev/null || true
+	-shred -uvz $(STATEDIR)/tokens/*.tok 2>/dev/null || true
+	-shred -uvz $(STATEDIR)/audit/*.audit.log 2>/dev/null || true
+	-shred -uvz $(STATEDIR)/kek/*.kek 2>/dev/null || true
+	rm -f $(LIBDIR)/$(LIB) $(ETCDIR)/freehsm.conf
+	rm -rf $(STATEDIR)
+	-userdel $(SYSUSER) 2>/dev/null || true
+	@echo "[uninstall] done."
+
+.PHONY: clean
+clean:
+	rm -rf $(OBJDIR)
+	rm -f $(LIB) tests/test_smoke tests/*.o
+	# The signing sidecars, including the name the script used before the
+	# integrity digest became SHA-384 on 2026-09-14. A file called
+	# libfreehsm.so.sha256 holding a digest of a module that no longer exists,
+	# sitting next to one that does, is the same trap as the stale test binary
+	# below -- it looks like a current answer to a current question.
+	rm -f $(LIB).sha256 $(LIB).integrity-sha384
+	rm -f tests/*.sha256 tests/*.integrity-sha384
+	# Every test binary, not just test_smoke. Naming one of forty meant an old
+	# binary survived `make clean && make` and then ran against a freshly built
+	# library, reporting on code it was not compiled for -- silently, since
+	# nothing compares the two. Found on 2026-09-08: test_unwrap_len kept
+	# asserting the previous buffer size and failed two cases that had just
+	# been fixed, which for a minute looked like the fix was wrong.
+	# pqHSM slice 5c: the sources are in tests/abi, legacy/tests and the GUI's tests; the binaries
+	# are still tests/<name>.
+	rm -f $(addprefix tests/,$(notdir $(basename $(wildcard ../tests/abi/*.c tests/*.c ../modernized/pqHSM/gui/tests/*.c))))
+	rm -f tools/freehsm-audit $(TOOLS)
+	# The service too. Leaving it behind meant a `make clean && make` handed
+	# back a binary from the previous build's flags -- a TSAN one, in the run
+	# that found this, which then refused to start and looked like a service
+	# defect rather than a stale artefact.
+	rm -f service/fhsm-service
+	rm -f freehsm-c-src.tar.xz freehsm-c-src.tar.xz.sha256
+	rm -rf out/
+
+# Distclean = clean + regenerable artefacts. Use before `make dist` to
+# guarantee everything is regenerated from scratch.
+.PHONY: distclean
+distclean: clean
+	rm -f include/fhsm_pkcs11_mechanisms.h
+	rm -f src/gen/fhsm_dispatch.c
+	rm -f docs/MECHANISMS.md
+	rm -rf __pycache__ scripts/__pycache__
+
+# ---------------------------------------------------------------------------
+# Source distribution (reproducible). Input to CC EAL4+ ALC_CMS.4.
+# Honors SOURCE_DATE_EPOCH and uses tar's deterministic flags so the
+# archive is bit-identical across hosts.
+# ---------------------------------------------------------------------------
+SOURCE_DATE_EPOCH ?= 1735689600
+SOURCE_DATE_STR   := $(shell date -u -d @$(SOURCE_DATE_EPOCH) '+%Y-%m-%d %H:%M:%S')
+
+.PHONY: dist
+dist: clean
+	@echo "$@: retired with slice 5d: the top-level Makefile installs pqHSM; legacy/ is an oracle only" >&2; exit 2
+	@echo "[dist] mtime = $(SOURCE_DATE_STR) UTC"
+	tar --mtime="@$(SOURCE_DATE_EPOCH)" \
+	    --owner=root --group=root --numeric-owner \
+	    --sort=name --no-acls --no-xattrs \
+	    --pax-option=exthdr.name=%d/PaxHeaders/%f,delete=atime,delete=ctime,delete=mtime \
+	    --transform 's,^,freehsm-c-$(FHSM_VERSION_STRING)/,' \
+	    -cJf freehsm-c-src.tar.xz \
+	    Makefile ../Dockerfile.build \
+	    include/ src/ kat/ tests/ ../tests/ ../modernized/pqHSM/gui/tests/ ../docs/ scripts/ ../scripts/
+	@sha256sum freehsm-c-src.tar.xz | tee freehsm-c-src.tar.xz.sha256
+	@echo "[dist] freehsm-c-src.tar.xz ready --- distribute to the evaluation lab."
+
+# ---------------------------------------------------------------------------
+# Reproducible build via Docker.
+# ---------------------------------------------------------------------------
+.PHONY: repro
+repro:
+	@scripts/build_reproducible.sh
+
+.PHONY: dist-verify
+dist-verify:
+	@echo "$@: retired with slice 5d: the top-level Makefile installs pqHSM; legacy/ is an oracle only" >&2; exit 2
+	@# If a release reference digest exists for this version, compare
+	@# against it. Otherwise fall back to the build-twice consistency
+	@# check (no signed reference yet -- useful during development).
+	@# FHSM_VERSION_STRING comes from the variable at the top of this file,
+	@# which parses the header with awk. The grep -oP that used to be here
+	@# looked for `FHSM_VERSION_STRING = "..."` and the header writes
+	@# `#define FHSM_VERSION_STRING  "..."`, so it never matched and this
+	@# recipe compared against dist/refs/v.sha256 -- a file that cannot exist.
+	@VERSION='$(FHSM_VERSION_STRING)'; \
+	if [ -f dist/refs/v$$VERSION.sha256 ]; then \
+	    echo "[dist-verify] reference found for v$$VERSION ; comparing local build"; \
+	    scripts/dist_verify_ref.sh; \
+	else \
+	    echo "[dist-verify] no reference at dist/refs/v$$VERSION.sha256"; \
+	    echo "[dist-verify] falling back to build-twice consistency check"; \
+	    scripts/verify_reproducibility.sh; \
+	fi
+
+.PHONY: dist-baseline
+dist-baseline:
+	@scripts/dist_baseline.sh
+
+.PHONY: repro-shell
+repro-shell:
+	@scripts/build_reproducible.sh --shell

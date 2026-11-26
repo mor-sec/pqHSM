@@ -1,5 +1,5 @@
 //! Replays `tests/golden/drbg.tsv`, written by running the legacy `src/fhsm_drbg.c`
-//! (`tests-support/golden/gen_drbg.c`; regenerate with `tests-support/golden/regen_crypto.sh`).
+//! (`legacy/hybrid/golden/gen_drbg.c`; regenerate with `legacy/hybrid/golden/regen_crypto.sh`).
 //! The scripted source here mirrors that generator's seams byte for byte: the same xorshift
 //! stream, injections, clock and conditioner failures. The ERROR state is the one thing C keeps
 //! outside the DRBG; it is kept here as `fhsm_drbg_bytes` checks it.
