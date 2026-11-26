@@ -1943,3 +1943,91 @@ Evidence: in the pinned image the binary exports exactly `C_GetFunctionList`, it
 | L5 | `docs/FHSM_GUI.md` named the removed targets | Updated; the comments inside `fhsm_gui.c` left (the C moves unchanged) |
 | L6 | The link-line count could pass on a different `CC`; a stale GUI binary could reach the harness | The count dropped (the nm checks are the evidence); `run.sh` excludes the binary |
 | L7 | A redundant `extern crate`, an exported `pqhsm_service_main` | Both removed; `rerun-if-changed` not added (cargo reruns on any package change) |
+
+### Slice 5c: the tests (2026-11-26)
+
+Plan: `PHASE6_PLAN.md` §8.2 5c, with the §8.4 decision (user: "Keep as tests/abi/ (Recommended)"). Every move is a `git mv`; the binaries stay `tests/<name>` in the legacy Makefile, so the harness's commands are unchanged.
+
+The 116 C test sources of `tests/`, sorted by their link line in the legacy Makefile:
+
+| Group | Count | To | Why |
+|---|---|---|---|
+| `-ldl` only (dlopen the module) | 56 | `tests/abi/` | the PKCS#11 ABI alone |
+| the 21 mixed ones, below | 14 + 7 | 14 `tests/abi/`, 7 `legacy/tests/` | one by one |
+| the library objects (`$(LIB_OBJ)`, internal `fhsm_*` calls) | 33 | `legacy/tests/` | test C internals; the oracle's |
+| the pkiops C ABI | 6 | `modernized/pqHSM/gui/tests/` | the GUI is that ABI's only consumer |
+
+The mixed ones (the plan counted 20; the `bench_fsync_floor` rule makes 21):
+- On `$(LDFLAGS)`, which links libcrypto: `test_p11_loader`, `probe_fips_loaded`, `probe_secure_heap`, `test_secure_heap_shared`, `test_aes_gmac_multipart`, `test_aes_sizes`, `test_rsa_oaep`, `test_ecdh_peer_point`, `test_derive_hkdf`, `test_pbkd2` and `test_gmac_params` go to `tests/abi/`. Each dlopens the module and uses libcrypto only to check its output.
+- `probe_digestsign_stream` and `probe_hash_ml_dsa` go to `legacy/tests/`. They are OpenSSL alone, with no module.
+- `bench_fsync_floor` goes to `legacy/tests/`. It is the OS alone.
+- Of the seven with no rule, `mldsa_e2e`, `mlkem_e2e` and `slhdsa_e2e` (prebuilt by `tests/coverage_matrix.sh`, ABI) go to `tests/abi/`.
+- `make_v3_fixture`, `probe_keygen_drbg`, `probe_pqc_key_lengths` and `test_dispatch` go to `legacy/tests/`. The first two use internals, the third is OpenSSL alone, and the last is read by `extract_topology.py`.
+
+| What | Where |
+|---|---|
+| `tools/p11_util.h`, `tools/p11_err.h` moved with the ABI tests; the legacy Makefile's CFLAGS gain `-Itests/abi`, so `tools/pkiops.c` still builds | `tests/abi/`, `Makefile` |
+| The ABI tests' own build: a makefile against any module, `check.sh` running the legacy `tests` recipe's 63 lines plus one new (`runs.txt`) each in a fresh directory holding the module as `./libfreehsm.so`; a built program with no run line that is not on the "built only" list fails | `tests/abi/{Makefile,check.sh,runs.txt}` |
+| DIV-059 (`ulMinPinLen` 8) and DIV-057 (no `CKA_SENSITIVE` FALSE in an ECDH template), which `inner.sh` patched into its copy, are in the `tests/abi/` sources; the C tree (`/c`) keeps C's. `div057_peer_value.c` deleted | `tests/abi/test_input_validation.c`, `probe_ecdh_curves.c`, `test_ecdh_peer_point.c` |
+| Harness: `make -C tests/abi check` on the default and all-mechanisms modules (dev bypass: no FIPS provider in the container, and a release module stops at it); the heap test, the DRBG probe and the call log find their sources at the new paths | `inner.sh` |
+| The tampered-module case of `test_integrity.c`, end to end: a copy of the installed signed module with one `.text` byte flipped is refused by the signature check; an untouched copy, the control, reaches the provider | `install_check.sh` |
+| hybrid.mk: the pkiops tests' main source is the rule's `.c` prerequisite | `hybrid.mk` |
+| `make clean` removes the binaries of all three source directories; `make dist` ships them | `Makefile` |
+
+Rust twins, where a legacy test was the only cover (the test engineer's gap list, highest first):
+
+| Legacy test | Twin |
+|---|---|
+| `fuzz/fuzz_pq_params.c` | `p11/src/ffi/sign.rs` `pq_context_block_is_parsed_as_the_c_fuzzer_required`: every hedge, context length, NULL context and block length, NULL `pParameter`, for ML-DSA and SLH-DSA |
+| `test_wrong_pin_store.c` | `token/tests/token_props.rs` `a_wrong_pin_after_a_logout_keeps_every_object_rule088` |
+| `test_token_capacity.c` | `token_props.rs` `a_full_token_is_written_and_read_back`: 1024 objects, eight 12000-byte certificates, `DEVICE_MEMORY` past the cap, all back after a reload |
+| `test_audit_multiproc.c` | `audit/tests/log.rs` `two_simultaneous_opens_of_one_base_get_adjacent_files_that_each_verify` (threads: the numbering relies on `O_EXCL` alone, no in-process lock) |
+| `test_composite_sign.c` | `pki/tests/composite_golden.rs` `fresh_key_pairs_differ_and_a_signature_fails_under_the_other_key` |
+| `test_v3_fixture.c` | `token/tests/corpus.rs` `the_c_written_v3_fixture_loads_and_migrates` (the fixture copied to `token/tests/golden/v3/`) |
+| `test_pin_length.c` | `token/tests/token_ffi.rs` `login_reads_exactly_the_pin_length` (a PIN ending at a `PROT_NONE` page) |
+| `test_apilock.c` (the one true gap) | `p11/tests/apilock.rs`, its own binary: the deferred release step by step |
+| `test_smoke.c`'s export check | `tests/abi/test_kat_results.c`: `fhsm_kat_results` after `C_Initialize`, by dlsym |
+
+Not twinned, low risk or covered in part elsewhere: `test_tpm`'s eight threads; the secure-heap routing (`test_secure_heap`; the cap is in `c_doubles`); the audit C ABI's latch; the cargo-fuzz targets have no CI (slice 5e ports `fuzz.yml`).
+
+Differences from the plan: the plan's "20 mixed" are 21. The harness runs `tests/abi` on the dev-bypass module, not the signed one, since the container has no FIPS provider. The signed module's integrity is exercised by `install_check.sh` instead. The pkiops tests went to the GUI rather than `tests/abi`, because they link `pqhsm-pkiops`, not the module.
+
+Evidence:
+- In the pinned image, clippy (`-D warnings`, plain and with features) is clean. `cargo test --workspace` and the ffi feature tests pass, with each twin run.
+- Harness run 39 (rc=0), against run 34 (5b's last), shows only these differences:
+  - The new rows: `tests/abi` passes 64 of 64 on the default module and 64 of 64 on the all-mechanisms one. The tampered copy is refused by the signature check, and the untouched copy reaches the provider.
+  - The corpus record count, which follows timing (61 same and 7 expected DIFFs, as before).
+  - "C reading Rust-written" lists 2 lines, not 4. These are the size-only pairs of freshly generated keys.
+- `make tests` passes 106 of 106. The verifiers agree on all 160 corpus logs. The installed module and service pass their integrity check and stop at the provider.
+- Runs 35 to 38 found what the table below records.
+
+Left for later: the legacy Makefile still builds `gui/tests/*.c` and the GUI makefile does not (5d, with the move). `make asan` and the FIPS job in `ci.yml` build the C module and run every `tests/test_*`, now including `test_input_validation` with DIV-059, which fails on C (5e; Actions are off until then). `analysis/pqHSM/extract_topology.py` has failed since 5b (`tools/fhsm_gui.c` moved); its outputs are Phase 0 snapshots, and the 5c path is updated in it anyway.
+
+### Slice 5c review (architecture-critic, 2026-11-26)
+
+| # | Finding | Resolution |
+|---|---|---|
+| H1 | hybrid.mk's pkiops recipe used `$<`, which with that rule's own recipe is the library (its prerequisite comes first), so the six tests linked without `main` | `$(firstword $(filter %.c,$^))`; run 35 had shown it (rc 127, and `test_secure_heap_shared`, after them in `TEST_BINS`, not built) |
+| H2 | The harness's heap-test patch named the old path, so the hybrid test ran unpatched (0x104) | The function takes the file; each tree passes its own |
+| H3 | The call-log build could not find `p11_err.h` | `-Itests/abi` in its flags |
+| H4 | `make asan` and the FIPS job run the DIV-patched `test_input_validation` on the C module | Left for 5e, which rebuilds CI; Actions are off until then |
+| M1 | `make clean` matched no test binary after the move; `make dist` left out two source directories | Both fixed |
+| M2 | The capacity twin accepted any error | `Err(Rv::DEVICE_MEMORY)`, as C asserted |
+| M3 | The tampered-module case passed on any failure | Requires the signature-mismatch message, and an untouched copy run the same way reaches the provider |
+| M4 | `check.sh` set `LD_LIBRARY_PATH` before `eval`, which dash does not export | Exported in the subshell |
+| L1 | The PQ twin left out a NULL `pParameter` | Added |
+| L2 | The wrong-PIN twin does not show the store refuses a zero DEK | Implied: a store under a zero DEK no longer logs in (DIV-010, `corpus.rs`), and the twin's reload logs in with the PIN and finds every object |
+| L3 | `check.sh`: a truncated `runs.txt` passed; stdin was `runs.txt` | Every built program must have run or be on the "built only" line; stdin `/dev/null`. No per-test timeout: the lines begin with assignments, which `timeout` cannot run, and the harness has its own. The probes still exit 0 whatever happens; they print, and the harness has no C side for them |
+| L4 | The v3 twin did not show the file became v4 | It asserts the file was rewritten larger (825 to 2261 bytes; the load or login already rewrites it, before the label write) |
+| L5 | `extract_topology.py` named the old header path | Updated (the script fails since 5b for another moved file; see above) |
+| L6 | The GUI makefile does not build `gui/tests` | 5d |
+| L7 | `test_ecdh_peer_point.c` did not check its second dlopen | Checked |
+
+Found by the harness after the review:
+
+| Run | Finding | Resolution |
+|---|---|---|
+| 35 | `tests/abi` did not build: `p11_util.h` includes `fhsm_composite.h`, from `include/` | `-I../../include` in its makefile; `test_kat_results.c` takes its function pointers as the other tests do (`-Wpedantic`) |
+| 36 | The installed module was unsigned. The tree copy (GNU tar keeps whole seconds) left the profile stamp a second newer than the generated headers, so the install regenerated them, recompiled, and the inner `make install` copied the unsigned cargo output over the signed `libfreehsm.so`. `make generate` writes the stamp after the headers, so once one regeneration happens, the next make regenerates again (a legacy-build quirk, gone with 5d). A defect of `install-pqhsm` since 5b's M1 fix, which only this timing showed | The inner make runs with `-o $(LIB)`, so the signed file is never remade. The harness did not reproduce the sequence on demand: aging the generated files (runs 38, 39) makes the outer make regenerate, before signing, and the inner make then has nothing to do. `-o` was shown on a makefile of `install-pqhsm`'s shape instead (a prerequisite made newer after signing: without it the inner make installs the unsigned copy, with it the signed one) |
+| 36 | `probe_ecdh_curves` failed on the all-mechanisms module. With DIV-057 its X25519 secrets stay sensitive, and it compared them by reading `CKA_VALUE`. Before 5c the harness never ran it there (the default profile skips X25519) | It compares them wrapped under one session AES key (AES-KW is deterministic), as `test_ecdh_peer_point.c` exports its secret |
+| 36 | The new tampered-module line pushed the install row out of the summary's `tail -2` | `tail -3`; the FIPS step's `tail -1` takes two |

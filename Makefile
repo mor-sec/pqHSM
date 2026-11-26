@@ -157,7 +157,7 @@ endif
 CFLAGS  = $(WARN_FLAGS) $(HARDEN_FLAGS) $(SAN_FLAGS) $(REPRO_FLAGS) $(DEBUG_FLAGS) \
           $(LOCAL_CFLAGS) \
           -std=c11 -D_GNU_SOURCE \
-          -Iinclude $(OPENSSL_CFLAGS) $(EXTRA_CFLAGS)
+          -Iinclude -Itests/abi $(OPENSSL_CFLAGS) $(EXTRA_CFLAGS)
 
 # Linker reproducibility :
 #   --build-id=none        suppress the random .note.gnu.build-id slot
@@ -321,10 +321,10 @@ tools/freehsm-audit: tools/freehsm_audit.c
 # C_GetSlotList. See docs/ROADMAP.md.
 # The tools' operations as a library (docs/fhsm-gui-plan.md, stage 0). Compiled
 # into each tool that has moved onto it; tools/pkiops.c is the one file that
-# includes tools/p11_util.h, whose function table is static per file.
+# includes p11_util.h (tests/abi/ since pqHSM slice 5c), whose function table is static per file.
 # It signs CRLs and OCSP answers too, so every tool that links it links
 # $(REVOCATION_OBJ) as well.
-PKIOPS_SRC = tools/pkiops.c tools/pkiops.h tools/p11_util.h tools/p11_err.h tools/cms_env.c tools/cms_env.h
+PKIOPS_SRC = tools/pkiops.c tools/pkiops.h tests/abi/p11_util.h tests/abi/p11_err.h tools/cms_env.c tools/cms_env.h
 
 tools/fhsm-csr: tools/fhsm_csr.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ)
 	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
@@ -348,32 +348,32 @@ tools/fhsm-crypt: tools/fhsm_crypt.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.
 
 # tools/pkiops without a window: the slot and key listings and the call log
 # the interface needs, and a check that no PIN reaches the log.
-tests/test_pkiops: tests/test_pkiops.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+tests/test_pkiops: modernized/pqHSM/gui/tests/test_pkiops.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
 
 # Every algorithm through the token, each artefact checked by OpenSSL
 # (docs/classic-algorithms-plan.md, stage 2).
-tests/test_pkiops_algs: tests/test_pkiops_algs.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+tests/test_pkiops_algs: modernized/pqHSM/gui/tests/test_pkiops_algs.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
 
 # Listing and deleting objects, certificates included (docs/fhsm-crypt-plan.md,
 # stage 0), and the CLI that drives them.
-tests/test_pkiops_objects: tests/test_pkiops_objects.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+tests/test_pkiops_objects: modernized/pqHSM/gui/tests/test_pkiops_objects.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
 
 # Secret keys: their attributes, their use, and the name parsers that send
 # each tool's algorithms to the other (docs/fhsm-crypt-plan.md, stage 1).
-tests/test_pkiops_secret: tests/test_pkiops_secret.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+tests/test_pkiops_secret: modernized/pqHSM/gui/tests/test_pkiops_secret.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
 
 # Files encrypted for a token AES key, and OpenSSL reading ours and writing
 # what we read (docs/fhsm-crypt-plan.md, stage 2).
-tests/test_pkiops_envelope: tests/test_pkiops_envelope.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+tests/test_pkiops_envelope: modernized/pqHSM/gui/tests/test_pkiops_envelope.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
 
 # Files encrypted for an RSA key with RSA-OAEP: a pair on the token, a
 # certificate, and OpenSSL both ways (docs/fhsm-crypt-plan.md, stage 3).
-tests/test_pkiops_envelope_rsa: tests/test_pkiops_envelope_rsa.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
+tests/test_pkiops_envelope_rsa: modernized/pqHSM/gui/tests/test_pkiops_envelope_rsa.c $(PKIOPS_SRC) $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $< tools/pkiops.c tools/cms_env.c $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(LDFLAGS) -ldl
 
 # fhsm-gui left this tree in pqHSM Phase 6 slice 5b: modernized/pqHSM/gui (make -C there).
@@ -542,7 +542,7 @@ $(OBJDIR)/%.o: %.c
 # `volatile` on the digest slot), and neither was caught because every other
 # caller sets the bypass. `unset` below is deliberate -- the test refuses to
 # run if the variable leaks in from the environment.
-tests/test_integrity: tests/test_integrity.c $(LIB_OBJ)
+tests/test_integrity: legacy/tests/test_integrity.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 .PHONY: test-integrity
@@ -575,139 +575,139 @@ d[off+18]^=0x01; open(p,'wb').write(d)"
 # Concurrent PKCS#11 use (#111-prep). Links the shared object with -ldl so it
 # exercises the module exactly as a caller would. Meant to be run under
 # `make TSAN=1`; it is written to be able to fail.
-tests/test_concurrency: tests/test_concurrency.c $(LIB)
+tests/test_concurrency: tests/abi/test_concurrency.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl -lpthread
 
 # Its second half: what sessions on one token share -- the object store, the
 # login state, the function tables -- with one thread mutating while the
 # others read. Four passes, each in its own process. Checks results when run
 # plain; under `make TSAN=1` it also fails on every race TSan reports.
-tests/test_concurrency_store: tests/test_concurrency_store.c $(LIB)
+tests/test_concurrency_store: tests/abi/test_concurrency_store.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl -lpthread
 
 # The entry lock's deferred release, with the interleaving fixed by hand
 # rather than left to the scheduler. Linked against the objects: it drives
 # src/fhsm_apilock.c directly.
-tests/test_apilock: tests/test_apilock.c $(LIB_OBJ)
+tests/test_apilock: legacy/tests/test_apilock.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/bench_capacity: tests/bench_capacity.c $(LIB_OBJ)
+tests/bench_capacity: legacy/tests/bench_capacity.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # Loads the module through dlopen rather than linking it, because the thing
 # being measured is what the shipped .so reserves and touches -- linking the
 # objects into the benchmark would measure a different binary's memory.
-tests/bench_session_mem: tests/bench_session_mem.c tools/p11_util.h
+tests/bench_session_mem: tests/abi/bench_session_mem.c tests/abi/p11_util.h
 	$(CC) $(CFLAGS) -Itools -o $@ $< -ldl
 
-tests/test_session_cap: tests/test_session_cap.c tools/p11_util.h
+tests/test_session_cap: tests/abi/test_session_cap.c tests/abi/p11_util.h
 	$(CC) $(CFLAGS) -Itools -o $@ $< -ldl
 
-tests/bench_fork_client: tests/bench_fork_client.c tools/p11_util.h
+tests/bench_fork_client: tests/abi/bench_fork_client.c tests/abi/p11_util.h
 	$(CC) $(CFLAGS) -Itools -o $@ $< -ldl
 
-tests/test_fork_child: tests/test_fork_child.c tools/p11_util.h
+tests/test_fork_child: tests/abi/test_fork_child.c tests/abi/p11_util.h
 	$(CC) $(CFLAGS) -Itools -o $@ $< -ldl
 
 # No module, no libcrypto: the point is to have none of our code in the loop.
-tests/bench_fsync_floor: tests/bench_fsync_floor.c
+tests/bench_fsync_floor: legacy/tests/bench_fsync_floor.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 # Not part of `make tests`: a measurement, not an assertion. See the file.
-tests/bench_audit_rate: tests/bench_audit_rate.c $(LIB_OBJ)
+tests/bench_audit_rate: legacy/tests/bench_audit_rate.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_secure_heap: tests/test_secure_heap.c $(LIB_OBJ)
+tests/test_secure_heap: legacy/tests/test_secure_heap.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_conf: tests/test_conf.c $(LIB_OBJ)
+tests/test_conf: legacy/tests/test_conf.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # CKM_AES_CBC_PAD decrypt behaviour (R2). Links the shared object with -ldl so
 # it drives the module exactly as a caller would, like tests/test_concurrency.
-tests/test_cbc_pad_oracle: tests/test_cbc_pad_oracle.c $(LIB)
+tests/test_cbc_pad_oracle: tests/abi/test_cbc_pad_oracle.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Composite ML-DSA combiner against the draft's Appendix D vectors (#112).
-tests/test_composite_mprime: tests/test_composite_mprime.c $(LIB_OBJ)
+tests/test_composite_mprime: legacy/tests/test_composite_mprime.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_composite_sign: tests/test_composite_sign.c $(LIB_OBJ)
+tests/test_composite_sign: legacy/tests/test_composite_sign.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # Composite ML-DSA through the PKCS#11 surface (#112). Links the shared object
 # with -ldl so it drives the module exactly as a caller would, and so the
 # profile baked into the .so is what the test observes.
-tests/test_composite_p11: tests/test_composite_p11.c $(LIB)
+tests/test_composite_p11: tests/abi/test_composite_p11.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
-tests/test_composite_x509: tests/test_composite_x509.c $(LIB_OBJ)
+tests/test_composite_x509: legacy/tests/test_composite_x509.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_composite_csr: tests/test_composite_csr.c $(LIB_OBJ)
+tests/test_composite_csr: legacy/tests/test_composite_csr.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_composite_issue: tests/test_composite_issue.c $(LIB_OBJ)
+tests/test_composite_issue: legacy/tests/test_composite_issue.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # Requests, roots and issuance for every signer of include/fhsm_pki.h, each
 # artefact checked by OpenSSL (docs/classic-algorithms-plan.md, stage 1a).
-tests/test_pki_classic: tests/test_pki_classic.c $(LIB_OBJ) $(REVOCATION_OBJ)
+tests/test_pki_classic: legacy/tests/test_pki_classic.c $(LIB_OBJ) $(REVOCATION_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(REVOCATION_OBJ) $(LDFLAGS)
 
-tests/test_composite_crl: tests/test_composite_crl.c $(LIB_OBJ)
+tests/test_composite_crl: legacy/tests/test_composite_crl.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_composite_prehash: tests/test_composite_prehash.c $(LIB_OBJ)
+tests/test_composite_prehash: legacy/tests/test_composite_prehash.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_composite_cms: tests/test_composite_cms.c $(LIB_OBJ)
+tests/test_composite_cms: legacy/tests/test_composite_cms.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_composite_ocsp: tests/test_composite_ocsp.c $(LIB_OBJ)
+tests/test_composite_ocsp: legacy/tests/test_composite_ocsp.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_pin_length: tests/test_pin_length.c $(LIB_OBJ)
+tests/test_pin_length: legacy/tests/test_pin_length.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_throttle_reboot: tests/test_throttle_reboot.c $(LIB_OBJ)
+tests/test_throttle_reboot: legacy/tests/test_throttle_reboot.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_wrong_pin_store: tests/test_wrong_pin_store.c $(LIB_OBJ)
+tests/test_wrong_pin_store: legacy/tests/test_wrong_pin_store.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_public_objects: tests/test_public_objects.c $(LIB_OBJ)
+tests/test_public_objects: legacy/tests/test_public_objects.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_audit_fsync: tests/test_audit_fsync.c $(LIB_OBJ)
+tests/test_audit_fsync: legacy/tests/test_audit_fsync.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS) -lpthread
 
-tests/test_audit_concurrent: tests/test_audit_concurrent.c $(LIB_OBJ)
+tests/test_audit_concurrent: legacy/tests/test_audit_concurrent.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS) -lpthread
 
-tests/test_audit_multiproc: tests/test_audit_multiproc.c $(LIB_OBJ)
+tests/test_audit_multiproc: legacy/tests/test_audit_multiproc.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS) -lpthread
 
-tests/test_audit_switch: tests/test_audit_switch.c $(LIB_OBJ)
+tests/test_audit_switch: legacy/tests/test_audit_switch.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS) -lpthread
 
-tests/test_audit_key: tests/test_audit_key.c $(LIB_OBJ)
+tests/test_audit_key: legacy/tests/test_audit_key.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_audit_backpressure: tests/test_audit_backpressure.c $(LIB_OBJ)
+tests/test_audit_backpressure: legacy/tests/test_audit_backpressure.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
-tests/test_audit_verify: tests/test_audit_verify.c $(LIB_OBJ) tools/freehsm-audit
+tests/test_audit_verify: legacy/tests/test_audit_verify.c $(LIB_OBJ) tools/freehsm-audit
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # -Itools: this test exercises the tools' real loader rather than a copy of it.
-tests/test_p11_loader: tests/test_p11_loader.c $(LIB)
+tests/test_p11_loader: tests/abi/test_p11_loader.c $(LIB)
 	$(CC) $(CFLAGS) -Itools -o $@ $< $(LDFLAGS) -ldl
 
 # Single-action driver for the real-TPM validation (#109). NOT part of `make
 # tests`: it needs a TPM, a provisioned parent handle, and a reboot between
 # phases -- see scripts/validate_tpm_sealing.sh.
-tests/tpm_hw_probe: tests/tpm_hw_probe.c $(LIB_OBJ)
+tests/tpm_hw_probe: legacy/tests/tpm_hw_probe.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # TPM 2.0 sealing (#109). fhsm_tpm.c is recompiled here with
@@ -720,11 +720,11 @@ $(OBJDIR)/tests/fhsm_tpm_testhooks.o: src/fhsm_tpm.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -DFHSM_TPM_TEST_HOOKS -c -o $@ $<
 
-tests/test_tpm: tests/test_tpm.c $(OBJDIR)/tests/fhsm_tpm_testhooks.o $(LIB_OBJ)
+tests/test_tpm: legacy/tests/test_tpm.c $(OBJDIR)/tests/fhsm_tpm_testhooks.o $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(OBJDIR)/tests/fhsm_tpm_testhooks.o \
 	    $(filter-out $(OBJDIR)/src/fhsm_tpm.o,$(LIB_OBJ)) $(LDFLAGS) -lpthread
 
-tests/test_smoke: tests/test_smoke.c $(LIB_OBJ)
+tests/test_smoke: legacy/tests/test_smoke.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # Asks positively whether the signed module really loads the FIPS provider,
@@ -733,7 +733,7 @@ tests/test_smoke: tests/test_smoke.c $(LIB_OBJ)
 # which the question has an answer. Deliberately NOT linked against
 # $(LIB_OBJ) -- that would give it the all-zero digest placeholder and make it
 # the very thing it exists to detect.
-tests/probe_fips_loaded: tests/probe_fips_loaded.c $(LIB)
+tests/probe_fips_loaded: tests/abi/probe_fips_loaded.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl
 
 # Same shape, same reason: is the secure heap actually mlock()-ed, or did
@@ -741,12 +741,12 @@ tests/probe_fips_loaded: tests/probe_fips_loaded.c $(LIB)
 # src/fhsm_memory.c promises a re-check in a comment and does not perform one,
 # so nothing in the module can tell the difference. This reads VmLck across
 # C_Initialize, which is the kernel's own answer.
-tests/probe_secure_heap: tests/probe_secure_heap.c $(LIB)
+tests/probe_secure_heap: tests/abi/probe_secure_heap.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl
 
 # Two copies of the module in one process share libcrypto's secure heap; the
 # second must adopt it, not fail. dlopen()s both, so it links nothing of ours.
-tests/test_secure_heap_shared: tests/test_secure_heap_shared.c $(LIB)
+tests/test_secure_heap_shared: tests/abi/test_secure_heap_shared.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl
 
 # The service links the library objects rather than dlopen()ing the module:
@@ -759,7 +759,7 @@ service/fhsm-service: service/fhsm_service.c $(LIB_OBJ) $(REVOCATION_OBJ)
 # variable-record blob (#110) : >11-object and certificate-sized
 # round-trips must survive close + reload. Same INTERNAL linking model
 # as test_smoke.
-tests/test_token_capacity: tests/test_token_capacity.c $(LIB_OBJ)
+tests/test_token_capacity: legacy/tests/test_token_capacity.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # Test binaries are statically linked against the .o files : their
@@ -769,115 +769,115 @@ tests/test_token_capacity: tests/test_token_capacity.c $(LIB_OBJ)
 # NULL-argument robustness regression (#125 pkcs11-check finding) :
 # drives the PUBLIC API via dlopen, so it links against the built .so
 # rather than the .o files. Requires $(LIB) to exist.
-tests/test_decrypt_null_args: tests/test_decrypt_null_args.c $(LIB)
+tests/test_decrypt_null_args: tests/abi/test_decrypt_null_args.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # TSFI robustness guards (#125) : NULL template / data pointers and
 # integer-overflow counts must return CKR_ARGUMENTS_BAD, not SIGSEGV.
-tests/test_robustness_args: tests/test_robustness_args.c $(LIB)
+tests/test_robustness_args: tests/abi/test_robustness_args.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Per-session operation-state hygiene (#125) : session-handle reuse must
 # not bleed CKR_OPERATION_ACTIVE ; C_Sign undersized buffer must return
 # CKR_BUFFER_TOO_SMALL and preserve the operation.
-tests/test_op_state: tests/test_op_state.c $(LIB)
+tests/test_op_state: tests/abi/test_op_state.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # C_UnwrapKey must bound the wrapped blob before decrypting into its
 # 256-byte stack buffer, and must validate the unwrapping-key size the way
 # C_WrapKey already did. Found 2026-09-07 by pkcs11-check against the
 # Wycheproof AES-KW vectors, as an abort from _FORTIFY_SOURCE.
-tests/test_unwrap_len: tests/test_unwrap_len.c $(LIB)
+tests/test_unwrap_len: tests/abi/test_unwrap_len.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Multipart verify accepted only CKM_SHA256_HMAC, while multipart sign had
 # been generalised by #125 -- so the module refused to verify a MAC it had
 # just produced. pkcs11-check exercises multipart with SHA-256, the one value
 # the gate let through, so the harness could not see it.
-tests/test_hmac_multipart: tests/test_hmac_multipart.c $(LIB)
+tests/test_hmac_multipart: tests/abi/test_hmac_multipart.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Init then Final with no Update answered CKR_OPERATION_NOT_INITIALIZED: the
 # cipher context was only ever built by the first Update. pkcs11-check 0.2.3,
 # TestZeroDataFinal::test_encrypt_final_no_update.
-tests/test_cipher_final_no_update: tests/test_cipher_final_no_update.c $(LIB)
+tests/test_cipher_final_no_update: tests/abi/test_cipher_final_no_update.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # An empty CK_EDDSA_PARAMS on an Ed25519 key asks for Ed25519ctx, and was
 # answered with pure Ed25519. pkcs11-check 0.2.3,
 # TestEdDSAParametrizedModes::test_edwards25519_ctx_*_roundtrip.
-tests/test_eddsa_params: tests/test_eddsa_params.c $(LIB)
+tests/test_eddsa_params: tests/abi/test_eddsa_params.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Multipart digest knew three of the eleven digests C_DigestInit accepts,
 # and an Update error left the operation active. pkcs11-check 0.2.3,
 # TestMultipartDigest.
-tests/test_digest_multipart: tests/test_digest_multipart.c $(LIB)
+tests/test_digest_multipart: tests/abi/test_digest_multipart.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # A private or secret key's value is withheld when it is sensitive or not
 # extractable, and the call says CKR_ATTRIBUTE_SENSITIVE (PKCS#11 v3.2
 # attribute tables, footnote 7).
-tests/test_sensitive_value: tests/test_sensitive_value.c $(LIB)
+tests/test_sensitive_value: tests/abi/test_sensitive_value.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # HashML-DSA signs an M' the module builds itself; NIST's deterministic
 # signatures compared byte for byte (docs/hash-ml-dsa-plan.md).
-tests/test_hash_ml_dsa: tests/test_hash_ml_dsa.c $(LIB)
+tests/test_hash_ml_dsa: tests/abi/test_hash_ml_dsa.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Every SLH-DSA parameter set through C_GenerateKeyPair, C_Sign, C_Verify:
 # eight of the twelve sign larger than the pair-wise check's old buffer.
-tests/test_slh_dsa_sets: tests/test_slh_dsa_sets.c $(LIB)
+tests/test_slh_dsa_sets: tests/abi/test_slh_dsa_sets.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # SLH-DSA against NIST's ACVP vectors: deterministic signatures compared
 # byte for byte, NIST's verdicts on modified and resized signatures.
-tests/test_slh_dsa_kat: tests/test_slh_dsa_kat.c $(LIB)
+tests/test_slh_dsa_kat: tests/abi/test_slh_dsa_kat.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # A curve the module does not take is CKR_CURVE_NOT_SUPPORTED, an EC_PARAMS
 # that names no curve CKR_ATTRIBUTE_VALUE_INVALID, at import and keygen.
-tests/test_ec_curve_refusal: tests/test_ec_curve_refusal.c $(LIB)
+tests/test_ec_curve_refusal: tests/abi/test_ec_curve_refusal.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # ECDSA verification reaching the point at infinity is CKR_SIGNATURE_INVALID
 # (Wycheproof P-256 tc392, tc431), one-shot and multipart.
-tests/test_ecdsa_verify_edge: tests/test_ecdsa_verify_edge.c $(LIB)
+tests/test_ecdsa_verify_edge: tests/abi/test_ecdsa_verify_edge.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # CKA_COPYABLE TRUE -> FALSE through C_SetAttributeValue, and not back.
-tests/test_copyable_oneway: tests/test_copyable_oneway.c $(LIB)
+tests/test_copyable_oneway: tests/abi/test_copyable_oneway.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # CKM_GENERIC_SECRET_KEY_GEN makes every length C_GetMechanismInfo advertises.
-tests/test_generic_secret_len: tests/test_generic_secret_len.c $(LIB)
+tests/test_generic_secret_len: tests/abi/test_generic_secret_len.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # AES-CMAC one-shot and multipart against SP 800-38B's examples.
-tests/test_aes_cmac_multipart: tests/test_aes_cmac_multipart.c $(LIB)
+tests/test_aes_cmac_multipart: tests/abi/test_aes_cmac_multipart.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # HashSLH-DSA signs an M' the module builds itself; NIST's deterministic
 # signatures compared byte for byte, as for HashML-DSA.
-tests/test_hash_slh_dsa: tests/test_hash_slh_dsa.c $(LIB)
+tests/test_hash_slh_dsa: tests/abi/test_hash_slh_dsa.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # AES-GMAC one-shot and multipart, against OpenSSL's GMAC and GCM Test Case 1.
-tests/test_aes_gmac_multipart: tests/test_aes_gmac_multipart.c $(LIB)
+tests/test_aes_gmac_multipart: tests/abi/test_aes_gmac_multipart.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
 
 # CKA_PARAMETER_SET read back on PQC keys, and a decapsulation ciphertext of
 # the wrong size refused as such. Both found with OpenSC pkcs11-tool.
-tests/test_pqc_params: tests/test_pqc_params.c $(LIB)
+tests/test_pqc_params: tests/abi/test_pqc_params.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Every AES mechanism at 128, 192 and 256 bits, and RSA-OAEP across hashes,
 # MGFs and labels, each against OpenSSL computing the same thing.
-tests/test_aes_sizes: tests/test_aes_sizes.c $(LIB)
+tests/test_aes_sizes: tests/abi/test_aes_sizes.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
 
-tests/test_rsa_oaep: tests/test_rsa_oaep.c $(LIB)
+tests/test_rsa_oaep: tests/abi/test_rsa_oaep.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
 
 # The advertised set and the implemented set are two structures with nothing
@@ -885,26 +885,26 @@ tests/test_rsa_oaep: tests/test_rsa_oaep.c $(LIB)
 # code dereferences, and the PKCS#11 entry points switch on mechanisms by hand.
 # Every defect of the week of 2026-09-07 is a symptom. This asks the module
 # which operation each advertised mechanism claims, then calls it.
-tests/test_advertised_operational: tests/test_advertised_operational.c $(LIB)
+tests/test_advertised_operational: tests/abi/test_advertised_operational.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # The four PKCS#11 v3.2 6.20 combiners, checked byte for byte. Their handlers
 # existed in src/dispatch/fhsm_dispatch_concat.c and C_DeriveKey never called
 # them. test_advertised_operational goes green on anything but
 # CKR_MECHANISM_INVALID, so it cannot tell an implementation from a stub.
-tests/test_derive_concat: tests/test_derive_concat.c $(LIB)
+tests/test_derive_concat: tests/abi/test_derive_concat.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # A bare ECDH peer point whose second byte reads as a DER length: one P-256
 # key in 256, met by chance by pkcs11-check, made on purpose here.
-tests/test_ecdh_peer_point: tests/test_ecdh_peer_point.c $(LIB)
+tests/test_ecdh_peer_point: tests/abi/test_ecdh_peer_point.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl
 
 # HKDF through C_DeriveKey. Links libcrypto because each case computes its own
 # reference with EVP_KDF rather than carrying expected values written from
 # memory; the RFC 5869 A.1 vector is checked alongside so that a shared
 # mistake in module and reference would still show.
-tests/test_derive_hkdf: tests/test_derive_hkdf.c $(LIB)
+tests/test_derive_hkdf: tests/abi/test_derive_hkdf.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
 
 # ECDH end to end on each supported curve: generate, read the public point,
@@ -912,7 +912,7 @@ tests/test_derive_hkdf: tests/test_derive_hkdf.c $(LIB)
 # CKA_EC_PARAMS) and derive with that. The import half is what 7,185
 # Wycheproof vectors were failing on, invisibly, because C_CreateObject
 # accepted the key and only its use failed.
-tests/probe_ecdh_curves: tests/probe_ecdh_curves.c $(LIB)
+tests/probe_ecdh_curves: tests/abi/probe_ecdh_curves.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Which signature algorithms accept EVP_DigestSignUpdate on this OpenSSL.
@@ -920,144 +920,144 @@ tests/probe_ecdh_curves: tests/probe_ecdh_curves.c $(LIB)
 # to buffer the message. Links against OpenSSL directly, not the module: the
 # question is about the provider's capability. Not in `make tests` -- it
 # measures the environment rather than asserting anything about us.
-tests/probe_digestsign_stream: tests/probe_digestsign_stream.c
+tests/probe_digestsign_stream: legacy/tests/probe_digestsign_stream.c
 	$(CC) $(CFLAGS) -o $@ $< $(OPENSSL_LDFLAGS) -lcrypto
 
 # Whether OpenSSL 3.5 can make HashML-DSA, natively or as Sign_internal over
 # an M' built here, under the default and the FIPS provider. Not in `make
 # tests`: it measures the environment (docs/hash-ml-dsa-plan.md).
-tests/probe_hash_ml_dsa: tests/probe_hash_ml_dsa.c
+tests/probe_hash_ml_dsa: legacy/tests/probe_hash_ml_dsa.c
 	$(CC) $(CFLAGS) -o $@ $< $(OPENSSL_LDFLAGS) -lcrypto
 
 # What the module answers to the harness's HKDF call shapes. Reports return
 # codes rather than asserting: written to find out which of two candidate rules
 # was refusing CKM_HKDF_DATA, and kept because the next HKDF discrepancy will
 # ask the same question.
-tests/probe_hkdf_data: tests/probe_hkdf_data.c $(LIB)
+tests/probe_hkdf_data: tests/abi/probe_hkdf_data.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # CKM_PKCS5_PBKD2 through C_GenerateKey, where PKCS#11 6.28 puts it. Links
 # libcrypto: each case computes its own reference rather than carrying values
 # written from memory, with RFC 6070 checked alongside.
-tests/test_pbkd2: tests/test_pbkd2.c $(LIB)
+tests/test_pbkd2: tests/abi/test_pbkd2.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
 
 # The published interfaces, entered through C_GetInterface rather than dlsym.
 # Every other test reaches the module by symbol, which checks arithmetic and
 # not reachability -- the difference is what hid CKM_ML_KEM behind an interface
 # the module never published.
-tests/test_interface_v32: tests/test_interface_v32.c $(LIB)
+tests/test_interface_v32: tests/abi/test_interface_v32.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # PQC public-key import : raw in (PKCS#11 v3.2), raw out, and the imported key
 # still encapsulates / verifies. ML-DSA public used to be accepted and stored
 # unusable; ML-KEM public was refused outright.
-tests/test_pqc_pub_import: tests/test_pqc_pub_import.c $(LIB)
+tests/test_pqc_pub_import: tests/abi/test_pqc_pub_import.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # CKM_AES_GMAC takes CK_GCM_PARAMS (v3.2 6.13.6), and ulTagBits decides the
 # tag length. Links libcrypto: the expected tags are computed here rather than
 # written out.
-tests/test_gmac_params: tests/test_gmac_params.c $(LIB)
+tests/test_gmac_params: tests/abi/test_gmac_params.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl $(LDFLAGS)
 
 # CKA_ENCAPSULATE / CKA_DECAPSULATE enforced (v3.2 5.14.7, 5.14.8). The bits
 # live in the v3 record's former pad byte, so the store round trip is part of
 # the test rather than an assumption.
-tests/test_encap_flags: tests/test_encap_flags.c $(LIB)
+tests/test_encap_flags: tests/abi/test_encap_flags.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # The same bits across a reload, at the token layer -- the only layer where a
 # reload can be staged. See the header of the file for why the PKCS#11 test
 # cannot do it.
-tests/test_encap_flags_store: tests/test_encap_flags_store.c $(LIB_OBJ)
+tests/test_encap_flags_store: legacy/tests/test_encap_flags_store.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # A token written before the v4 record still opens. The fixture it reads is
-# committed, not generated here, and tests/make_v3_fixture.c -- which is NOT
+# committed, not generated here, and legacy/tests/make_v3_fixture.c -- which is NOT
 # built by this target -- says why and how it was produced.
-tests/test_v3_fixture: tests/test_v3_fixture.c $(LIB_OBJ)
+tests/test_v3_fixture: legacy/tests/test_v3_fixture.c $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)
 
 # CKA_ALLOWED_MECHANISMS: absent, listed and empty are three different answers,
 # and the module has to tell them apart. Driven through PKCS#11 because that is
 # where the enforcement lives.
-tests/test_allowed_mechanisms: tests/test_allowed_mechanisms.c libfreehsm.so
+tests/test_allowed_mechanisms: tests/abi/test_allowed_mechanisms.c libfreehsm.so
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # The three nested policy templates. Two compare against a creation template,
 # the third against an existing object's attributes.
-tests/test_nested_templates: tests/test_nested_templates.c libfreehsm.so
+tests/test_nested_templates: tests/abi/test_nested_templates.c libfreehsm.so
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # CKA_WRAP_WITH_TRUSTED: the refusal half. The positive half needs an SO
 # session to mint a CKA_TRUSTED wrapper and is left to pkcs11-check.
-tests/test_wrap_with_trusted: tests/test_wrap_with_trusted.c libfreehsm.so
+tests/test_wrap_with_trusted: tests/abi/test_wrap_with_trusted.c libfreehsm.so
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # C_Finalize releases the state it built, authentication included. #125 fixed
 # the fork half of this; the same-process half stayed until 2026-09-19.
-tests/test_finalize_release: tests/test_finalize_release.c $(LIB)
+tests/test_finalize_release: tests/abi/test_finalize_release.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # CKA_ALWAYS_AUTHENTICATE (PKCS#11 v3.2 5.6) : the attribute was stored and
 # reported and gated nothing, so a key marked TRUE signed without
 # C_Login(CKU_CONTEXT_SPECIFIC). Both directions of the loop are checked.
-tests/test_always_authenticate: tests/test_always_authenticate.c $(LIB)
+tests/test_always_authenticate: tests/abi/test_always_authenticate.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # FIPS-approved digest/HMAC mechanisms advertised but previously not
 # callable (#125) : SHA-224, SHA-512/t, SHA-3, and their HMACs.
-tests/test_fips_digests: tests/test_fips_digests.c $(LIB)
+tests/test_fips_digests: tests/abi/test_fips_digests.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # C_GetAttributeValue boolean/date attribute coverage (#125).
-tests/test_attributes: tests/test_attributes.c $(LIB)
+tests/test_attributes: tests/abi/test_attributes.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
-tests/test_set_dates: tests/test_set_dates.c $(LIB)
+tests/test_set_dates: tests/abi/test_set_dates.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
-tests/test_init_token_session: tests/test_init_token_session.c $(LIB)
+tests/test_init_token_session: tests/abi/test_init_token_session.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Parameter / attribute validation hardening (#125).
-tests/test_input_validation: tests/test_input_validation.c $(LIB)
+tests/test_input_validation: tests/abi/test_input_validation.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # PKCS#11 CKA_TOKEN semantics : session objects destroyed on close (#125).
-tests/test_session_objects: tests/test_session_objects.c $(LIB)
+tests/test_session_objects: tests/abi/test_session_objects.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Mechanism advertisement coherence guard (#125) : C_GetMechanismList /
 # C_GetMechanismInfo derived from the generated dispatch table must stay
 # consistent (correct PQ values, EdDSA/HKDF present, no phantoms).
-tests/test_mech_advertise: tests/test_mech_advertise.c $(LIB)
+tests/test_mech_advertise: tests/abi/test_mech_advertise.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Non-approved digest gating (#125 general-purpose) : SHA-1/MD5 executable
 # in all-mechanisms, rejected in nist-approved-only. Profile-adaptive.
-tests/test_legacy_digest: tests/test_legacy_digest.c $(LIB)
+tests/test_legacy_digest: tests/abi/test_legacy_digest.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Non-approved cipher gating (#125) : AES-ECB (+3DES) executable in
 # all-mechanisms, rejected in nist-approved-only. Profile-adaptive round-trip.
-tests/test_legacy_cipher: tests/test_legacy_cipher.c $(LIB)
+tests/test_legacy_cipher: tests/abi/test_legacy_cipher.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # Non-FIPS RSA legacy padding gating (#125) : RSA-PKCS v1.5 / X.509 raw.
-tests/test_legacy_rsa: tests/test_legacy_rsa.c $(LIB)
+tests/test_legacy_rsa: tests/abi/test_legacy_rsa.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # The EC curves accepted are the ones advertised (2026-09-28). Profile-adaptive:
 # a curve outside 256..521 bits or on a binary field is refused in both, and
 # brainpool exists only in all-mechanisms.
-tests/test_ec_curve_bounds: tests/test_ec_curve_bounds.c $(LIB)
+tests/test_ec_curve_bounds: tests/abi/test_ec_curve_bounds.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # C_Decrypt sizes the caller's buffer against the recovered plaintext, not
 # against RSA_size(key). pkcs11-check test_oaep_decrypt_correctness.
-tests/test_oaep_decrypt_size: tests/test_oaep_decrypt_size.c $(LIB)
+tests/test_oaep_decrypt_size: tests/abi/test_oaep_decrypt_size.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # C_SignUpdate / C_SignFinal for the asymmetric mechanisms, which used to be
@@ -1065,29 +1065,29 @@ tests/test_oaep_decrypt_size: tests/test_oaep_decrypt_size.c $(LIB)
 # case for ECDSA, where DER is converted to raw r||s in place, and the
 # buffered-multipart ceiling. pkcs11-check
 # test_sign_final_buffer_too_small_then_correct.
-tests/test_sign_multipart: tests/test_sign_multipart.c $(LIB)
+tests/test_sign_multipart: tests/abi/test_sign_multipart.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # C_DecryptUpdate reports a length the caller can retry with, and does not
 # consume the ciphertext when it refuses. The decrypt side had inherited
 # C_EncryptUpdate's ulLen + one block bound, which decryption cannot reach.
 # pkcs11-check test_aes_cbc_pad_decrypt_update_buffer_too_small_*.
-tests/test_cbc_pad_update_size: tests/test_cbc_pad_update_size.c $(LIB)
+tests/test_cbc_pad_update_size: tests/abi/test_cbc_pad_update_size.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # A refused audit key says which refusal it was, and a fresh store says
 # nothing. @petrn's bare rv=0x6 on a foreign-owned directory (#11).
-tests/test_audit_key_diag: tests/test_audit_key_diag.c $(LIB)
+tests/test_audit_key_diag: tests/abi/test_audit_key_diag.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # The optional key-wrap IV of PKCS#11 v3.2 §6.16.2, on all four entry points.
 # It was accepted and dropped; a caller supplying one got the default (#14).
-tests/test_kw_iv: tests/test_kw_iv.c $(LIB)
+tests/test_kw_iv: tests/abi/test_kw_iv.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # SO and USER kept apart, and the SO out of read-only sessions (§5.6).
 # None of the three refusals existed; an SO login took over a USER's token.
-tests/test_login_conflicts: tests/test_login_conflicts.c $(LIB)
+tests/test_login_conflicts: tests/abi/test_login_conflicts.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -ldl
 
 # ---------------------------------------------------------------------------
@@ -1681,7 +1681,9 @@ clean:
 	# nothing compares the two. Found on 2026-09-08: test_unwrap_len kept
 	# asserting the previous buffer size and failed two cases that had just
 	# been fixed, which for a minute looked like the fix was wrong.
-	rm -f $(basename $(wildcard tests/*.c))
+	# pqHSM slice 5c: the sources are in tests/abi, legacy/tests and the GUI's tests; the binaries
+	# are still tests/<name>.
+	rm -f $(addprefix tests/,$(notdir $(basename $(wildcard tests/abi/*.c legacy/tests/*.c modernized/pqHSM/gui/tests/*.c))))
 	rm -f tools/freehsm-audit $(TOOLS)
 	# The service too. Leaving it behind meant a `make clean && make` handed
 	# back a binary from the previous build's flags -- a TSAN one, in the run
@@ -1718,7 +1720,7 @@ dist: clean
 	    --transform 's,^,freehsm-c-$(FHSM_VERSION_STRING)/,' \
 	    -cJf freehsm-c-src.tar.xz \
 	    Makefile Dockerfile.build \
-	    include/ src/ kat/ tests/ docs/ scripts/
+	    include/ src/ kat/ tests/ legacy/tests/ modernized/pqHSM/gui/tests/ docs/ scripts/
 	@sha256sum freehsm-c-src.tar.xz | tee freehsm-c-src.tar.xz.sha256
 	@echo "[dist] freehsm-c-src.tar.xz ready --- distribute to the evaluation lab."
 

@@ -72,6 +72,8 @@ static const struct { const char *name; const CK_BYTE *oid; CK_ULONG oid_len;
 
 static CK_RV (*C_CreateObject)(CK_SESSION_HANDLE,CK_ATTRIBUTE*,CK_ULONG,CK_OBJECT_HANDLE*);
 static CK_RV (*C_GetMechanismInfo)(CK_SLOT_ID,CK_ULONG,CK_MECHANISM_INFO*);
+static CK_RV (*C_GenerateKey)(CK_SESSION_HANDLE,CK_MECHANISM*,CK_ATTRIBUTE*,CK_ULONG,CK_OBJECT_HANDLE*);
+static CK_RV (*C_WrapKey)(CK_SESSION_HANDLE,CK_MECHANISM*,CK_OBJECT_HANDLE,CK_OBJECT_HANDLE,CK_BYTE*,CK_ULONG*);
 
 int main(void)
 {
@@ -81,7 +83,7 @@ int main(void)
     SYM(C_Initialize); SYM(C_Finalize); SYM(C_InitToken); SYM(C_OpenSession);
     SYM(C_Login); SYM(C_InitPIN); SYM(C_GenerateKeyPair);
     SYM(C_GetAttributeValue); SYM(C_DeriveKey); SYM(C_CreateObject);
-    SYM(C_GetMechanismInfo);
+    SYM(C_GetMechanismInfo); SYM(C_GenerateKey); SYM(C_WrapKey);
     if (!C_GenerateKeyPair || !C_DeriveKey) { fprintf(stderr,"missing symbols\n"); return 2; }
 
     CK_BYTE label[32]; memset(label,' ',32); memcpy(label,"ecdhprobe",9);
@@ -101,7 +103,7 @@ int main(void)
            "-----", "------", "------------", "------", "--------", "-----------");
 
     for (size_t c = 0; c < sizeof CURVES / sizeof CURVES[0]; ++c) {
-        CK_BYTE t_true = 1, t_false = 0;
+        CK_BYTE t_true = 1;
         CK_ATTRIBUTE pub_t[] = {
             { CKA_EC_PARAMS, (void*)CURVES[c].oid, CURVES[c].oid_len },
             { CKA_DERIVE,    &t_true, 1 },
@@ -140,10 +142,9 @@ int main(void)
                     { CKA_KEY_TYPE,    &(CK_ULONG){CKK_GENERIC_SECRET}, sizeof(CK_ULONG) },
                     { CKA_VALUE_LEN,   &vl, sizeof(CK_ULONG) },
                     { CKA_EXTRACTABLE, &t_true,  1 },
-                    { CKA_SENSITIVE,   &t_false, 1 },
                 };
                 CK_OBJECT_HANDLE out = 0;
-                rv_drv = C_DeriveKey(s, &m, prv, out_t, 5, &out);
+                rv_drv = C_DeriveKey(s, &m, prv, out_t, 4, &out);
                 snprintf(drv_s, sizeof drv_s,
                          rv_drv == CKR_OK ? "OK" : "0x%lx", (unsigned long)rv_drv);
             }
@@ -177,10 +178,9 @@ int main(void)
                     { CKA_KEY_TYPE,    &(CK_ULONG){CKK_GENERIC_SECRET}, sizeof(CK_ULONG) },
                     { CKA_VALUE_LEN,   &vl, sizeof(CK_ULONG) },
                     { CKA_EXTRACTABLE, &t_true,  1 },
-                    { CKA_SENSITIVE,   &t_false, 1 },
                 };
                 CK_OBJECT_HANDLE out2 = 0;
-                CK_RV r2 = C_DeriveKey(s, &m, imported, out_t, 5, &out2);
+                CK_RV r2 = C_DeriveKey(s, &m, imported, out_t, 4, &out2);
                 snprintf(drv2_s, sizeof drv2_s,
                          r2 == CKR_OK ? "OK" : "0x%lx", (unsigned long)r2);
             }
@@ -202,7 +202,7 @@ int main(void)
      * must be equal, which is the property the mechanism exists for and the
      * only one worth asserting here. */
     {
-        CK_BYTE t_true = 1, t_false = 0;
+        CK_BYTE t_true = 1;
         CK_BYTE x_oid[] = { 0x06,0x03,0x2B,0x65,0x6E };   /* id-X25519 */
         CK_ATTRIBUTE pub_t[] = {
             { CKA_EC_PARAMS, x_oid, sizeof x_oid },
@@ -253,7 +253,6 @@ int main(void)
                 { CKA_KEY_TYPE,    &(CK_ULONG){CKK_GENERIC_SECRET}, sizeof(CK_ULONG) },
                 { CKA_VALUE_LEN,   &vl, sizeof(CK_ULONG) },
                 { CKA_EXTRACTABLE, &t_true,  1 },
-                { CKA_SENSITIVE,   &t_false, 1 },
             };
             CK_ECDH1_DERIVE_PARAMS pa = { CKD_NULL, 0, NULL, rawBl, rawB };
             CK_ECDH1_DERIVE_PARAMS pb = { CKD_NULL, 0, NULL, rawAl, rawA };
@@ -263,18 +262,23 @@ int main(void)
             CK_MECHANISM ma = { CKM_ECDH1_DERIVE, &pa, sizeof pa };
             CK_MECHANISM mb = { CKM_ECDH1_DERIVE, &pb, sizeof pb };
             CK_OBJECT_HANDLE kA = 0, kB = 0;
-            CK_RV da = C_DeriveKey(s, &ma, prvA, out_t, 5, &kA);
-            CK_RV db = C_DeriveKey(s, &mb, prvB, out_t, 5, &kB);
+            CK_RV da = C_DeriveKey(s, &ma, prvA, out_t, 4, &kA);
+            CK_RV db = C_DeriveKey(s, &mb, prvB, out_t, 4, &kB);
             printf("%-20s  derive A=0x%lx B=0x%lx\n", "",
                    (unsigned long)da, (unsigned long)db);
             int agree = 0;
-            if (da == CKR_OK && db == CKR_OK) {
-                CK_ATTRIBUTE va[] = { { 0x11UL /* CKA_VALUE */, zA, zAl } };
-                CK_ATTRIBUTE vb[] = { { 0x11UL, zB, zBl } };
-                if (C_GetAttributeValue(s, kA, va, 1) == CKR_OK
-                    && C_GetAttributeValue(s, kB, vb, 1) == CKR_OK
-                    && va[0].ulValueLen == vb[0].ulValueLen
-                    && memcmp(zA, zB, va[0].ulValueLen) == 0)
+            /* DIV-057 (in this source since Phase 6 slice 5c): the secrets stay sensitive, so they
+             * are compared wrapped under one session AES key; AES-KW is deterministic. */
+            if (da == CKR_OK && db == CKR_OK && C_GenerateKey && C_WrapKey) {
+                CK_ULONG kl = 32;
+                CK_ATTRIBUTE kt_[] = { { CKA_VALUE_LEN, &kl, sizeof kl } };
+                CK_MECHANISM gm = { 0x1080UL /* CKM_AES_KEY_GEN */, NULL, 0 };
+                CK_MECHANISM km = { 0x2109UL /* CKM_AES_KEY_WRAP */, NULL, 0 };
+                CK_OBJECT_HANDLE kek = 0;
+                if (C_GenerateKey(s, &gm, kt_, 1, &kek) == CKR_OK
+                    && C_WrapKey(s, &km, kek, kA, zA, &zAl) == CKR_OK
+                    && C_WrapKey(s, &km, kek, kB, zB, &zBl) == CKR_OK
+                    && zAl == 40 && zAl == zBl && memcmp(zA, zB, zAl) == 0)
                     agree = 1;
             }
             printf("%-20s  both parties agree on Z: %s\n", "", agree ? "OK" : "FAIL");

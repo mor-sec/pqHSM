@@ -61,3 +61,15 @@ if grep -q 'listening on' $D/svc.err; then
 else
   echo "installed, run with no bypass, no FIPS provider here: tool and service integrity passed, each stopped at the provider: tool $(fips $D/k.log), service $(fips $D/svc.err)$([ "$(fips $D/k.log)$(fips $D/svc.err)" = 11 ] || echo "; UNEXPECTED: $(tail -2 $D/k.log | tr '\n' ' ') $(tail -3 $D/svc.err | tr '\n' ' ')")"
 fi
+# Slice 5c (legacy/tests/test_integrity.c's tampered case): a copy of the installed module with
+# one .text byte flipped is refused by the integrity check, with its message; an untouched copy run
+# the same way, the control, gets as far as the provider (review M3: any failure passed before).
+X=$(mktemp -d); Y=$(mktemp -d); cp $I/lib/libpqhsm.so $X/libfreehsm.so; cp $I/lib/libpqhsm.so $Y/libfreehsm.so
+off=$(readelf -SW $X/libfreehsm.so | sed -n 's/.* \.text *PROGBITS *[0-9a-f]* \([0-9a-f]*\) .*/\1/p')
+python3 -I -c 'import sys; f = open(sys.argv[1], "r+b"); o = int(sys.argv[2], 16) + 64; f.seek(o); b = f.read(1); f.seek(o); f.write(bytes([b[0] ^ 1]))' $X/libfreehsm.so "$off"
+for d in $X $Y; do
+  $E FHSM_TOKENS_DIR=$d FHSM_SO_PIN=sopin1234 $I/bin/pqhsm-token init --label x --module $d/libfreehsm.so > $d/t.log 2>&1; echo $? > $d/rc
+done
+refused=$(grep -c 'does not match its signature' $X/t.log)
+if grep -q "listening on" $D/svc.err; then ctl=$(cat $Y/rc); else ctl="provider $(fips $Y/t.log)"; fi
+echo "tampered copy (.text at 0x$off): rc=$(cat $X/rc), refused by the signature check $refused; untouched copy: ${ctl}$([ "$(cat $X/rc)" != 0 ] && [ "$refused" = 1 ] && { [ "$ctl" = 0 ] || [ "$ctl" = 'provider 1' ]; } || echo "; FAIL: $(tail -2 $X/t.log | tr '\n' ' ')")"

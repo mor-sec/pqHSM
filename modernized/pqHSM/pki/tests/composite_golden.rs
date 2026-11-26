@@ -723,3 +723,43 @@ fn every_call_returns_and_writes_what_the_c_did() {
         assert_eq!(got, want);
     }
 }
+
+/// legacy/tests/test_composite_sign.c (Phase 6 slice 5c), what the goldens cannot show: two key
+/// pairs differ, each signature verifies under its own public key, and not under the other's
+/// (CKR_SIGNATURE_INVALID, 0xC0).
+#[test]
+fn fresh_key_pairs_differ_and_a_signature_fails_under_the_other_key() {
+    let pair = || {
+        let (mut a, mut b) = (vec![0u8; 8192], vec![0u8; 4096]);
+        let (mut na, mut nb) = (a.len(), b.len());
+        // SAFETY: buffers of the lengths given
+        let r = unsafe { fhsm_composite_keygen(ALG, a.as_mut_ptr(), &mut na, b.as_mut_ptr(), &mut nb) };
+        assert_eq!(r, 0);
+        a.truncate(na);
+        b.truncate(nb);
+        (a, b)
+    };
+    let sign = |private: &[u8]| {
+        let mut sig = vec![0u8; SIG_LEN];
+        let mut n = sig.len();
+        // SAFETY: the key, message and signature buffers of the lengths given
+        let r = unsafe {
+            fhsm_composite_sign(ALG, private.as_ptr(), private.len(), MSG.as_ptr(), MSG.len(), null(), 0,
+                sig.as_mut_ptr(), &mut n)
+        };
+        assert_eq!(r, 0);
+        sig.truncate(n);
+        sig
+    };
+    let verify = |public: &[u8], sig: &[u8]| {
+        // SAFETY: as above
+        unsafe { fhsm_composite_verify(ALG, public.as_ptr(), public.len(), MSG.as_ptr(), MSG.len(), null(), 0,
+            sig.as_ptr(), sig.len()) }
+    };
+    let ((priv1, pub1), (priv2, pub2)) = (pair(), pair());
+    assert_ne!(priv1, priv2);
+    assert_ne!(pub1, pub2);
+    let (s1, s2) = (sign(&priv1), sign(&priv2));
+    assert_eq!((verify(&pub1, &s1), verify(&pub2, &s2)), (0, 0));
+    assert_eq!((verify(&pub2, &s1), verify(&pub1, &s2)), (0xC0, 0xC0));
+}

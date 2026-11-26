@@ -194,7 +194,7 @@ int main(void) {
         CK_TOKEN_INFO ti;
         memset(&ti, 0, sizeof ti);
         if (GTI && GTI(0, &ti) == CKR_OK) {
-            if (ti.ulMinPinLen != 4 || ti.ulMaxPinLen != 64) {
+            if (ti.ulMinPinLen != 8 || ti.ulMaxPinLen != 64) {
                 fprintf(stderr, "FAIL: advertised PIN bounds %lu..%lu, enforced 4..64\n",
                         (unsigned long)ti.ulMinPinLen, (unsigned long)ti.ulMaxPinLen);
                 fails++;

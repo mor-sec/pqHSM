@@ -509,3 +509,63 @@ fn a_failed_publish_drops_and_records_destroy_div071() {
     assert_eq!(t.object_get_flags3(a), Err(Rv::KEY_HANDLE_INVALID));
     assert_eq!(t.object_get_flags3(b), Err(Rv::KEY_HANDLE_INVALID));
 }
+
+/// legacy/tests/test_wrong_pin_store.c case 1 (Phase 6 slice 5c): a wrong PIN after a logout, on
+/// the same handle, never rewrites the objects (RULE-088): a fresh load and the right PIN find
+/// every one with its value. The scenarios cover the fresh-process case only.
+#[test]
+fn a_wrong_pin_after_a_logout_keeps_every_object_rule088() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = start(dir.path(), "multi_base");
+    let values = |t: &Token| {
+        let (hs, _) = t.object_find(None, None, 64).unwrap();
+        let mut v: Vec<_> = hs.iter().map(|&h| t.object_get(h).unwrap()).collect();
+        v.sort();
+        v
+    };
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    let before = values(&t);
+    assert!(before.len() >= 5, "{}", before.len());
+    t.logout();
+    assert_eq!(t.login(Role::User, WRONG_PIN), Err(Rv::PIN_INCORRECT));
+    t.close();
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    assert_eq!(values(&t), before);
+}
+
+/// legacy/tests/test_token_capacity.c (Phase 6 slice 5c): the Rust writer at scale. The token
+/// filled to MAX_OBJECTS, eight of them 12000-byte certificates, then reloaded: every object
+/// back, with its value; one more is refused.
+#[test]
+fn a_full_token_is_written_and_read_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = start(dir.path(), "user_base");
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    let have = t.object_find(None, None, 2048).unwrap().0.len();
+    let mut added = Vec::new();
+    for i in 0..(pqhsm_token::store::MAX_OBJECTS - have) {
+        let (class, key_type, value) = if i % 128 == 0 {
+            (1, 0, vec![(i % 251) as u8; 12000]) // CKO_CERTIFICATE, CKC_X_509
+        } else {
+            (4, 31, (i as u32).to_le_bytes().repeat(4)) // CKO_SECRET_KEY, CKK_AES
+        };
+        let label = format!("cap-{i}");
+        t.object_add(class, key_type, Some(label.as_bytes()), &value, b"", 0).unwrap();
+        added.push((label, value));
+    }
+    assert_eq!(added.iter().filter(|(_, v)| v.len() == 12000).count(), 8);
+    // test_token_capacity.c (#125 I1): DEVICE_MEMORY, not HOST_MEMORY
+    assert_eq!(t.object_add(4, 31, Some(b"one-more"), &[0; 16], b"", 0), Err(Rv::DEVICE_MEMORY));
+    t.close();
+    let t = Token::load(&path, platform(dir.path())).unwrap();
+    t.login(Role::User, USER_PIN).unwrap();
+    assert_eq!(t.object_find(None, None, 2048).unwrap().0.len(), pqhsm_token::store::MAX_OBJECTS);
+    for (label, value) in &added {
+        let (hs, _) = t.object_find(None, Some(label.as_bytes()), 2).unwrap();
+        assert_eq!(hs.len(), 1, "{label}");
+        assert_eq!(&t.object_get(hs[0]).unwrap().0, value, "{label}");
+    }
+}

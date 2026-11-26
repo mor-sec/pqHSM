@@ -148,9 +148,10 @@ $(PQHSM_CLI_BINS): $(PQHSM_SRC)
 	cargo build --release --locked -p pqhsm-cli --bin $(notdir $@) --target-dir $(PQHSM_TARGET) --manifest-path $(PQHSM_DIR)/Cargo.toml
 	cp $(PQHSM_TARGET)/release/$(notdir $@) $@
 
-# The main source is the target's name with _ for -: tools/fhsm-csr is tools/fhsm_csr.c.
+# The main source is the legacy rule's .c prerequisite (slice 5c: the tests are in gui/tests). Not
+# $<: with this rule's recipe, its own prerequisite (the library) comes first (5c review H1).
 $(PQHSM_PKIOPS_BINS): $(PQHSM_PKIOPS_LIB)
-	$(CC) $(CFLAGS) -Itools -o $@ $(subst -,_,$@).c \
+	$(CC) $(CFLAGS) -Itools -o $@ $(firstword $(filter %.c,$^)) \
 	    $(OBJDIR)/src/fhsm_composite.o $(REVOCATION_OBJ) $(subst $(PQHSM_LIB),$(PQHSM_PKIOPS_LIB),$(LDFLAGS)) -ldl
 
 # The GUI (slice 6: C on pqhsm-pkiops) has its own build since slice 5b: modernized/pqHSM/gui.
@@ -209,7 +210,10 @@ install-pqhsm: $(LIB) $(PQHSM_CLI_BINS) $(PQHSM_AUDIT_BIN) service/pqhsm-service
 	@# the cargo outputs themselves, not a copy make took for current (slice 5b review M1)
 	cp $(PQHSM_SO) $(LIB) && cp $(PQHSM_SERVICE_BIN) service/pqhsm-service
 	scripts/sign_module.sh $(LIB) || [ $$? = 3 ]
-	$(MAKE) -f $(PQHSM_DIR)/hybrid.mk install
+	@# -o: the signed file is never remade. A regenerated header (the profile stamp lands a second
+	@# after it; a tar copy keeps whole seconds) made the legacy objects newer, and the inner make
+	@# copied the unsigned cargo output over it (harness run 36)
+	$(MAKE) -f $(PQHSM_DIR)/hybrid.mk -o $(LIB) install
 	ln -f $(LIBDIR)/$(LIB) $(LIBDIR)/libpqhsm.so
 	$(call PQHSM_RELINK,$(LIBDIR)/$(LIB),libpqhsm.so)
 	for t in $(notdir $(PQHSM_CLI_BINS)); do \

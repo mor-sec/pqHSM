@@ -6,25 +6,13 @@ M="make -f modernized/pqHSM/hybrid.mk"
 # DIV-084: Rust output with the pqHSM names mapped back to C's, before a comparison with C.
 RB="python3 -I /work/modernized/pqHSM/tests-support/hybrid/rename_back.py"
 $RB > /out/rename_back_selfcheck.txt 2>&1 || { cat /out/rename_back_selfcheck.txt; exit 1; }
-# Intended test changes, each under its DIV (PHASE4_PLAN.md §4.2); the copy is patched, the
-# original stays the C's. DIV-059: ulMinPinLen is 8.
-sed -i 's/ti\.ulMinPinLen != 4 ||/ti.ulMinPinLen != 8 ||/' tests/test_input_validation.c
-grep -q 'ulMinPinLen != 8' tests/test_input_validation.c || echo "DIV-059 patch did not apply" >&2
+# Intended test changes, each under its DIV (PHASE4_PLAN.md §4.2). DIV-059 (ulMinPinLen 8) and
+# DIV-057 (no CKA_SENSITIVE FALSE in an ECDH template) are in tests/abi's sources since slice 5c;
+# the C tree (/c) keeps C's. The script's copy is patched here, its original stays the C's.
 # DIV-001: a stream audit target fails its first fdatasync, so C_Initialize reports 0x30 (C
 # returned OK into a module already in ERROR). Still announced as a stream.
 sed -i 's/^ok \$rc "a stream target still starts the module"$/[ $rc -ne 0 ]; ok $? "a stream target: C_Initialize reports the failed audit (DIV-001)"/' tests/audit_switch.sh
 grep -q 'DIV-001' tests/audit_switch.sh || echo "DIV-001 patch did not apply" >&2
-# DIV-057: a key derived from a sensitive base is sensitive, and every EC private key is, so
-# CKA_SENSITIVE FALSE in an ECDH template is 0xD1. probe_ecdh_curves checks only that each
-# derive succeeds: its copy leaves SENSITIVE out. test_ecdh_peer_point compares the secrets:
-# its copy leaves SENSITIVE out and reads each secret through a wrap and an unwrap.
-sed -i '/^ *{ CKA_SENSITIVE,   &t_false, 1 },$/d; s/out_t, 5, &/out_t, 4, \&/; s/CK_BYTE t_true = 1, t_false = 0;/CK_BYTE t_true = 1;/' tests/probe_ecdh_curves.c
-[ "$(grep -c 'out_t, 4, &' tests/probe_ecdh_curves.c) $(grep -c 't_false' tests/probe_ecdh_curves.c)" = "4 0" ] || echo "DIV-057 probe patch did not apply" >&2
-sed -i 's/^        { CKA_SENSITIVE, &f, 1 }, { CKA_EXTRACTABLE, &t, 1 },$/        { CKA_EXTRACTABLE, \&t, 1 },/; s/C_DeriveKey(s, &m, base, tmpl, 5, &k)/C_DeriveKey(s, \&m, base, tmpl, 4, \&k)/; /^    return C_GetAttributeValue(s, k, &v, 1);$/d; /^    CK_ATTRIBUTE v = { CKA_VALUE, out, vlen };$/{
-r modernized/pqHSM/tests-support/hybrid/div057_peer_value.c
-d
-}' tests/test_ecdh_peer_point.c
-grep -q 'DIV-057 (the harness copy' tests/test_ecdh_peer_point.c && grep -q 'tmpl, 4, &k' tests/test_ecdh_peer_point.c || echo "DIV-057 peer-point patch did not apply" >&2
 { $M all 2>&1 | tail -5; echo "build rc=$?"
   $M test-bins tools/fhsm-token tools/fhsm-csr tools/fhsm-ca tools/fhsm-sign tools/fhsm-crypt 2>&1 | tail -3; } > /out/build.log 2>&1
 
@@ -126,8 +114,9 @@ done
 LDP=$(grep -oE 'LD_LIBRARY_PATH=[^ ]+' /out/commands.txt | head -1)
 # The legacy test logs in as USER while SO is still logged in, which the token refuses (0x104)
 # before any heap check runs, on C and hybrid alike. Both copies get the missing logout.
-fix_heap_test() { sed -i '/fhsm_token_login(t, FHSM_ROLE_USER/i\    fhsm_token_logout(t);' "$1/tests/test_secure_heap.c"; }
-cp -a /c /tmp/cb && fix_heap_test /tmp/cb && fix_heap_test /work
+# $1 the source file: tests/ in the C tree, legacy/tests/ here since slice 5c (review H2)
+fix_heap_test() { sed -i '/fhsm_token_login(t, FHSM_ROLE_USER/i\    fhsm_token_logout(t);' "$1"; }
+cp -a /c /tmp/cb && fix_heap_test /tmp/cb/tests/test_secure_heap.c && fix_heap_test /work/legacy/tests/test_secure_heap.c
 make -s -C /tmp/cb tests/test_secure_heap tests/probe_secure_heap > /out/heap_build.log 2>&1
 $M tests/test_secure_heap tests/probe_secure_heap >> /out/heap_build.log 2>&1
 for d in /tmp/cb /work; do
@@ -143,10 +132,11 @@ done
 # 4c. Phase 3 slice 2: probe_keygen_drbg reads fhsm_drbg_get_stats around key generation and has
 #     no Makefile rule; it links like test_secure_heap. C and hybrid must draw the same counts, less DIV-071's.
 #     PINs are invented for the harness.
-PROBE_RULE='tests/probe_keygen_drbg: tests/probe_keygen_drbg.c $(LIB_OBJ)
+PROBE_RULE='tests/probe_keygen_drbg: $(PSRC) $(LIB_OBJ)
 	$(CC) $(CFLAGS) -o $@ $< $(LIB_OBJ) $(LDFLAGS)'
-make -s -C /tmp/cb --eval "$PROBE_RULE" tests/probe_keygen_drbg > /out/drbg_build.log 2>&1
-$M --eval "$PROBE_RULE" tests/probe_keygen_drbg >> /out/drbg_build.log 2>&1
+# slice 5c: its source is legacy/tests/ here, tests/ in the C tree
+make -s -C /tmp/cb --eval "$PROBE_RULE" PSRC=tests/probe_keygen_drbg.c tests/probe_keygen_drbg > /out/drbg_build.log 2>&1
+$M --eval "$PROBE_RULE" PSRC=legacy/tests/probe_keygen_drbg.c tests/probe_keygen_drbg >> /out/drbg_build.log 2>&1
 for d in /tmp/cb /work; do
   tag=$([ "$d" = /work ] && echo hybrid || echo c); t=$(mktemp -d)
   # the probe opens a session before C_InitToken, so the token must exist already
@@ -429,6 +419,16 @@ for t in c hybrid; do
   FHSM_INTEGRITY_ALLOW_UNSIGNED=1 /tmp/p11_misc $lib $(mktemp -d) > /out/p11_misc_am_$t.txt 2>/dev/null
   echo "rc=$?" >> /out/p11_misc_am_$t.txt
 done
+# 4p'. Slice 5c: tests/abi, built by its own makefile with nothing of pqHSM's but PKCS#11, on the
+#     Cargo-built module (the hybrid's libfreehsm.so since slice 5a), default and all-mechanisms.
+#     Both are dev-bypass builds, as every module here: with no FIPS provider in the container a
+#     release one stops at C_Initialize (install_check.sh).
+for p in default am; do
+  lib=$([ $p = default ] && echo /work || echo $AMH)/libfreehsm.so
+  make -s -C /work/tests/abi check MODULE=$lib OUT=/tmp/abi-$p > /out/abi_$p.txt 2>&1; echo "rc=$?" >> /out/abi_$p.txt
+done
+printf 'tests/abi: default %s (%s); all-mechanisms %s (%s)\n' "$(tail -1 /out/abi_default.txt)" "$(tail -2 /out/abi_default.txt | head -1)" \
+  "$(tail -1 /out/abi_am.txt)" "$(tail -2 /out/abi_am.txt | head -1)" > /out/abi.txt
 sed '/^s\/^info 0x350/d' modernized/pqHSM/tests-support/hybrid/p11_misc_expect.sed > /tmp/am_expect.sed
 sed -f /tmp/am_expect.sed /out/p11_misc_am_c.txt > /out/p11_misc_am_c_expect.txt
 printf '; all-mechanisms: %s, C %s, hybrid %s, %s mechanisms, less recorded DIVs %s' \
@@ -558,7 +558,7 @@ d=$(mktemp -d)
 (cd $AMH && env -u FHSM_TOKENS_DIR -u FHSM_PIN -u FHSM_SO_PIN PQHSM_TOKENS_DIR=$d PQHSM_INTEGRITY_ALLOW_UNSIGNED=1 \
   PQHSM_SO_PIN=sopin1234 PQHSM_PIN=userpin1234 sh -c 'tools/fhsm-token init --label envnames > /dev/null &&
   tools/fhsm-csr keygen --label k --alg ecdsa-p256 > /dev/null; echo "rc=$?"') > /out/env_names.txt 2>&1
-printf '; %s; PQHSM_* names %s, token files %s' "$(tail -2 /out/install_check.txt | tr '\n' ';')" \
+printf '; %s; PQHSM_* names %s, token files %s' "$(tail -3 /out/install_check.txt | tr '\n' ';')" \
   "$(tail -1 /out/env_names.txt)" "$(ls $d | wc -l)" >> /out/service.txt
 (cd $AMH && LIB=$AMC/libfreehsm.so sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h_on_c.txt 2>&1; echo "rc=$?" >> /out/pki_char_h_on_c.txt)
 (cd $AMH && sh /work/tests/pki_tools_characterize.sh > /out/pki_char_h.txt 2>&1; echo "rc=$?" >> /out/pki_char_h.txt)
@@ -568,7 +568,8 @@ $RB /out/pki_char_h_on_c.txt /out/pki_char_h.txt
 python3 -I /work/modernized/pqHSM/tests-support/hybrid/phase5_expect.py < /out/pki_char_c1.txt > /out/pki_char_c_expect_on_c.txt
 sed -E 's/(PIN length +|accepted length \()4\.\.64/\18..64/' /out/pki_char_c_expect_on_c.txt > /out/pki_char_c_expect.txt   # DIV-059
 PCL=modernized/pqHSM/tests-support/hybrid/pkiops_calllog.c
-PCF="-std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Iinclude -Itools -I/usr/local/ssl/include"
+# -Itests/abi: p11_err.h and p11_util.h moved there in slice 5c (review H3); absent in the C tree
+PCF="-std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror -Iinclude -Itools -Itests/abi -I/usr/local/ssl/include"
 PCL_L="-L/usr/local/ssl/lib64 -L/usr/local/ssl/lib"
 { (cd $AMC && cc $PCF -o /tmp/pkiops_calllog_c /work/$PCL tools/pkiops.c tools/cms_env.c .obj/src/fhsm_composite.o \
      .obj/src/fhsm_revocation.o $PCL_L -lcrypto -ldl -pthread) &&
@@ -746,8 +747,8 @@ if ls /gdebs/*.deb > /dev/null 2>&1; then
     links="rust pkiops symbols $(nm $GB | grep -c 'pqhsm_pkiops'), fhsm_rev_db_lock $(nm $GB | grep -c ' [Tt] fhsm_rev_db_lock$')"
   else links="hybrid binary absent"; fi
   # slice 5b review L3: gui/include holds copies; until slice 5d nothing else keeps them equal
-  drift=$(for h in tools/pkiops.h tools/p11_err.h include/fhsm_common.h include/fhsm_composite.h include/fhsm_revocation.h; do
-    cmp -s /work/$h /work/modernized/pqHSM/gui/include/${h#*/} || printf ' %s' $h; done)
+  drift=$(for h in tools/pkiops.h tests/abi/p11_err.h include/fhsm_common.h include/fhsm_composite.h include/fhsm_revocation.h; do
+    cmp -s /work/$h /work/modernized/pqHSM/gui/include/${h##*/} || printf ' %s' $h; done)
   links="$links, gui/include ${drift:+FAIL: differs from}${drift:-as the legacy headers}"
   printf 'gui: install rc=%s, %s unconfigured; %s; %s; %s\n' "$inst" "$(dpkg --audit | grep -c '^ ')" "$c" "$h" "$links" > /out/gui.txt
 else
@@ -792,7 +793,7 @@ fi
 if ls /debs/*.deb > /dev/null 2>&1; then
   { dpkg -i /debs/*.deb && sed '/^apt-get /d' scripts/ci_install_openssl_fips.sh | bash; echo "install rc=$?"; } > /out/fips_install.log 2>&1
   # Slice 4: what step 5c installed (install-pqhsm, signed), run now that the provider it requires is here.
-  sh /work/modernized/pqHSM/tests-support/hybrid/install_check.sh run > /out/install_run.txt 2>&1; tail -1 /out/install_run.txt >> /out/fips.txt
+  sh /work/modernized/pqHSM/tests-support/hybrid/install_check.sh run > /out/install_run.txt 2>&1; { tail -2 /out/install_run.txt | tr '\n' ' '; echo; } >> /out/fips.txt
   F=/fixture/fips
   rm -rf /tmp/tsan   # one tree copy at a time
   ok_lines() { sed 's/\x1b\[[0-9;]*m//g' "$1" | grep -aE '^ +(OK|NON) ' | sed -E 's/digest [0-9a-f]+/digest */'; }  # the run colours its marks
@@ -889,6 +890,7 @@ rm -rf /tmp/wy /tmp/venv
   cat /out/gui.txt
   echo "wycheproof: $(cat /out/wycheproof.txt)"
   echo "fips: $(grep 'install rc' /out/fips_install.log 2>/dev/null)"; sed 's/^/  /' /out/fips.txt
+  cat /out/abi.txt
   echo "cross_impl (C tool on Rust logs): $(grep -E 'test result|rc=' /out/x_cross_impl.txt | tr '\n' ' ')"
   cat /out/verifiers_summary.txt; echo
 } > /out/summary.txt
