@@ -1,7 +1,7 @@
 //! The C ABI of `include/fhsm_integrity.h` (`src/fhsm_integrity.c`) and of the KATs in
 //! `include/fhsm_crypto.h` (`kat/fhsm_kat_vectors.c`, `kat/cavp_extended.c`), for the hybrid
-//! build. The digest array stays C (`selftest/shim/integrity_digest.c`): `scripts/sign_module.sh`
-//! patches it in its own ELF section.
+//! module. The digest array is here, in its own ELF section, which `scripts/sign_module.sh`
+//! patches after the link.
 
 use std::ffi::{CStr, OsStr, c_char, c_int, c_void};
 use std::io::Write;
@@ -13,9 +13,15 @@ use pqhsm_crypto::{ForkMutex, KatRecord, rv};
 use crate::integrity::{self, ALLOW_UNSIGNED, DIGEST_LEN};
 use crate::kat;
 
+/// The embedded digest, patched into the linked object by `scripts/sign_module.sh` (slice 5a;
+/// was selftest/shim/integrity_digest.c). Read only through [`embedded`]'s volatile loads.
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".fhsm_digest")]
+#[used]
+static fhsm_module_integrity_digest: [u8; DIGEST_LEN] = [0; DIGEST_LEN];
+
 unsafe extern "C" {
-    // selftest/shim/integrity_digest.c: const volatile, patched after the build
-    static fhsm_module_integrity_digest: [u8; DIGEST_LEN];
     // src/fhsm_state.c
     fn fhsm_state_latch_error(reason: *const c_char);
 }

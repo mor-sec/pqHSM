@@ -1,20 +1,26 @@
 [package]
 name = "pqhsm-service"
-description = "pqHSM's HTTP service (replaces service/fhsm_service.c, Phase 6): the module and the service in one staticlib, linked by hybrid.mk"
+description = "pqHSM's HTTP service (replaces service/fhsm_service.c, Phase 6): the module and the service in one binary"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
 
-[lib]
-# staticlib: the service links the module statically, as C's does (Makefile `service/fhsm-service`),
-# so the module (as an rlib) and the service share one copy of std. hybrid.mk adds the C shims.
-crate-type = ["staticlib"]
+# The binary links the module statically, as C's service did (Makefile `service/fhsm-service`), so
+# the module (an rlib) and the service share one copy of std. Slice 5b: a Cargo binary, no C.
+[[bin]]
+name = "pqhsm-service"
+path = "src/main.rs"
+# Its own C `main` (#![no_main]) would replace the test harness's: the tests are the library's.
+test = false
 
 [features]
 # As pqhsm-module's (DIV-034): the hybrid harness only, never a release build.
 dev-bypass = ["pqhsm-module/dev-bypass"]
+# As pqhsm-module's: the build profile and the audit switch.
+all-mechanisms = ["pqhsm-module/all-mechanisms"]
+audit-optional = ["pqhsm-module/audit-optional"]
 
 [dependencies]
 pqhsm-core = { path = "../core" }

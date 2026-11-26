@@ -493,7 +493,7 @@ jobs:
           path: fips-tests.log
           retention-days: 30
 
-  # The desktop interface, opened and closed with no display (tests/gui_smoke.sh):
+  # The desktop interface, opened and closed with no display (modernized/pqHSM/gui/gui_smoke.sh):
   # a virtual X server, a private session bus, app.quit sent over it, and any
   # GTK or GLib CRITICAL or WARNING a failure. Its logic is tested through
   # tools/pkiops in the suite; what only this sees is the window's own
@@ -515,9 +515,9 @@ jobs:
           apt-get install -y --no-install-recommends \
               libgtk-4-dev xvfb xauth dbus libglib2.0-bin
       - name: Build the interface
-        run: make gui
+        run: make -C modernized/pqHSM/gui
       - name: Start and close it
-        run: make gui-smoke
+        run: make -C modernized/pqHSM/gui smoke
 
   # The pqHSM Rust workspace (Phase 6). Its tests run as the image's freehsm user:
   # the goldens for unreadable files were made without CAP_DAC_OVERRIDE, and the

@@ -1,6 +1,6 @@
 //! `C_GetFunctionList`, `C_GetInterfaceList` and `C_GetInterface`, and the v2.40, v3.0 and
 //! v3.2 tables they return (`src/fhsm_pkcs11.c:13050-13386`). The exported names are defined
-//! by `p11/shim/interface.c`, which calls these.
+//! by pqhsm-module (`module/src/lib.rs`), which calls these.
 //!
 //! C filled the tables at run time under `pthread_once` (#111-prep). Here they are constants,
 //! so there is nothing to race on.

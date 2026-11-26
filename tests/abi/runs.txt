@@ -1,0 +1,70 @@
+# One line per program: the legacy Makefile's `tests` recipe, as of Phase 6 slice 5c, with
+# ./tests/<program> as $B/<program>. check.sh runs each with sh, in a directory holding the module
+# as ./libfreehsm.so; $B is where the programs were built. The seven programs not listed (two
+# benchmarks, two probes, the three *_e2e harnesses of tests/coverage_matrix.sh) are built only.
+# built only: bench_fork_client bench_session_mem mldsa_e2e mlkem_e2e probe_fips_loaded probe_secure_heap slhdsa_e2e
+# The last line is new with the slice: test_kat_results (legacy/tests/test_smoke.c's export check).
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_cbc_pad_oracle
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) $B/test_composite_p11
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) $B/test_p11_loader ./libfreehsm.so
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_decrypt_null_args
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_robustness_args
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_op_state
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_unwrap_len
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_hmac_multipart
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_cipher_final_no_update
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_eddsa_params
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_digest_multipart
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_sensitive_value
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_hash_ml_dsa
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_slh_dsa_sets
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_slh_dsa_kat
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_ec_curve_refusal
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_ecdsa_verify_edge
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_copyable_oneway
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_generic_secret_len
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_aes_cmac_multipart
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_hash_slh_dsa
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_aes_gmac_multipart
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_pqc_params
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_aes_sizes
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_rsa_oaep
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_advertised_operational
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_derive_concat
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_ecdh_peer_point
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_derive_hkdf
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/probe_ecdh_curves
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/probe_hkdf_data
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_pbkd2
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_always_authenticate
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_interface_v32
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_pqc_pub_import
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_gmac_params
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_encap_flags
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_allowed_mechanisms
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_nested_templates
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_wrap_with_trusted
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_finalize_release
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_concurrency
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_concurrency_store
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_fips_digests
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_attributes
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_set_dates
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_init_token_session
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_input_validation
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_session_objects
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_mech_advertise
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_legacy_digest
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_legacy_cipher
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_legacy_rsa
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_ec_curve_bounds
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_oaep_decrypt_size
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_sign_multipart
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_cbc_pad_update_size
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 OPENSSL_CONF=/dev/null $B/test_audit_key_diag
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_kw_iv
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_login_conflicts
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_session_cap
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_fork_child
+d=$(mktemp -d) && cp libfreehsm.so $d/libfreehsm-copy.so && FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_secure_heap_shared ./libfreehsm.so $d/libfreehsm-copy.so
+FHSM_INTEGRITY_ALLOW_UNSIGNED=1 FHSM_TOKENS_DIR=$(mktemp -d) OPENSSL_CONF=/dev/null $B/test_kat_results

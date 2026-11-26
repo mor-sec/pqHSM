@@ -1,6 +1,6 @@
 //! What the entry points call outside this crate: the token, audit and crypto exports of the
-//! other crates (linked into the same staticlib), and the two build-time constants of
-//! `p11/shim/build_config.c` (no C of `src/fhsm_pkcs11.c` is linked since slice 8c).
+//! other crates (linked into the same module). The two build-time settings are defined here,
+//! from Cargo features (slice 5a).
 #![allow(non_camel_case_types)]
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -126,13 +126,16 @@ unsafe extern "C" {
         app_len: usize,
     ) -> u32;
 
-    pub fn fhsm_audit_event(
+    /// The audit crate's entry, called directly with the pairs flattened (slice 5a): the C
+    /// variadic `fhsm_audit_event` in front of it (`audit/shim/audit_event.c`) only forwarded.
+    pub fn pqhsm_audit_event_v(
         ev: c_int,
         slot: c_int,
         session: c_int,
         role: c_int,
         rv: u32,
-        ...
+        kv: *const *const c_char,
+        npairs: usize,
     ) -> u32;
     pub fn fhsm_audit_key_provision(dir: *const c_char, key: *mut u8, sealed: *mut c_int) -> u32;
     pub fn fhsm_audit_open(path: *const c_char, key: Slice) -> u32;
@@ -144,8 +147,6 @@ unsafe extern "C" {
     pub fn fhsm_crypto_finalize();
     pub fn fhsm_zeroize(p: *mut c_void, n: usize);
     pub fn fhsm_hash_oneshot(alg: c_int, data: Slice, out: *mut u8, out_len: *mut usize) -> u32;
-    /// src/gen/fhsm_dispatch.c: 1 in the nist-approved-only build.
-    pub static fhsm_build_fips_strict: c_int;
 
     // pqhsm-pki's composite ML-DSA-65 + Ed25519 (include/fhsm_composite.h)
     pub fn fhsm_composite_ph_name(alg: c_int) -> *const c_char;
@@ -194,10 +195,16 @@ unsafe extern "C" {
         sig: *const u8,
         sig_len: usize,
     ) -> u32;
-
-    // p11/shim/build_config.c: the build's audit switch (-DFHSM_AUDIT_MANDATORY).
-    pub static pqhsm_c_audit_mandatory: c_int;
 }
+
+/// The build profile (slice 5a; was p11/shim/build_config.c): 1 in the nist-approved-only build,
+/// 0 with feature `all-mechanisms`. By its C name: pqhsm-service reads it too.
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static fhsm_build_fips_strict: c_int = if cfg!(feature = "all-mechanisms") { 0 } else { 1 };
+
+/// The audit switch (C's FHSM_AUDIT_MANDATORY): off only with feature `audit-optional`.
+pub const AUDIT_MANDATORY: bool = !cfg!(feature = "audit-optional");
 
 /// The `CK_RV`s these entry points return themselves (`include/fhsm_common.h`).
 pub const OK: u32 = 0;
@@ -236,8 +243,9 @@ pub const EV_LOGIN_LOCKED: c_int = 14;
 pub const EV_LOGOUT: c_int = 16;
 pub const EV_SET_PIN: c_int = 17;
 
-/// One `fhsm_audit_event` call with up to two key/value pairs. DIV-001: `Err` when the record
-/// could not be made durable (the audit layer has latched ERROR); the caller fails closed.
+/// One audit record with up to two key/value pairs (a third and later are dropped, as before).
+/// DIV-001: `Err` when the record could not be made durable (the audit layer has latched
+/// ERROR); the caller fails closed.
 pub fn audit(
     ev: c_int,
     slot: c_int,
@@ -246,26 +254,14 @@ pub fn audit(
     rv: u32,
     kv: &[(&CStr, &CStr)],
 ) -> Result<(), u32> {
-    let end = null::<c_char>();
-    // SAFETY: NUL-terminated keys and values alive for the call; the list ends with NULL
-    let r = unsafe {
-        match kv {
-            [] => fhsm_audit_event(ev, slot, session, role, rv, end),
-            [(k, v)] => fhsm_audit_event(ev, slot, session, role, rv, k.as_ptr(), v.as_ptr(), end),
-            [(k1, v1), (k2, v2), ..] => fhsm_audit_event(
-                ev,
-                slot,
-                session,
-                role,
-                rv,
-                k1.as_ptr(),
-                v1.as_ptr(),
-                k2.as_ptr(),
-                v2.as_ptr(),
-                end,
-            ),
-        }
-    };
+    let n = kv.len().min(2);
+    let mut flat = [null::<c_char>(); 4];
+    for (i, (k, v)) in kv[..n].iter().enumerate() {
+        flat[2 * i] = k.as_ptr();
+        flat[2 * i + 1] = v.as_ptr();
+    }
+    // SAFETY: 2 * n NUL-terminated keys and values, alive for the call
+    let r = unsafe { pqhsm_audit_event_v(ev, slot, session, role, rv, flat.as_ptr(), n) };
     if r == OK { Ok(()) } else { Err(DEVICE_ERROR) }
 }
 

@@ -97,19 +97,14 @@ freehsm/
 ## Build
 
 ```bash
-# Prerequisites : OpenSSL 3.x with the FIPS provider
-sudo apt install -y libssl-dev cmake ninja-build
-# (If the FIPS provider is not pre-installed, build it from OpenSSL sources with
-#  ./Configure enable-fips && make install_fips.)
-
-make generate                  # regenerate the mechanism dispatch (CKM_* + table + doc)
-make generate PROFILE=all-mechanisms  # same but with legacy CKM_* dispatchable (audit-only)
-make                           # generate then build libfreehsm.so
-make tests                     # run test_smoke (POST + KAT + AES-GCM RT + tamper)
-make integrity                 # patch SHA-256 into fhsm_module_integrity_digest[]
-make repro                     # build inside the pinned Docker image
-make dist-verify               # build twice, assert byte-identical SHA-256
-make dist                      # reproducible source tar.xz for the evaluator
+# Prerequisites: Rust 1.99.1 (or the pinned image, Dockerfile.build) and OpenSSL 3.5 with
+# the FIPS provider, under /usr/local/ssl (OPENSSL_PREFIX=...)
+make                           # build and sign: out/libpqhsm.so, out/pqhsm-* (Cargo, then scripts/sign_module.sh)
+make PROFILE=all-mechanisms    # with the mechanisms NIST has not approved (audit use)
+make AUDIT=optional            # a module whose audit trail may be switched off
+make test                      # the Rust suites, the C ABI tests (tests/abi), the GUI's tests
+sudo make install              # what out/ holds, under /opt/freehsm; sudo make uninstall removes it
+make -C legacy                 # the C this replaced, kept as an oracle until one release after the first
 ```
 
 ## Mechanism dispatch (78 `CKM_*`)

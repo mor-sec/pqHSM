@@ -6,11 +6,10 @@
 #![allow(clippy::missing_safety_doc)]
 
 use std::ffi::{CString, c_char, c_int};
-use std::ptr::null;
 
 use pqhsm_core::state::State;
 
-use super::sys::{audit, fhsm_audit_event};
+use super::sys::{audit, pqhsm_audit_event_v};
 
 /// `FHSM_EV_STATE_TRANSITION`.
 const EV_STATE_TRANSITION: c_int = 6;
@@ -67,21 +66,10 @@ pub unsafe extern "C" fn fhsm_state_latch_error(reason: *const c_char) {
         reason
     };
     // The latch's own record: nothing to suppress, so its result is not used.
-    // SAFETY: reason is "(none)" or, by the caller's contract, NUL-terminated; the list ends
-    // with NULL
+    let kv = [c"to".as_ptr(), c"ERROR".as_ptr(), c"reason".as_ptr(), reason];
+    // SAFETY: reason is "(none)" or, by the caller's contract, NUL-terminated; two pairs
     unsafe {
-        fhsm_audit_event(
-            EV_STATE_TRANSITION,
-            -1,
-            -1,
-            0,
-            FUNCTION_FAILED,
-            c"to".as_ptr(),
-            c"ERROR".as_ptr(),
-            c"reason".as_ptr(),
-            reason,
-            null::<c_char>(),
-        )
+        pqhsm_audit_event_v(EV_STATE_TRANSITION, -1, -1, 0, FUNCTION_FAILED, kv.as_ptr(), 2)
     };
 }
 

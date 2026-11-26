@@ -1,4 +1,4 @@
-//! `tests/golden/pairwise.tsv` (tests-support/golden/gen_pairwise.c) replayed: every key type
+//! `tests/golden/pairwise.tsv` (legacy/hybrid/golden/gen_pairwise.c) replayed: every key type
 //! and its mismatched pair under every family selector, and the null key; the keys built as the
 //! generator builds them.
 

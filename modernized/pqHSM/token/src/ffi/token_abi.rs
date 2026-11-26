@@ -75,25 +75,33 @@ impl Tok {
 }
 
 unsafe extern "C" {
-    fn fhsm_audit_event(ev: c_int, slot: c_int, session: c_int, role: c_int, rv: u32, ...) -> u32;
+    /// The audit crate's entry, by its C name (slice 5a: no longer through the variadic C shim
+    /// `fhsm_audit_event`, which only flattened the list into these arguments).
+    fn pqhsm_audit_event_v(
+        ev: c_int,
+        slot: c_int,
+        session: c_int,
+        role: c_int,
+        rv: u32,
+        kv: *const *const c_char,
+        npairs: usize,
+    ) -> u32;
 }
 
-/// Audit through the C entry point (the Rust audit crate behind its variadic shim).
+/// Audit through the audit crate's C ABI.
 struct CAudit;
 
 impl Audit for CAudit {
     fn event(&self, e: &AuditEvent<'_>) -> Result<(), Rv> {
         let pairs: Vec<(CString, CString)> = e.params.iter().map(|(k, v)| (cs(k), cs(v))).collect();
         let (ev, role, rv) = (e.code as c_int, e.role as c_int, e.rv.0);
-        let end = null::<c_char>();
-        // SAFETY: every key and value is a NUL-terminated string alive for the call, and the
-        // list ends with NULL, as fhsm_audit_event reads it. The token passes at most one pair.
-        let r = unsafe {
-            match pairs.first() {
-                None => fhsm_audit_event(ev, -1, -1, role, rv, end),
-                Some((k, v)) => fhsm_audit_event(ev, -1, -1, role, rv, k.as_ptr(), v.as_ptr(), end),
-            }
+        // The token passes at most one pair; only the first was ever forwarded.
+        let (kv, n) = match pairs.first() {
+            Some((k, v)) => ([k.as_ptr(), v.as_ptr()], 1),
+            None => ([null(); 2], 0),
         };
+        // SAFETY: n NUL-terminated key/value pairs, alive for the call
+        let r = unsafe { pqhsm_audit_event_v(ev, -1, -1, role, rv, kv.as_ptr(), n) };
         if r == 0 { Ok(()) } else { Err(Rv(r)) }
     }
 }

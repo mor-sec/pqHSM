@@ -1,6 +1,6 @@
 //! The KAT vectors of `kat/fhsm_kat_vectors.c` and `kat/cavp_extended.c`, byte for byte (the
 //! sources, NIST/IETF/FIPS, are named there). Transcribed from the C by
-//! `tests-support/golden/gen_kat.c vectors`; `tests/kat_golden.rs` checks every table against it.
+//! `legacy/hybrid/golden/gen_kat.c vectors`; `tests/kat_golden.rs` checks every table against it.
 
 /// `kat_aesgcm_key`
 pub const KAT_AESGCM_KEY: [u8; 32] = [

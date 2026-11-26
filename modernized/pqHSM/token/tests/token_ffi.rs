@@ -908,3 +908,39 @@ fn login_or_set_pin_with_an_unknown_role_is_arguments_bad_div028() {
         fhsm_token_close(t);
     }
 }
+
+/// legacy/tests/test_pin_length.c (Phase 6 slice 5c): login reads exactly `len` bytes of the PIN:
+/// one followed by a stray byte logs in, one ending at an unreadable page logs in (a read past
+/// it would fault), and a wrong PIN of the same length is CKR_PIN_INCORRECT.
+#[test]
+fn login_reads_exactly_the_pin_length() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("slot0.tok");
+    std::fs::copy(store_golden("tok/user_base.tok"), &path).unwrap();
+    let p = cs(path.to_str().unwrap().as_bytes());
+    let n = USER_PIN.len();
+    // SAFETY: two fresh anonymous pages, the second made unreadable; unmapped at the end
+    unsafe {
+        let page = libc::sysconf(libc::_SC_PAGESIZE) as usize;
+        let m = libc::mmap(null_mut(), 2 * page, libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0);
+        assert_ne!(m, libc::MAP_FAILED);
+        let m = m.cast::<u8>();
+        assert_eq!(libc::mprotect(m.add(page).cast(), page, libc::PROT_NONE), 0);
+        let mut t = null_mut();
+        assert_eq!(fhsm_token_load(p.as_ptr(), &mut t), 0);
+        let mut stray = USER_PIN.to_vec();
+        stray.push(b'X');
+        assert_eq!(fhsm_token_login(t, 2, stray.as_ptr().cast(), n), 0, "PIN then a stray byte");
+        fhsm_token_logout(t);
+        let edge = m.add(page - n);
+        std::ptr::copy_nonoverlapping(USER_PIN.as_ptr(), edge, n);
+        assert_eq!(fhsm_token_login(t, 2, edge.cast(), n), 0, "PIN ending at an unreadable page");
+        fhsm_token_logout(t);
+        let mut wrong = USER_PIN.to_vec();
+        wrong[n - 1] ^= 1;
+        assert_eq!(fhsm_token_login(t, 2, wrong.as_ptr().cast(), n), 0xA0, "wrong PIN, same length");
+        fhsm_token_close(t);
+        libc::munmap(m.cast(), 2 * page);
+    }
+}

@@ -36,7 +36,7 @@ OUT = Path(__file__).resolve().parent
 SYSTEM = "pqHSM (FreeHSM 2.6.0)"
 
 SOURCES = ["src/*.c", "src/dispatch/*.c", "src/gen/*.c", "kat/*.c", "service/*.c",
-           "tools/*.c", "tools/p11_util.h"]
+           "tools/*.c", "tests/abi/p11_util.h"]
 SCRIPTS = {"scripts/gen_p11_thunks.py": "python", "scripts/sign_module.sh": "shell"}
 
 DOMAINS = [  # (id, name, path regexes) -- from ASSESSMENT.md "Architecture-at-a-Glance"
@@ -265,7 +265,7 @@ def main():
         tables_by_name[t["name"]].append(tid)
 
     # ---- the tools' dlsym table maps struct members to exports: S(Sign,"C_Sign") -> p11.Sign(...) is C_Sign
-    abi_alias = dict(re.findall(r'\bS\((\w+),\s*"(C_[A-Z]\w+)"\)', raw.get("tools/p11_util.h", "")))
+    abi_alias = dict(re.findall(r'\bS\((\w+),\s*"(C_[A-Z]\w+)"\)', raw.get("tests/abi/p11_util.h", "")))
     dlopen_units = [u for u, d in units.items() if any("p11_util.h" in includes.get(x, set()) for x in d)]
 
     # ---- per-function outgoing references
@@ -364,8 +364,8 @@ def main():
     for fid, names in fabi.items():
         if names & exports.keys() and fn_by_id[fid]["file"] not in lib:
             add_edge(fn_by_id[fid]["file"], "src/fhsm_pkcs11.c", "dispatch", "PKCS#11 function list (dlopen)")
-    if "dlopen(" in code.get("tools/p11_util.h", "") and "C_GetFunctionList" in raw.get("tools/p11_util.h", ""):
-        add_edge("tools/p11_util.h", "src/fhsm_pkcs11.c", "dispatch", "dlopen + C_GetFunctionList")
+    if "dlopen(" in code.get("tests/abi/p11_util.h", "") and "C_GetFunctionList" in raw.get("tests/abi/p11_util.h", ""):
+        add_edge("tests/abi/p11_util.h", "src/fhsm_pkcs11.c", "dispatch", "dlopen + C_GetFunctionList")
 
     # ---- data stores
     stores, store_hits, rule_misses = {}, defaultdict(list), []
@@ -486,10 +486,10 @@ def main():
         f"Dead dispatch layer: the generated mechanism table holds {skipped_table_refs} handler addresses, but no code invokes "
         f"its `handler` field (verified by this script). {len(dispatch_dead)} dispatch modules "
         f"({sum(nodes[f]['loc'] for f in dispatch_dead):,} code lines) are unreachable from every production entry point; "
-        f"only the unbuilt tests/test_dispatch.c calls them. This is verified dead code, not an unresolved dynamic call.",
+        f"only the unbuilt legacy/tests/test_dispatch.c calls them. This is verified dead code, not an unresolved dynamic call.",
         f"Three link models in one codebase: {len(dlopen_units)} tool binaries dlopen() the module and reach it only "
         f"through the PKCS#11 function list ({len(abi_alias)} entry points resolved from the dlsym table in "
-        f"tools/p11_util.h); fhsm-service statically links all "
+        f"tests/abi/p11_util.h); fhsm-service statically links all "
         f"{len(lib)} module objects (it calls non-exported audit functions); those same tool binaries "
         f"also link fhsm_composite.c and fhsm_revocation.c directly. The Rust cdylib must keep the first; the other two are choices to revisit.",
         "Revocation DB has several writers and no single owner: live code in "
@@ -529,7 +529,7 @@ def main():
          "steps": [
              {"label": "Operator runs the CA tool with a certificate request", "nodes": ["tools/fhsm_ca.c", "ds:pki_files"]},
              {"label": "Tool loads the HSM module and opens a session",
-              "nodes": ["tools/pkiops.c", "tools/p11_util.h", "src/fhsm_pkcs11.c"]},
+              "nodes": ["tools/pkiops.c", "tests/abi/p11_util.h", "src/fhsm_pkcs11.c"]},
              {"label": "Operator logs in and the token's keys are decrypted",
               "nodes": ["src/fhsm_pkcs11.c", "src/fhsm_token.c", "ds:token_file"]},
              {"label": "Certificate is built and signed by the CA key",

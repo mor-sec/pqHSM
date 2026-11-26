@@ -436,3 +436,37 @@ fn fifo_sync_failure_is_sticky_and_nothing_is_written_after_it() {
         "the one line that was written is a valid chain"
     );
 }
+
+/// legacy/tests/test_audit_multiproc.c (Phase 6 slice 5c): two logs opened on one base at the
+/// same moment get two numbered files (the EEXIST retry), numbered next to each other; each holds
+/// its own events and verifies.
+#[test]
+fn two_simultaneous_opens_of_one_base_get_adjacent_files_that_each_verify() {
+    const EACH: usize = 25;
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().join("audit.log");
+    let go = Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|t| {
+            let (base, go) = (base.clone(), Arc::clone(&go));
+            std::thread::spawn(move || {
+                go.wait();
+                let log = AuditLog::open(&base, &KEY).unwrap();
+                let actor = format!("CN=opener{t}");
+                for _ in 0..EACH {
+                    log.append(&Event { actor: Some(actor.as_bytes()), ..SIGN }).unwrap();
+                }
+                log.path().to_path_buf()
+            })
+        })
+        .collect();
+    let mut paths: Vec<PathBuf> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    paths.sort();
+    assert_ne!(paths[0], paths[1]);
+    let seq = |p: &Path| -> u64 { p.extension().unwrap().to_str().unwrap().parse().unwrap() };
+    assert_eq!(seq(&paths[1]), seq(&paths[0]) + 1, "{paths:?}");
+    for p in &paths {
+        assert_eq!(verify_file(p, &KEY), Ok(()), "{}", p.display());
+        assert_eq!(lines(&read(p)).len(), EACH, "{}", p.display());
+    }
+}

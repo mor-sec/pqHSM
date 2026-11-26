@@ -1,6 +1,6 @@
 [package]
 name = "pqhsm-module"
-description = "The one Rust staticlib linked into libfreehsm.so by hybrid.mk (PILOT_PLAYBOOK.md §2.2)"
+description = "libpqhsm.so, the PKCS#11 module (cdylib), and the staticlib hybrid.mk links (PILOT_PLAYBOOK.md §2.2)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,14 +9,19 @@ license.workspace = true
 publish = false
 
 [lib]
-# rlib as well: pqhsm-service links the module into its own staticlib (Phase 6).
-crate-type = ["staticlib", "rlib"]
+# cdylib: libpqhsm.so (Phase 6 slice 5a). rlib: pqhsm-service links the module in. The staticlib
+# the hybrid's C tests linked went with it (slice 5d).
+crate-type = ["cdylib", "rlib"]
 
 [features]
 # The test_tpm build only, into its own --target-dir (PHASE2_PLAN.md §3(d), review H6).
 tpm-test-hooks = ["pqhsm-token/tpm-test-hooks"]
 # The self-test bypass variables (DIV-034): the hybrid harness only, never a release build.
 dev-bypass = ["pqhsm-crypto/dev-bypass", "pqhsm-selftest/dev-bypass"]
+# The build profile: without it, nist-approved-only (C's PROFILE=all-mechanisms).
+all-mechanisms = ["pqhsm-p11/all-mechanisms"]
+# The audit log may be switched off (C's -DFHSM_AUDIT_MANDATORY=0).
+audit-optional = ["pqhsm-p11/audit-optional"]
 
 [dependencies]
 pqhsm-audit = { path = "../audit", features = ["ffi"] }

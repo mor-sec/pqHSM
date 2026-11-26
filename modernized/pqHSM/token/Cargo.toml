@@ -40,6 +40,7 @@ tempfile.workspace = true
 # own tests always build with it. Dev-dependencies never reach the shipped build.
 pqhsm-token = { path = ".", features = ["tpm-test-hooks"] }
 # Slice 3: the scenario harness decrypts what the token wrote, and renders audit records the
-# way the audit crate does, to compare with the C goldens.
+# way the audit crate does, to compare with the C goldens. With `ffi` (slice 5a): the token's C ABI
+# audits through pqhsm_audit_event_v, the audit crate's own; no log is open, so it drops each event.
 openssl.workspace = true
-pqhsm-audit = { path = "../audit" }
+pqhsm-audit = { path = "../audit", features = ["ffi"] }

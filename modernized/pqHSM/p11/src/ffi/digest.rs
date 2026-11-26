@@ -211,8 +211,7 @@ pub unsafe extern "C" fn pqhsm_C_DigestInit(h: c_ulong, m: *const Mech) -> c_ulo
     let Some((alg, withdrawn)) = hash_of(m.mechanism) else {
         return MECHANISM_INVALID.into();
     };
-    // SAFETY: a constant the C build defines
-    if withdrawn && unsafe { fhsm_build_fips_strict } != 0 {
+    if withdrawn && fhsm_build_fips_strict != 0 {
         return MECHANISM_INVALID.into();
     }
     // Refused here, as it is left out of the mechanism list, when no loaded provider has it.

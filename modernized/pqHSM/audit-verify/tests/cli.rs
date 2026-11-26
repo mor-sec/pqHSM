@@ -2,7 +2,7 @@
 //! exit code (RULE-008). Every case under `tests/golden/cli/<case>/` was recorded by running
 //! the C binary as `freehsm-audit` with this crate's root as its working directory, so the
 //! relative paths it printed are the ones cargo's test cwd resolves. See
-//! `tests-support/golden/regen.sh`.
+//! `legacy/hybrid/golden/regen.sh`.
 
 use std::path::{Path, PathBuf};
 

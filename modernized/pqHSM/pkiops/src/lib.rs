@@ -385,7 +385,7 @@ mod tests {
             })
             .collect();
         let h =
-            std::fs::read_to_string(format!("{dir}/../../../tools/pkiops.h")).expect("pkiops.h");
+            std::fs::read_to_string(format!("{dir}/../gui/include/pkiops.h")).expect("pkiops.h");
         // a declaration starts in column 0 and names the function just before its '('
         let decl: BTreeSet<String> = h
             .lines()
@@ -443,15 +443,15 @@ mod tests {
         }
     }
 
-    /// The copy of `tools/p11_util.h`'s order and slot numbers is safe only while something
-    /// compares them; `tests/test_p11_loader.c` compares the header's with the module's.
+    /// The copy of `tests/abi/p11_util.h`'s order and slot numbers is safe only while something
+    /// compares them; `tests/abi/test_p11_loader.c` compares the header's with the module's.
     #[test]
     fn functions_match_p11_util_h() {
         let h = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../../tools/p11_util.h"
+            "/../../../tests/abi/p11_util.h"
         ))
-        .expect("tools/p11_util.h");
+        .expect("tests/abi/p11_util.h");
         let table = &h[h.find("static struct {").unwrap()..h.find("} p11;").unwrap()];
         let fields: Vec<&str> = table
             .split("(*")

@@ -110,9 +110,7 @@ fn open_audit() -> Result<(), u32> {
     let sw = pqhsm_core::env("FHSM_AUDIT");
     let sw = sw.as_deref().map(OsStr::as_bytes);
     let want_off = matches!(sw, Some(b"off" | b"0"));
-    // SAFETY: a constant the C translation unit defines from FHSM_AUDIT_MANDATORY
-    let mandatory = unsafe { pqhsm_c_audit_mandatory } != 0;
-    if want_off && mandatory {
+    if want_off && AUDIT_MANDATORY {
         say(&[concat!(
             "[freehsm-c] FATAL : FHSM_AUDIT=off is refused by this build.\n",
             "  It was compiled with FHSM_AUDIT_MANDATORY=1, which means the\n",

@@ -1,4 +1,4 @@
-//! The KATs against the legacy C (`tests-support/golden/gen_kat.c`, which ran
+//! The KATs against the legacy C (`legacy/hybrid/golden/gen_kat.c`, which ran
 //! `kat/fhsm_kat_vectors.c` and `kat/cavp_extended.c`): every vector table byte for byte, and
 //! every scenario's report and primitive-call trace. The primitives are faked as gen_kat faked
 //! them: real results, with one call failed, its first output byte flipped, a tag refusal

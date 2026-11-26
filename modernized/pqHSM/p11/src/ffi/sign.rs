@@ -1729,6 +1729,74 @@ unsafe fn verify_final(h: c_ulong, op: &mut Op, sig: &Sig) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ptr::NonNull;
+
+    // params() names two token functions the module link provides; the PQ arms never call them.
+    #[unsafe(no_mangle)]
+    extern "C" fn fhsm_token_object_get_flags3() -> u32 {
+        unreachable!()
+    }
+    #[unsafe(no_mangle)]
+    extern "C" fn fhsm_token_object_get() -> u32 {
+        unreachable!()
+    }
+
+    /// fuzz/fuzz_pq_params.c's properties, as a table (Phase 6 slice 5c: the C harness retires).
+    /// The block is CK_SIGN_ADDITIONAL_CONTEXT; the ML-DSA and SLH-DSA arms never read the token.
+    #[test]
+    fn pq_context_block_is_parsed_as_the_c_fuzzer_required() {
+        let scratch: Vec<u8> = (0..300u32).map(|i| (i * 7 + 1) as u8).collect();
+        let tok = Tok(NonNull::dangling());
+        for mech in [ML_DSA, SLH_DSA] {
+            for hedge in [0, 1, 2, 3, c_ulong::MAX] {
+                for ctx_len in [0, 1, 255, 256, 300, c_ulong::MAX] {
+                    for null_ctx in [false, true] {
+                        let ctx = if null_ctx { 0 } else { scratch.as_ptr() as c_ulong };
+                        let mut block = [hedge, ctx, ctx_len];
+                        for n in [0, 2 * UL, 3 * UL - 1, 3 * UL, 4 * UL] {
+                            let m = Mech {
+                                mechanism: mech,
+                                param: block.as_mut_ptr().cast(),
+                                param_len: n as c_ulong,
+                            };
+                            let mut op = Op { mech, ..Op::IDLE };
+                            // SAFETY: n <= the block's bytes when n <= 3 * UL; past it the
+                            // arm reads only the first three ulongs
+                            let r = unsafe { params(&m, &mut op, tok, 0) };
+                            let at = format!("mech {mech:#x} hedge {hedge} len {ctx_len} null {null_ctx} n {n}");
+                            if n < 3 * UL {
+                                // a shorter block is no block: nothing recorded
+                                assert_eq!((r, op.ctx.is_none(), op.toolong, op.hedge), (Ok(()), true, false, 0), "{at}");
+                                continue;
+                            }
+                            if hedge > 2 {
+                                assert_eq!(r, Err(MECHANISM_PARAM_INVALID), "{at}");
+                                continue;
+                            }
+                            if ctx_len > 255 {
+                                assert_eq!((r, op.toolong, op.ctx.is_none()), (Ok(()), true, true), "{at}");
+                            } else if ctx_len != 0 && null_ctx {
+                                assert_eq!(r, Err(MECHANISM_PARAM_INVALID), "{at}");
+                                continue;
+                            } else {
+                                assert_eq!(r, Ok(()), "{at}");
+                                assert_eq!(op.ctx.as_deref(), Some(&scratch[..ctx_len as usize]), "{at}");
+                            }
+                            assert_eq!(op.hedge, hedge, "{at}");
+                        }
+                    }
+                }
+            }
+            // the fuzzer's property 5: a NULL pParameter is no block, whatever its length says
+            for n in [0, 2 * UL, 3 * UL, 4 * UL] {
+                let m = Mech { mechanism: mech, param: std::ptr::null_mut(), param_len: n as c_ulong };
+                let mut op = Op { mech, ..Op::IDLE };
+                // SAFETY: a null parameter, which the arm checks before reading
+                let r = unsafe { params(&m, &mut op, tok, 0) };
+                assert_eq!((r, op.ctx.is_none(), op.toolong, op.hedge), (Ok(()), true, false, 0), "null, n {n}");
+            }
+        }
+    }
 
     #[test]
     fn tables_match_c() {

@@ -1,6 +1,6 @@
 //! Shared helpers for the slice 3 (token store) characterization tests. Every expected value
 //! is in `golden/store/`, produced by running the legacy C `src/fhsm_token.c`:
-//! `tests-support/golden/regen_store.sh`. Nothing here decides a value; it reads, renders and
+//! `legacy/hybrid/golden/regen_store.sh`. Nothing here decides a value; it reads, renders and
 //! compares.
 #![allow(dead_code)]
 
@@ -36,7 +36,7 @@ pub fn store_golden(rel: &str) -> PathBuf {
 
 pub fn read_golden(rel: &str) -> Vec<u8> {
     fs::read(store_golden(rel)).unwrap_or_else(|e| {
-        panic!("golden/store/{rel}: {e} (run tests-support/golden/regen_store.sh)")
+        panic!("golden/store/{rel}: {e} (regenerate with legacy/hybrid/golden/regen_store.sh, at commit 0f481e9)")
     })
 }
 

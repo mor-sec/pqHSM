@@ -1,5 +1,5 @@
 //! Replays `tests/golden/session.tsv`, recorded from the legacy `src/fhsm_session.c` by
-//! `tests-support/golden/gen_session.c`, against the same stub token. Every result and every
+//! `legacy/hybrid/golden/gen_session.c`, against the same stub token. Every result and every
 //! token call must match, in order.
 
 use std::cell::RefCell;

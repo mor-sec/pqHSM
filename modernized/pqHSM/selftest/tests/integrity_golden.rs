@@ -1,5 +1,5 @@
 //! Replays `tests/golden/integrity.tsv`: what the legacy `src/fhsm_integrity.c` did with each
-//! ELF file in `tests/golden/integrity/` (tests-support/golden/gen_integrity.c), through
+//! ELF file in `tests/golden/integrity/` (legacy/hybrid/golden/gen_integrity.c), through
 //! `integrity::verify`. The C ran each scenario in its own process; its stderr is the
 //! `.stderr` file beside the fixture.
 

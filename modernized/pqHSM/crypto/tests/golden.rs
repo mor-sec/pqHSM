@@ -1,8 +1,8 @@
-//! Phase 3 slice 1: replays `tests/golden/cases.tsv`, made by `tests-support/golden/gen_crypto.c`
+//! Phase 3 slice 1: replays `tests/golden/cases.tsv`, made by `legacy/hybrid/golden/gen_crypto.c`
 //! from the legacy C, through the C ABI (feature `ffi`).
 //!
 //!   cargo test -p pqhsm-crypto --features ffi --test golden
-//!   tests-support/golden/regen_crypto.sh          (regenerates the goldens from the C)
+//!   legacy/hybrid/golden/regen_crypto.sh          (regenerates the goldens from the C)
 //!
 //! Its own harness: the arena is created once per process, so each heap scenario runs in a child
 //! (this binary again, with `PQHSM_HEAP_SCENARIO` set) and its stderr is compared byte for byte;

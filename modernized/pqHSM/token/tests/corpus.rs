@@ -208,3 +208,46 @@ fn migrate_zero_dek_refuses_a_wrong_pin_or_a_store_not_under_the_zero_key() {
         assert_eq!(fs::read(&path).unwrap(), before, "{name}: untouched");
     }
 }
+
+/// legacy/tests/test_v3_fixture.c (Phase 6 slice 5c): `token-v3.tok`, written by a pre-v4 C build
+/// (legacy/tests/make_v3_fixture.c), not by the generator whose beliefs the reader shares. Its
+/// objects read back with their values and flags2, with no policy (absent, not empty), and a
+/// write migrates it to v4 without changing them. Its PIN is the C test's.
+#[test]
+fn the_c_written_v3_fixture_loads_and_migrates() {
+    const PIN: &[u8] = b"userpin1234";
+    const V16: [u8; 16] = [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+    const V32: [u8; 32] = [
+        0xF0, 0xE1, 0xD2, 0xC3, 0xB4, 0xA5, 0x96, 0x87, 0x78, 0x69, 0x5A, 0x4B, 0x3C, 0x2D, 0x1E, 0x0F,
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32, 0x10,
+    ];
+    const NOT_COPYABLE: u8 = 0x04;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("slot0.tok");
+    fs::copy(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/v3/token-v3.tok"), &path).unwrap();
+    let find = |t: &Token, label: &[u8]| {
+        let (hs, _) = t.object_find(None, Some(label), 4).unwrap();
+        assert_eq!(hs.len(), 1, "{}", String::from_utf8_lossy(label));
+        hs[0]
+    };
+    let before = fs::read(&path).unwrap();
+    let t = Token::load(&path, platform(dir.path(), false)).unwrap();
+    t.login(Role::User, PIN).unwrap();
+    assert_eq!(t.object_find(None, None, 16).unwrap().0.len(), 2);
+    let (h16, h32) = (find(&t, b"sixteen"), find(&t, b"thirtytwo"));
+    assert_eq!(t.object_get(h16).unwrap().0, V16);
+    assert_eq!(t.object_get(h32).unwrap().0, V32);
+    assert_eq!((t.object_get_flags2(h32), t.object_get_flags2(h16)), (Ok(NOT_COPYABLE), Ok(0)));
+    assert_eq!(t.object_policy_counts(h16), Ok([0; 4]));
+    t.object_set_label(h16, b"sixteen").unwrap();
+    t.close();
+    // rewritten as v4 (by the load or login already, before this write): the same two objects with a
+    // policy block each take more room (review L4; 825 bytes to 2261 at the time of writing)
+    let after = fs::read(&path).unwrap();
+    assert!(after != before && after.len() > before.len(), "{} -> {} bytes", before.len(), after.len());
+    let t = Token::load(&path, platform(dir.path(), false)).unwrap();
+    t.login(Role::User, PIN).unwrap();
+    let h32 = find(&t, b"thirtytwo");
+    assert_eq!(t.object_get(h32).unwrap().0, V32);
+    assert_eq!(t.object_get_flags2(h32), Ok(NOT_COPYABLE));
+}

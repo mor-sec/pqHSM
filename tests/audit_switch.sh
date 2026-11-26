@@ -73,7 +73,10 @@ rm -rf "$D"
 # whole difference between an operator's choice and an accident.
 D=$(mktemp -d)
 out=$(FHSM_TOKENS_DIR="$D" FHSM_AUDIT_LOG=/dev/null "$TOOL" info --module "$LIB" 2>&1); rc=$?
-ok $rc "a stream target still starts the module"
+# DIV-001 (since slice 5d in the source; the harness patched its copy): a stream target fails its
+# first fdatasync, so C_Initialize reports 0x30, where C returned OK into a module already in
+# ERROR. legacy/Makefile runs the oracle with this line put back to C's.
+[ $rc -ne 0 ]; ok $? "a stream target: C_Initialize reports the failed audit (DIV-001)"
 echo "$out" | grep -q "not a regular"
 ok $? "  and is announced as a stream, not a log"
 rm -rf "$D"

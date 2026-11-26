@@ -380,7 +380,7 @@ pub unsafe extern "C" fn fhsm_rev_db_save(
     unsafe { rv(to_db(&*d).save(path(path_c)), err, err_cap) }
 }
 
-/// DIV-074's lock, for the C GUI (`tools/fhsm_gui.c` under `PQHSM_REV_LOCK`): opaque to C.
+/// DIV-074's lock, for the C GUI (`gui/fhsm_gui.c` under `PQHSM_REV_LOCK`): opaque to C.
 pub struct fhsm_rev_lock_t(#[allow(dead_code)] rev::DbLock);
 
 /// `rev::DbLock::take` with `LOCK_WAIT`: 0 and `*lock` set (free it with `fhsm_rev_db_unlock`),

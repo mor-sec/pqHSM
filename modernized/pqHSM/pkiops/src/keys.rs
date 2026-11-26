@@ -337,34 +337,21 @@ mod tests {
             e.msg
                 .starts_with(b"\"\" is not an algorithm these tools offer.\n  One of: composite, ")
         );
-        // The names, in order, and the secret keys' are tools/pkiops.c's.
-        let c = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../tools/pkiops.c"
-        ))
-        .unwrap();
-        let named: Vec<_> = c
-            .lines()
-            .filter_map(|l| l.trim().strip_prefix("[PKIOPS_ALG_"))
-            .map(|l| l.split('"').nth(1).unwrap())
-            .collect();
-        assert_eq!(named, ALG.map(|r| r.name.to_str().unwrap()));
-        // SKEY's rows: `[PKIOPS_SKEY_AES128] = { "aes128", CKK_AES_, 0x1080UL, 16, 1 },`.
-        let rows: Vec<Vec<String>> = c
-            .lines()
-            .filter_map(|l| l.trim().strip_prefix("[PKIOPS_SKEY_"))
-            .map(|l| {
-                let body = l.split('{').nth(1).unwrap().split('}').next().unwrap();
-                body.split(',')
-                    .map(|f| f.trim().trim_matches('"').to_string())
-                    .collect()
-            })
-            .collect();
-        assert_eq!(rows.len(), SKEY.len());
-        for (r, k) in rows.iter().zip(&SKEY) {
-            assert_eq!(r[0], k.name.to_str().unwrap());
-            assert_eq!(r[2], format!("0x{:04X}UL", k.keygen));
-            assert_eq!(r[3], k.len.to_string());
+        // The names, in order, and the secret keys' rows, as tools/pkiops.c had them (copied when
+        // slice 5d moved it to legacy/, so the default suite reads nothing there).
+        const C_NAMES: [&str; 9] = [
+            "composite", "ecdsa-p256", "ecdsa-p384", "rsa-pss", "rsa-pkcs1", "ed25519", "ml-dsa-44",
+            "ml-dsa-65", "ml-dsa-87",
+        ];
+        assert_eq!(C_NAMES, ALG.map(|r| r.name.to_str().unwrap()));
+        // `[PKIOPS_SKEY_AES128] = { "aes128", CKK_AES_, 0x1080UL, 16, 1 },`: name, keygen, length
+        const C_SKEYS: [(&str, c_ulong, c_ulong); 4] =
+            [("aes128", 0x1080, 16), ("aes256", 0x1080, 32), ("hmac", 0x0350, 32), ("rsa-oaep", 0, 0)];
+        assert_eq!(C_SKEYS.len(), SKEY.len());
+        for ((name, keygen, len), k) in C_SKEYS.iter().zip(&SKEY) {
+            assert_eq!(*name, k.name.to_str().unwrap());
+            assert_eq!(*keygen, k.keygen);
+            assert_eq!(*len, k.len);
         }
     }
 

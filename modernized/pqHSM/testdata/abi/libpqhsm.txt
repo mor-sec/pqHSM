@@ -1,0 +1,72 @@
+soname: libpqhsm.so
+needed: ld-linux-x86-64.so.2
+needed: libc.so.6
+needed: libcrypto.so.3
+relro: yes
+bind_now: yes
+exec_stack: no
+textrel: no
+fhsm_digest_size: 48
+export: T C_CancelFunction
+export: T C_CloseAllSessions
+export: T C_CloseSession
+export: T C_CopyObject
+export: T C_CreateObject
+export: T C_DecapsulateKey
+export: T C_Decrypt
+export: T C_DecryptFinal
+export: T C_DecryptInit
+export: T C_DecryptUpdate
+export: T C_DeriveKey
+export: T C_DestroyObject
+export: T C_Digest
+export: T C_DigestFinal
+export: T C_DigestInit
+export: T C_DigestKey
+export: T C_DigestUpdate
+export: T C_EncapsulateKey
+export: T C_Encrypt
+export: T C_EncryptFinal
+export: T C_EncryptInit
+export: T C_EncryptUpdate
+export: T C_Finalize
+export: T C_FindObjects
+export: T C_FindObjectsFinal
+export: T C_FindObjectsInit
+export: T C_GenerateKey
+export: T C_GenerateKeyPair
+export: T C_GenerateRandom
+export: T C_GetAttributeValue
+export: T C_GetFunctionList
+export: T C_GetFunctionStatus
+export: T C_GetInfo
+export: T C_GetInterface
+export: T C_GetInterfaceList
+export: T C_GetMechanismInfo
+export: T C_GetMechanismList
+export: T C_GetObjectSize
+export: T C_GetSessionInfo
+export: T C_GetSlotInfo
+export: T C_GetSlotList
+export: T C_GetTokenInfo
+export: T C_InitPIN
+export: T C_InitToken
+export: T C_Initialize
+export: T C_Login
+export: T C_Logout
+export: T C_OpenSession
+export: T C_SeedRandom
+export: T C_SetAttributeValue
+export: T C_SetPIN
+export: T C_Sign
+export: T C_SignFinal
+export: T C_SignInit
+export: T C_SignUpdate
+export: T C_UnwrapKey
+export: T C_Verify
+export: T C_VerifyFinal
+export: T C_VerifyInit
+export: T C_VerifyUpdate
+export: T C_WaitForSlotEvent
+export: T C_WrapKey
+export: T fhsm_kat_results
